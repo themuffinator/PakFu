@@ -35,12 +35,22 @@ while remaining intuitive for new users.
 - Qt6 (Widgets or QML).
 - Meson + Ninja for builds.
 
+## Auto-Update
+PakFu checks GitHub Releases for updates. Configure the repository with
+`-Dgithub_repo=owner/name` when running Meson so the updater knows where to look.
+Release assets should include a platform-appropriate installer:
+- Windows: `.exe` or `.msi`
+- macOS: `.dmg` or `.pkg`
+- Linux: `.AppImage` (preferred)
+
+See `docs/RELEASES.md` for versioning and release automation details.
+
 ## Dependencies
 See `docs/DEPENDENCIES.md` for the current baseline and planned format loaders.
 
 ## Build (Meson + Ninja)
 ```sh
-meson setup build --backend ninja
+meson setup build --backend ninja -Dgithub_repo=owner/name -Dupdate_channel=stable
 meson compile -C build
 ```
 

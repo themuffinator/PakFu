@@ -1,0 +1,40 @@
+param(
+  [string]$BuildDir = "build",
+  [string]$OutDir = "dist",
+  [string]$Version = ""
+)
+
+$ErrorActionPreference = "Stop"
+
+if (-not $Version) {
+  $Version = (Get-Content VERSION).Trim()
+}
+
+$exe = Join-Path $BuildDir "src\\pakfu.exe"
+if (!(Test-Path $exe)) {
+  throw "pakfu.exe not found at $exe"
+}
+
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+
+$staging = Join-Path $OutDir "pakfu-win64-$Version"
+if (Test-Path $staging) {
+  Remove-Item -Recurse -Force $staging
+}
+New-Item -ItemType Directory -Force -Path $staging | Out-Null
+
+$windeploy = Get-Command windeployqt.exe -ErrorAction SilentlyContinue
+if (-not $windeploy) {
+  throw "windeployqt.exe not found on PATH."
+}
+
+Copy-Item $exe $staging
+& $windeploy.Source --release --compiler-runtime --no-translations --dir $staging $exe
+
+$zip = Join-Path $OutDir "pakfu-win64-$Version.zip"
+if (Test-Path $zip) {
+  Remove-Item $zip
+}
+
+Compress-Archive -Path "$staging\\*" -DestinationPath $zip
+Write-Host "Packaged: $zip"

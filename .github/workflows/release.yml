@@ -1,0 +1,78 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: build-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install Meson + Ninja
+        run: python -m pip install --upgrade pip meson ninja
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.10.1"
+          arch: ${{ matrix.os == 'windows-latest' && 'win64_msvc2022_64' || matrix.os == 'macos-latest' && 'clang_64' || 'gcc_64' }}
+
+      - name: Configure
+        run: meson setup build --backend ninja -Dgithub_repo=${{ github.repository }}
+
+      - name: Build
+        run: meson compile -C build
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: ./scripts/package_windows.ps1
+
+      - name: Package (macOS)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: bash scripts/package_macos.sh
+
+      - name: Package (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: bash scripts/package_linux.sh
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pakfu-${{ matrix.os }}
+          path: dist/*
+
+  release:
+    name: github-release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**
+          generate_release_notes: true

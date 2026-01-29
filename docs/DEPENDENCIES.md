@@ -6,6 +6,7 @@
 - Qt 6:
   - Core
   - Gui
+  - Network
   - Widgets
 
 ## Planned / Optional

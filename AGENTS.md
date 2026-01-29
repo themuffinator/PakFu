@@ -24,6 +24,7 @@ Keep them aligned with the goals in `README.md`.
 - Keep the UI responsive with async loading for large archives.
 - Update docs and help text whenever behavior changes.
 - Update `docs/DEPENDENCIES.md` when adding or changing libraries.
+- Keep `VERSION` and GitHub release assets in sync with the updater rules.
 
 ## Contribution Boundaries
 - Do not introduce alternate UI frameworks.

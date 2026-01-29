@@ -1,0 +1,14 @@
+option(
+  'github_repo',
+  type: 'string',
+  value: 'themuffinator/PakFu',
+  description: 'GitHub repo (owner/name) used for update checks.'
+)
+
+option(
+  'update_channel',
+  type: 'combo',
+  choices: ['stable', 'beta', 'dev'],
+  value: 'stable',
+  description: 'Update channel selection.'
+)

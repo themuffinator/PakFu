@@ -3,12 +3,14 @@
 #include <QTextStream>
 
 #include "cli/cli.h"
+#include "pakfu_config.h"
 #include "ui/main_window.h"
 
 namespace {
 void set_app_metadata(QCoreApplication& app) {
   app.setApplicationName("PakFu");
-  app.setApplicationVersion("0.1.0");
+  app.setOrganizationName("PakFu");
+  app.setApplicationVersion(PAKFU_VERSION);
 }
 }  // namespace
 

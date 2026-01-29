@@ -36,3 +36,6 @@ build/
 builddir/
 meson-private/
 meson-logs/
+
+# Release outputs
+dist/
