@@ -30,3 +30,9 @@
 *.exe
 *.out
 *.app
+
+# Meson build outputs
+build/
+builddir/
+meson-private/
+meson-logs/

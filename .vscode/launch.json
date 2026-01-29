@@ -1,0 +1,46 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "PakFu (GUI) - Windows",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}\\build\\src\\pakfu.exe",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "stopAtEntry": false,
+      "externalConsole": false,
+      "environment": [
+        {
+          "name": "PATH",
+          "value": "C:\\\\Qt\\\\6.10.1\\\\msvc2022_64\\\\bin;${env:PATH}"
+        },
+        {
+          "name": "QT_PLUGIN_PATH",
+          "value": "C:\\\\Qt\\\\6.10.1\\\\msvc2022_64\\\\plugins"
+        },
+        {
+          "name": "QT_QPA_PLATFORM_PLUGIN_PATH",
+          "value": "C:\\\\Qt\\\\6.10.1\\\\msvc2022_64\\\\plugins\\\\platforms"
+        }
+      ]
+    },
+    {
+      "name": "PakFu (GUI) - Linux/macOS",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/src/pakfu",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "stopAtEntry": false,
+      "externalConsole": false,
+      "environment": [],
+      "linux": {
+        "MIMode": "gdb"
+      },
+      "osx": {
+        "MIMode": "lldb"
+      }
+    }
+  ]
+}
