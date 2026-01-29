@@ -1,28 +1,105 @@
 #include "main_window.h"
 
+#include <QDateTime>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QSettings>
+#include <QStackedWidget>
 #include <QTimer>
-#include <QDateTime>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
 
 #include "pakfu_config.h"
 #include "update/update_service.h"
 
-MainWindow::MainWindow() {
+MainWindow::MainWindow(const QString& initial_pak_path, bool schedule_updates)
+    : schedule_updates_(schedule_updates) {
   setWindowTitle("PakFu");
-  auto* label = new QLabel("PakFu UI scaffold", this);
-  label->setAlignment(Qt::AlignCenter);
-  setCentralWidget(label);
+  setup_central();
   resize(1000, 700);
 
   updater_ = new UpdateService(this);
   updater_->configure(PAKFU_GITHUB_REPO, PAKFU_UPDATE_CHANNEL, PAKFU_VERSION);
 
   setup_menus();
-  schedule_update_check();
+
+  if (schedule_updates_) {
+    schedule_update_check();
+  }
+
+  if (!initial_pak_path.isEmpty()) {
+    open_pak(initial_pak_path);
+  }
+}
+
+void MainWindow::setup_central() {
+  stack_ = new QStackedWidget(this);
+
+  auto* start_page = new QWidget(stack_);
+  auto* start_layout = new QVBoxLayout(start_page);
+  start_layout->setContentsMargins(40, 40, 40, 40);
+  start_layout->addStretch();
+
+  auto* title = new QLabel("Welcome to PakFu", start_page);
+  title->setAlignment(Qt::AlignCenter);
+  QFont title_font = title->font();
+  title_font.setPointSize(title_font.pointSize() + 6);
+  title->setFont(title_font);
+  start_layout->addWidget(title);
+
+  auto* subtitle = new QLabel("Create a new PAK or load an existing archive.", start_page);
+  subtitle->setAlignment(Qt::AlignCenter);
+  start_layout->addWidget(subtitle);
+
+  auto* button_row = new QHBoxLayout();
+  auto* create_button = new QPushButton("Create PAK", start_page);
+  auto* load_button = new QPushButton("Open PAK", start_page);
+  auto* close_button = new QPushButton("Close", start_page);
+  create_button->setMinimumWidth(160);
+  load_button->setMinimumWidth(160);
+  close_button->setMinimumWidth(160);
+  button_row->addStretch();
+  button_row->addWidget(create_button);
+  button_row->addSpacing(20);
+  button_row->addWidget(load_button);
+  button_row->addSpacing(20);
+  button_row->addWidget(close_button);
+  button_row->addStretch();
+  start_layout->addSpacing(20);
+  start_layout->addLayout(button_row);
+  start_layout->addStretch();
+
+  connect(create_button, &QPushButton::clicked, this, [this]() {
+    QMessageBox::information(this, "Create PAK", "PAK creation is not implemented yet.");
+  });
+
+  connect(load_button, &QPushButton::clicked, this, [this]() {
+    const QString file_path = QFileDialog::getOpenFileName(this, "Open PAK", QString(), "PAK files (*.pak);;All files (*.*)");
+    if (!file_path.isEmpty()) {
+      open_pak(file_path);
+    }
+  });
+
+  connect(close_button, &QPushButton::clicked, this, [this]() {
+    close();
+  });
+
+  auto* content_page = new QWidget(stack_);
+  auto* content_layout = new QVBoxLayout(content_page);
+  content_layout->setContentsMargins(40, 40, 40, 40);
+  status_label_ = new QLabel("No PAK loaded.", content_page);
+  status_label_->setAlignment(Qt::AlignCenter);
+  content_layout->addWidget(status_label_);
+
+  stack_->addWidget(start_page);
+  stack_->addWidget(content_page);
+  stack_->setCurrentWidget(start_page);
+  setCentralWidget(stack_);
 }
 
 void MainWindow::setup_menus() {
@@ -62,4 +139,13 @@ void MainWindow::check_for_updates() {
   if (updater_) {
     updater_->check_for_updates(true, this);
   }
+}
+
+void MainWindow::open_pak(const QString& path) {
+  if (!stack_ || !status_label_) {
+    return;
+  }
+  status_label_->setText(QString("Loaded PAK:\n%1").arg(path));
+  stack_->setCurrentIndex(1);
+  setWindowTitle(QString("PakFu - %1").arg(QFileInfo(path).fileName()));
 }

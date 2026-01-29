@@ -5,11 +5,11 @@ PakFu follows SemVer. Update `VERSION` for every release and tag the commit with
 `vX.Y.Z`.
 
 ## Release Assets
-To enable in-app updates, attach installer-friendly assets to each GitHub
-Release:
-- Windows: `.exe` or `.msi`
-- macOS: `.dmg` or `.pkg`
-- Linux: `.AppImage`
+To enable in-app updates, attach platform packages to each GitHub Release.
+Current packaging targets:
+- Windows: portable `.zip` (installer `.exe/.msi` planned)
+- macOS: portable `.zip` (installer `.dmg/.pkg` planned)
+- Linux: `.tar.gz` (AppImage planned)
 
 Asset names should include platform hints (e.g. `win`, `mac`, `linux`, `x64`) so
 the updater can select the correct file automatically.

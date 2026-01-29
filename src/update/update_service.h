@@ -24,6 +24,20 @@ struct UpdateInfo {
   qint64 asset_size = 0;
 };
 
+enum class UpdateCheckState {
+  UpdateAvailable,
+  UpToDate,
+  NoRelease,
+  NotConfigured,
+  Error,
+};
+
+struct UpdateCheckResult {
+  UpdateCheckState state = UpdateCheckState::Error;
+  UpdateInfo info;
+  QString message;
+};
+
 class UpdateService : public QObject {
   Q_OBJECT
 
@@ -32,6 +46,11 @@ public:
 
   void configure(const QString& github_repo, const QString& channel, const QString& current_version);
   void check_for_updates(bool user_initiated, QWidget* parent = nullptr);
+  UpdateCheckResult check_for_updates_sync();
+  void show_update_prompt(const UpdateInfo& info, QWidget* parent, bool user_initiated);
+
+signals:
+  void check_completed(const UpdateCheckResult& result);
 
 private slots:
   void on_check_finished();
@@ -45,8 +64,10 @@ private:
   QUrl select_asset(const QJsonArray& assets, QString* asset_name, qint64* asset_size) const;
   QString normalize_version(const QString& version) const;
   bool is_newer_version(const QString& latest, const QString& current) const;
+  bool is_installable_asset(const QString& name) const;
   void show_no_update_message(QWidget* parent);
   void show_error_message(QWidget* parent, const QString& message);
+  void prompt_update_error(const QString& message);
   void prompt_update(const UpdateInfo& info, QWidget* parent, bool user_initiated);
   void begin_download(const UpdateInfo& info, QWidget* parent);
   bool launch_installer(const QString& file_path, QWidget* parent) const;
@@ -61,6 +82,9 @@ private:
   QNetworkReply* download_reply_ = nullptr;
   QScopedPointer<QSaveFile> download_file_;
   QString download_path_;
+  bool download_installable_ = false;
   QPointer<QProgressDialog> progress_dialog_;
   QPointer<QWidget> parent_window_;
 };
+
+Q_DECLARE_METATYPE(UpdateCheckResult)

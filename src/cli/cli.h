@@ -8,8 +8,11 @@ struct CliOptions {
   bool list = false;
   bool info = false;
   bool extract = false;
+  bool check_updates = false;
   QString output_dir;
   QString pak_path;
+  QString update_repo;
+  QString update_channel;
 };
 
 enum class CliParseResult {

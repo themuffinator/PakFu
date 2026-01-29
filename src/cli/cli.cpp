@@ -5,6 +5,9 @@
 #include <QFileInfo>
 #include <QTextStream>
 
+#include "pakfu_config.h"
+#include "update/update_service.h"
+
 namespace {
 QString normalize_output(const QString& text) {
   return text.endsWith('\n') ? text : text + '\n';
@@ -15,6 +18,7 @@ bool wants_cli(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const QString arg = QString::fromLocal8Bit(argv[i]);
     if (arg == "--cli" || arg == "--list" || arg == "--info" || arg == "--extract" ||
+        arg == "--check-updates" || arg == "--update-repo" || arg == "--update-channel" ||
         arg == "--help" || arg == "-h" || arg == "--version" || arg == "-v") {
       return true;
     }
@@ -32,6 +36,15 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   const QCommandLineOption list_option({"l", "list"}, "List entries in the PAK.");
   const QCommandLineOption info_option({"i", "info"}, "Show archive summary information.");
   const QCommandLineOption extract_option({"x", "extract"}, "Extract archive contents.");
+  const QCommandLineOption check_updates_option("check-updates", "Check GitHub for new releases.");
+  const QCommandLineOption update_repo_option(
+    "update-repo",
+    "Override the GitHub repo used for update checks (owner/name).",
+    "repo");
+  const QCommandLineOption update_channel_option(
+    "update-channel",
+    "Override the update channel (stable, beta, dev).",
+    "channel");
   const QCommandLineOption output_option(
     {"o", "output"},
     "Output directory for extraction.",
@@ -41,6 +54,9 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   parser.addOption(list_option);
   parser.addOption(info_option);
   parser.addOption(extract_option);
+  parser.addOption(check_updates_option);
+  parser.addOption(update_repo_option);
+  parser.addOption(update_channel_option);
   parser.addOption(output_option);
   parser.addPositionalArgument("pak", "Path to a PAK file.");
 
@@ -68,14 +84,17 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   options.list = parser.isSet(list_option);
   options.info = parser.isSet(info_option);
   options.extract = parser.isSet(extract_option);
+  options.check_updates = parser.isSet(check_updates_option);
   options.output_dir = parser.value(output_option);
+  options.update_repo = parser.value(update_repo_option);
+  options.update_channel = parser.value(update_channel_option);
 
   const QStringList positional = parser.positionalArguments();
   if (!positional.isEmpty()) {
     options.pak_path = positional.first();
   }
 
-  const bool any_action = options.list || options.info || options.extract;
+  const bool any_action = options.list || options.info || options.extract || options.check_updates;
   if (!any_action && options.pak_path.isEmpty()) {
     if (output) {
       *output = parser.helpText();
@@ -100,6 +119,37 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
 int run_cli(const CliOptions& options) {
   QTextStream out(stdout);
   QTextStream err(stderr);
+
+  if (options.check_updates) {
+    UpdateService updater;
+    const QString repo = options.update_repo.isEmpty() ? PAKFU_GITHUB_REPO : options.update_repo;
+    const QString channel = options.update_channel.isEmpty() ? PAKFU_UPDATE_CHANNEL : options.update_channel;
+    updater.configure(repo, channel, PAKFU_VERSION);
+    const UpdateCheckResult result = updater.check_for_updates_sync();
+    switch (result.state) {
+      case UpdateCheckState::UpdateAvailable:
+        out << "Update available: " << result.info.version << "\n";
+        if (!result.info.asset_name.isEmpty()) {
+          out << "Asset: " << result.info.asset_name << "\n";
+        }
+        if (result.info.html_url.isValid()) {
+          out << "Release: " << result.info.html_url.toString() << "\n";
+        }
+        return 0;
+      case UpdateCheckState::UpToDate:
+        out << "PakFu is up to date.\n";
+        return 0;
+      case UpdateCheckState::NoRelease:
+        err << "No releases found.\n";
+        return 2;
+      case UpdateCheckState::NotConfigured:
+        err << "Update repo not configured.\n";
+        return 2;
+      case UpdateCheckState::Error:
+        err << (result.message.isEmpty() ? "Update check failed.\n" : result.message + '\n');
+        return 2;
+    }
+  }
 
   if (options.pak_path.isEmpty()) {
     err << "No PAK path provided.\n";

@@ -9,7 +9,7 @@
       "args": [],
       "cwd": "${workspaceFolder}",
       "stopAtEntry": false,
-      "externalConsole": false,
+      "console": "internalConsole",
       "environment": [
         {
           "name": "PATH",
@@ -33,7 +33,7 @@
       "args": [],
       "cwd": "${workspaceFolder}",
       "stopAtEntry": false,
-      "externalConsole": false,
+      "console": "internalConsole",
       "environment": [],
       "linux": {
         "MIMode": "gdb"

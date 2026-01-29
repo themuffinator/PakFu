@@ -12,15 +12,22 @@ configure_file(
 sources = files(
   'main.cpp',
   'cli/cli.cpp',
+  'ui/splash_screen.cpp',
   'ui/main_window.cpp',
   'update/update_service.cpp',
+)
+
+rcc_sources = qt6.preprocess(
+  qresources: ['resources.qrc'],
 )
 
 moc_sources = qt6.preprocess(
   moc_headers: [
     'update/update_service.h',
+    'ui/splash_screen.h',
   ],
 )
+sources += rcc_sources
 sources += moc_sources
 
 pakfu = executable(

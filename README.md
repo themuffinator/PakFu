@@ -38,10 +38,9 @@ while remaining intuitive for new users.
 ## Auto-Update
 PakFu checks GitHub Releases for updates. Configure the repository with
 `-Dgithub_repo=owner/name` when running Meson so the updater knows where to look.
-Release assets should include a platform-appropriate installer:
-- Windows: `.exe` or `.msi`
-- macOS: `.dmg` or `.pkg`
-- Linux: `.AppImage` (preferred)
+Release assets should include a platform-appropriate package. Installers are
+preferred, but archives are supported (they will be downloaded and opened for
+manual installation).
 
 See `docs/RELEASES.md` for versioning and release automation details.
 
@@ -58,6 +57,7 @@ meson compile -C build
 ```sh
 ./build/pakfu
 ./build/pakfu --cli --help
+./build/pakfu --cli --check-updates
 ```
 
 ## Repository Notes

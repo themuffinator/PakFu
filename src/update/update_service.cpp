@@ -3,7 +3,9 @@
 #include <QApplication>
 #include <QDateTime>
 #include <QDesktopServices>
+#include <QCheckBox>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -16,12 +18,14 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QTimer>
 #include <QVersionNumber>
 
 namespace {
 constexpr char kUserAgent[] = "PakFu-Updater";
 constexpr char kLastCheckKey[] = "updates/lastCheckUtc";
 constexpr char kSkipVersionKey[] = "updates/skipVersion";
+constexpr char kAutoCheckKey[] = "updates/autoCheck";
 
 QString asset_extension(const QString& name) {
   const QFileInfo info(name);
@@ -95,10 +99,27 @@ int score_asset_name(const QString& name) {
   return score;
 }
 
+bool is_installable_name(const QString& name) {
+  const QString lower = name.toLower();
+#if defined(Q_OS_WIN)
+  return lower.endsWith(".exe") || lower.endsWith(".msi");
+#elif defined(Q_OS_MACOS)
+  return lower.endsWith(".dmg") || lower.endsWith(".pkg");
+#else
+  return lower.endsWith(".appimage");
+#endif
+}
+
+bool is_splash_window(const QWidget* widget) {
+  return widget && widget->windowFlags().testFlag(Qt::SplashScreen);
+}
+
 }  // namespace
 
 UpdateService::UpdateService(QObject* parent)
-    : QObject(parent), network_(new QNetworkAccessManager(this)) {}
+    : QObject(parent), network_(new QNetworkAccessManager(this)) {
+  qRegisterMetaType<UpdateCheckResult>();
+}
 
 void UpdateService::configure(const QString& github_repo,
                               const QString& channel,
@@ -116,6 +137,10 @@ void UpdateService::check_for_updates(bool user_initiated, QWidget* parent) {
     if (user_initiated_) {
       show_error_message(parent_window_, "Update check is not configured with a GitHub repository.");
     }
+    UpdateCheckResult result;
+    result.state = UpdateCheckState::NotConfigured;
+    result.message = "Update check is not configured with a GitHub repository.";
+    emit check_completed(result);
     return;
   }
 
@@ -132,6 +157,7 @@ void UpdateService::check_for_updates(bool user_initiated, QWidget* parent) {
   QNetworkRequest request(api_url);
   request.setRawHeader("Accept", "application/vnd.github+json");
   request.setRawHeader("User-Agent", kUserAgent);
+  request.setTransferTimeout(15000);
 
   if (check_reply_) {
     check_reply_->deleteLater();
@@ -140,18 +166,123 @@ void UpdateService::check_for_updates(bool user_initiated, QWidget* parent) {
   connect(check_reply_, &QNetworkReply::finished, this, &UpdateService::on_check_finished);
 }
 
+UpdateCheckResult UpdateService::check_for_updates_sync() {
+  UpdateCheckResult result;
+  if (github_repo_.isEmpty() || !github_repo_.contains('/')) {
+    result.state = UpdateCheckState::NotConfigured;
+    result.message = "Update check is not configured with a GitHub repository.";
+    return result;
+  }
+
+  QUrl api_url;
+  if (channel_.compare("stable", Qt::CaseInsensitive) == 0) {
+    api_url = QUrl(QString("https://api.github.com/repos/%1/releases/latest").arg(github_repo_));
+  } else {
+    api_url = QUrl(QString("https://api.github.com/repos/%1/releases").arg(github_repo_));
+  }
+
+  QNetworkRequest request(api_url);
+  request.setRawHeader("Accept", "application/vnd.github+json");
+  request.setRawHeader("User-Agent", kUserAgent);
+  request.setTransferTimeout(15000);
+
+  QScopedPointer<QNetworkReply, QScopedPointerDeleteLater> reply(network_->get(request));
+  QEventLoop loop;
+  QTimer timeout;
+  timeout.setSingleShot(true);
+  timeout.start(20000);
+  connect(&timeout, &QTimer::timeout, &loop, [&reply]() {
+    if (reply) {
+      reply->abort();
+    }
+  });
+  connect(reply.data(), &QNetworkReply::finished, &loop, &QEventLoop::quit);
+  loop.exec();
+
+  if (!reply) {
+    result.state = UpdateCheckState::Error;
+    result.message = "Update check failed.";
+    return result;
+  }
+
+  if (reply->error() != QNetworkReply::NoError) {
+    result.state = UpdateCheckState::Error;
+    result.message = "Unable to reach GitHub for update checks.";
+    return result;
+  }
+
+  const QByteArray payload = reply->readAll();
+  QJsonParseError parse_error{};
+  const QJsonDocument doc = QJsonDocument::fromJson(payload, &parse_error);
+  if (parse_error.error != QJsonParseError::NoError) {
+    result.state = UpdateCheckState::Error;
+    result.message = "GitHub update response could not be parsed.";
+    return result;
+  }
+
+  UpdateInfo info;
+  if (doc.isObject()) {
+    info = parse_release_object(doc.object());
+  } else if (doc.isArray()) {
+    info = select_release_from_array(doc.array());
+  }
+
+  if (info.version.isEmpty()) {
+    result.state = UpdateCheckState::NoRelease;
+    result.message = "No valid release was found.";
+    return result;
+  }
+
+  const QString normalized_latest = normalize_version(info.version);
+  const QString normalized_current = normalize_version(current_version_);
+  if (!is_newer_version(normalized_latest, normalized_current)) {
+    result.state = UpdateCheckState::UpToDate;
+    result.info = info;
+    return result;
+  }
+
+  result.state = UpdateCheckState::UpdateAvailable;
+  result.info = info;
+  return result;
+}
+
 void UpdateService::on_check_finished() {
   QScopedPointer<QNetworkReply, QScopedPointerDeleteLater> reply(check_reply_);
   check_reply_ = nullptr;
 
   if (!reply) {
+    UpdateCheckResult result;
+    result.state = UpdateCheckState::Error;
+    result.message = "Update check failed.";
+    if (is_splash_window(parent_window_)) {
+      emit check_completed(result);
+      return;
+    }
+    if (!user_initiated_) {
+      prompt_update_error(result.message);
+      return;
+    }
+    emit check_completed(result);
     return;
   }
+
+  UpdateCheckResult result;
 
   if (reply->error() != QNetworkReply::NoError) {
     if (user_initiated_) {
       show_error_message(parent_window_, "Unable to reach GitHub for update checks.");
     }
+    result.state = UpdateCheckState::Error;
+    result.message = "Unable to reach GitHub for update checks.";
+    if (is_splash_window(parent_window_)) {
+      emit check_completed(result);
+      return;
+    }
+    if (!user_initiated_) {
+      prompt_update_error(result.message);
+      return;
+    }
+    emit check_completed(result);
     return;
   }
 
@@ -162,6 +293,17 @@ void UpdateService::on_check_finished() {
     if (user_initiated_) {
       show_error_message(parent_window_, "GitHub update response could not be parsed.");
     }
+    result.state = UpdateCheckState::Error;
+    result.message = "GitHub update response could not be parsed.";
+    if (is_splash_window(parent_window_)) {
+      emit check_completed(result);
+      return;
+    }
+    if (!user_initiated_) {
+      prompt_update_error(result.message);
+      return;
+    }
+    emit check_completed(result);
     return;
   }
 
@@ -174,6 +316,17 @@ void UpdateService::on_check_finished() {
     if (user_initiated_) {
       show_error_message(parent_window_, "GitHub update response was empty.");
     }
+    result.state = UpdateCheckState::Error;
+    result.message = "GitHub update response was empty.";
+    if (is_splash_window(parent_window_)) {
+      emit check_completed(result);
+      return;
+    }
+    if (!user_initiated_) {
+      prompt_update_error(result.message);
+      return;
+    }
+    emit check_completed(result);
     return;
   }
 
@@ -181,6 +334,17 @@ void UpdateService::on_check_finished() {
     if (user_initiated_) {
       show_error_message(parent_window_, "No valid release was found.");
     }
+    result.state = UpdateCheckState::NoRelease;
+    result.message = "No valid release was found.";
+    if (is_splash_window(parent_window_)) {
+      emit check_completed(result);
+      return;
+    }
+    if (!user_initiated_) {
+      prompt_update_error(result.message);
+      return;
+    }
+    emit check_completed(result);
     return;
   }
 
@@ -190,6 +354,9 @@ void UpdateService::on_check_finished() {
   QSettings settings;
   const QString skipped = settings.value(kSkipVersionKey).toString();
   if (!user_initiated_ && !skipped.isEmpty() && normalized_latest == skipped) {
+    result.state = UpdateCheckState::UpToDate;
+    result.info = info;
+    emit check_completed(result);
     return;
   }
 
@@ -197,10 +364,29 @@ void UpdateService::on_check_finished() {
     if (user_initiated_) {
       show_no_update_message(parent_window_);
     }
+    result.state = UpdateCheckState::UpToDate;
+    result.info = info;
+    emit check_completed(result);
+    return;
+  }
+
+  if (is_splash_window(parent_window_)) {
+    result.state = UpdateCheckState::UpdateAvailable;
+    result.info = info;
+    emit check_completed(result);
     return;
   }
 
   prompt_update(info, parent_window_, user_initiated_);
+  result.state = UpdateCheckState::UpdateAvailable;
+  result.info = info;
+  emit check_completed(result);
+}
+
+void UpdateService::show_update_prompt(const UpdateInfo& info, QWidget* parent, bool user_initiated) {
+  parent_window_ = parent;
+  user_initiated_ = user_initiated;
+  prompt_update(info, parent, user_initiated);
 }
 
 UpdateInfo UpdateService::parse_release_object(const QJsonObject& release_obj) const {
@@ -290,12 +476,46 @@ bool UpdateService::is_newer_version(const QString& latest, const QString& curre
   return latest.compare(current, Qt::CaseInsensitive) != 0;
 }
 
+bool UpdateService::is_installable_asset(const QString& name) const {
+  return is_installable_name(name);
+}
+
 void UpdateService::show_no_update_message(QWidget* parent) {
   QMessageBox::information(parent, "PakFu Updates", "You are already on the latest version.");
 }
 
 void UpdateService::show_error_message(QWidget* parent, const QString& message) {
   QMessageBox::warning(parent, "PakFu Updates", message);
+}
+
+void UpdateService::prompt_update_error(const QString& message) {
+  QMessageBox box(parent_window_);
+  box.setIcon(QMessageBox::Warning);
+  box.setWindowTitle("Update Check Failed");
+  box.setText(message);
+  const bool splash_parent = parent_window_ && parent_window_->windowFlags().testFlag(Qt::SplashScreen);
+  if (splash_parent) {
+    box.setWindowFlag(Qt::WindowStaysOnTopHint, true);
+  }
+  QPushButton* retry = box.addButton("Retry", QMessageBox::AcceptRole);
+  QPushButton* ignore = box.addButton("Ignore", QMessageBox::RejectRole);
+  box.setDefaultButton(retry);
+  box.raise();
+  box.activateWindow();
+  box.exec();
+
+  if (box.clickedButton() == retry) {
+    check_for_updates(user_initiated_, parent_window_);
+    return;
+  }
+
+  Q_UNUSED(ignore);
+  QTimer::singleShot(0, this, [this, message]() {
+    UpdateCheckResult result;
+    result.state = UpdateCheckState::Error;
+    result.message = message;
+    emit check_completed(result);
+  });
 }
 
 void UpdateService::prompt_update(const UpdateInfo& info, QWidget* parent, bool user_initiated) {
@@ -310,20 +530,36 @@ void UpdateService::prompt_update(const UpdateInfo& info, QWidget* parent, bool 
   box.setIcon(QMessageBox::Information);
   box.setWindowTitle("Update Available");
   box.setText(summary);
+  const bool splash_parent = dialog_parent && dialog_parent->windowFlags().testFlag(Qt::SplashScreen);
+  if (splash_parent) {
+    box.setWindowFlag(Qt::WindowStaysOnTopHint, true);
+  }
   if (!info.notes.trimmed().isEmpty()) {
     const QString trimmed = info.notes.trimmed();
     box.setInformativeText(trimmed.left(600));
+    box.setDetailedText(trimmed);
   }
+
+  auto* dont_ask = new QCheckBox("Don't ask again");
+  box.setCheckBox(dont_ask);
 
   QPushButton* download_button = nullptr;
   if (info.asset_url.isValid()) {
-    download_button = box.addButton("Download && Install", QMessageBox::AcceptRole);
+    const QString label = is_installable_asset(info.asset_name) ? "Download && Install" : "Download";
+    download_button = box.addButton(label, QMessageBox::AcceptRole);
   }
   QPushButton* open_button = box.addButton("Open Release Page", QMessageBox::ActionRole);
   QPushButton* skip_button = box.addButton("Skip This Version", QMessageBox::RejectRole);
   box.addButton(user_initiated ? "Close" : "Later", QMessageBox::DestructiveRole);
   box.setDefaultButton(download_button ? download_button : open_button);
+  box.raise();
+  box.activateWindow();
   box.exec();
+
+  if (dont_ask && dont_ask->isChecked()) {
+    QSettings settings;
+    settings.setValue(kAutoCheckKey, false);
+  }
 
   if (box.clickedButton() == download_button) {
     begin_download(info, dialog_parent);
@@ -359,6 +595,7 @@ void UpdateService::begin_download(const UpdateInfo& info, QWidget* parent) {
                               ? QString("pakfu-update-%1").arg(normalize_version(info.version))
                               : info.asset_name;
   download_path_ = QDir(temp_dir).filePath(filename);
+  download_installable_ = is_installable_asset(filename);
 
   download_file_.reset(new QSaveFile(download_path_));
   if (!download_file_->open(QIODevice::WriteOnly)) {
@@ -380,6 +617,11 @@ void UpdateService::begin_download(const UpdateInfo& info, QWidget* parent) {
   progress_dialog_->setWindowModality(Qt::WindowModal);
   progress_dialog_->setAutoClose(true);
   progress_dialog_->setAutoReset(true);
+  if (parent && parent->windowFlags().testFlag(Qt::SplashScreen)) {
+    progress_dialog_->setWindowFlag(Qt::WindowStaysOnTopHint, true);
+  }
+  progress_dialog_->raise();
+  progress_dialog_->activateWindow();
 
   connect(download_reply_, &QNetworkReply::readyRead, this, &UpdateService::on_download_ready_read);
   connect(download_reply_, &QNetworkReply::downloadProgress, this, &UpdateService::on_download_progress);
@@ -436,6 +678,15 @@ void UpdateService::on_download_finished() {
       return;
     }
     download_file_.reset();
+  }
+
+  if (!download_installable_) {
+    const QString folder = QFileInfo(download_path_).absolutePath();
+    QDesktopServices::openUrl(QUrl::fromLocalFile(folder));
+    QMessageBox::information(parent_window_,
+                             "Update Downloaded",
+                             QString("Update downloaded to:\n%1").arg(download_path_));
+    return;
   }
 
   if (!launch_installer(download_path_, nullptr)) {

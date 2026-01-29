@@ -31,6 +31,11 @@ if (-not $windeploy) {
 Copy-Item $exe $staging
 & $windeploy.Source --release --compiler-runtime --no-translations --dir $staging $exe
 
+$assets = Join-Path (Get-Location) "assets"
+if (Test-Path $assets) {
+  Copy-Item -Recurse -Force $assets (Join-Path $staging "assets")
+}
+
 $zip = Join-Path $OutDir "pakfu-win64-$Version.zip"
 if (Test-Path $zip) {
   Remove-Item $zip
