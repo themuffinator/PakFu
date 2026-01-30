@@ -19,7 +19,7 @@ This project is still training under the waterfall 💦🥋 (early development).
   - Images: `pcx`, `wal`, `png`, `tga`, `jpg` 🖼️🎨
   - Audio: `wav`, `ogg` 🔊🎶
   - Video: `cin`, `roq` 🎞️🍿
-  - Text/config: `cfg` and similar plain-text formats 🧾🖋️
+- Text/config: `cfg` and similar plain-text formats (with syntax coloring in preview) 🧾🖋️
 - Stay responsive for large archives (no freezing in the middle of a roundhouse kick) 🥶➡️🥋
 - Keep C++ code clean, portable, and documented (minimal OS-specific sorcery) 🧠🧹🧾
 

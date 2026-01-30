@@ -2885,6 +2885,13 @@ void PakTab::refresh_listing() {
   update_preview();
 }
 
+/*
+=============
+update_preview
+
+Update the preview panel for the current selection.
+=============
+*/
 void PakTab::update_preview() {
   if (!preview_) {
     return;
@@ -3019,7 +3026,12 @@ void PakTab::update_preview() {
       preview_->show_binary(leaf, subtitle, bytes.left(4096), truncated);
       return;
     }
-    preview_->show_text(leaf, truncated ? (subtitle + "  (Preview truncated)") : subtitle, text);
+	const QString preview_subtitle = truncated ? (subtitle + "  (Preview truncated)") : subtitle;
+	if (ext == "cfg") {
+		preview_->show_cfg_text(leaf, preview_subtitle, text);
+	} else {
+		preview_->show_text(leaf, preview_subtitle, text);
+	}
     return;
   }
 
