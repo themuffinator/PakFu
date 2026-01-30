@@ -17,7 +17,7 @@ This project is still training under the waterfall 💦🥋 (early development).
 - Run consistently on Windows/macOS/Linux 🧘‍♂️🌍
 - Understand and preview common PAK-adjacent file types 👁️‍🗨️📁
   - Images: `pcx`, `wal`, `png`, `tga`, `jpg` 🖼️🎨
-  - Audio: `wav`, `ogg` 🔊🎶
+  - Audio: `wav`, `ogg`, `mp3` 🔊🎶
   - Video: `cin`, `roq` 🎞️🍿
   - Text/config: `cfg` and similar plain-text formats 🧾🖋️
 - Stay responsive for large archives (no freezing in the middle of a roundhouse kick) 🥶➡️🥋

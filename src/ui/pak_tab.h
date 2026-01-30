@@ -85,6 +85,7 @@ private:
   void set_current_dir(const QStringList& parts);
   void refresh_listing();
   void update_preview();
+	void select_adjacent_audio(int delta);
 
   void setup_actions();
   void show_context_menu(QWidget* view, const QPoint& pos);
