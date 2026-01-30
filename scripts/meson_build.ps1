@@ -5,6 +5,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Find-Compiler {
+  param(
+    [string]$Name
+  )
+  $cmd = Get-Command $Name -ErrorAction SilentlyContinue
+  if ($cmd) { return $cmd.Source }
+  return $null
+}
+
 function Find-QMake {
   if ($env:QMAKE -and (Test-Path $env:QMAKE)) {
     return $env:QMAKE
@@ -51,16 +60,47 @@ if ($qmake) {
   Write-Host "qmake6 not found. Install Qt6 or set QMAKE/QT_DIR/Qt6_DIR." -ForegroundColor Yellow
 }
 
+$desiredCxx = $env:CXX
+$desiredCc = $env:CC
+if (-not $desiredCxx) { $desiredCxx = Find-Compiler "clang-cl" }
+if (-not $desiredCc) { $desiredCc = $desiredCxx }
+
+if ($desiredCxx) {
+  # Qt's MSVC builds require an MSVC-compatible toolchain (cl.exe or clang-cl.exe).
+  $env:CXX = $desiredCxx
+  if ($desiredCc) { $env:CC = $desiredCc }
+  Write-Host "Using CXX: $env:CXX"
+}
+
 $needsSetup = $false
+$wipe = $false
 if (!(Test-Path "$BuildDir/meson-info")) {
   $needsSetup = $true
 } elseif (!(Test-Path "$BuildDir/build.ninja")) {
   $needsSetup = $true
+} elseif ($desiredCxx -and (Test-Path "$BuildDir/meson-info/intro-compilers.json")) {
+  try {
+    $intro = Get-Content "$BuildDir/meson-info/intro-compilers.json" | ConvertFrom-Json
+    $configured = $intro.host.cpp.exelist[0]
+    $configuredName = [System.IO.Path]::GetFileName($configured)
+    $desiredName = [System.IO.Path]::GetFileName($desiredCxx)
+    if ($configuredName -ne $desiredName) {
+      Write-Host "Compiler changed ($configuredName -> $desiredName); regenerating build directory..." -ForegroundColor Yellow
+      $needsSetup = $true
+      $wipe = $true
+    }
+  } catch {
+    # If detection fails, keep going; Meson will report if setup is invalid.
+  }
 }
 
 if ($needsSetup) {
   if (Test-Path $BuildDir) {
-    & meson setup $BuildDir --backend $Backend --wipe
+    if ($wipe) {
+      & meson setup $BuildDir --backend $Backend --wipe
+    } else {
+      & meson setup $BuildDir --backend $Backend --wipe
+    }
   } else {
     & meson setup $BuildDir --backend $Backend
   }

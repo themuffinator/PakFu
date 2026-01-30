@@ -45,14 +45,14 @@ void MainWindow::setup_central() {
   start_layout->setContentsMargins(40, 40, 40, 40);
   start_layout->addStretch();
 
-  auto* title = new QLabel("Welcome to PakFu", start_page);
+  auto* title = new QLabel("PakFu Triage", start_page);
   title->setAlignment(Qt::AlignCenter);
   QFont title_font = title->font();
   title_font.setPointSize(title_font.pointSize() + 6);
   title->setFont(title_font);
   start_layout->addWidget(title);
 
-  auto* subtitle = new QLabel("Create a new PAK or load an existing archive.", start_page);
+  auto* subtitle = new QLabel("Choose what to do next.", start_page);
   subtitle->setAlignment(Qt::AlignCenter);
   start_layout->addWidget(subtitle);
 
@@ -100,6 +100,7 @@ void MainWindow::setup_central() {
   stack_->addWidget(content_page);
   stack_->setCurrentWidget(start_page);
   setCentralWidget(stack_);
+  setWindowTitle("PakFu - Triage");
 }
 
 void MainWindow::setup_menus() {

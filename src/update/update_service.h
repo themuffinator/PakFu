@@ -11,6 +11,7 @@
 class QNetworkAccessManager;
 class QNetworkReply;
 class QProgressDialog;
+class QTimer;
 class QWidget;
 
 struct UpdateInfo {
@@ -45,9 +46,11 @@ public:
   explicit UpdateService(QObject* parent = nullptr);
 
   void configure(const QString& github_repo, const QString& channel, const QString& current_version);
+  void set_dialogs_enabled(bool enabled);
   void check_for_updates(bool user_initiated, QWidget* parent = nullptr);
   UpdateCheckResult check_for_updates_sync();
   void show_update_prompt(const UpdateInfo& info, QWidget* parent, bool user_initiated);
+  void abort_checks();
 
 signals:
   void check_completed(const UpdateCheckResult& result);
@@ -78,13 +81,16 @@ private:
   bool user_initiated_ = false;
 
   QNetworkAccessManager* network_ = nullptr;
-  QNetworkReply* check_reply_ = nullptr;
-  QNetworkReply* download_reply_ = nullptr;
+  QPointer<QNetworkReply> check_reply_;
+  QPointer<QNetworkReply> download_reply_;
+  QPointer<QTimer> check_timeout_;
+  QString check_error_override_;
   QScopedPointer<QSaveFile> download_file_;
   QString download_path_;
   bool download_installable_ = false;
   QPointer<QProgressDialog> progress_dialog_;
   QPointer<QWidget> parent_window_;
+  bool dialogs_enabled_ = true;
 };
 
 Q_DECLARE_METATYPE(UpdateCheckResult)

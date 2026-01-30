@@ -2,13 +2,12 @@
 #include <QCoreApplication>
 #include <QFileInfo>
 #include <QPixmap>
-#include <QMessageBox>
-#include <QPushButton>
 #include <QPointer>
 #include <QScreen>
 #include <QSettings>
 #include <QTimer>
 #include <QTextStream>
+#include <QWidget>
 
 #include "cli/cli.h"
 #include "pakfu_config.h"
@@ -109,7 +108,12 @@ int main(int argc, char** argv) {
   MainWindow window(initial_pak, false);
 
   QPointer<SplashScreen> splash = show_splash(app);
+  if (splash) {
+    // Prevent the app from exiting when the splash is the only visible window.
+    app.setQuitOnLastWindowClosed(false);
+  }
   bool main_shown = false;
+  bool update_finished = false;
   QPointer<UpdateService> updater;
 
   auto finish_and_show = [&]() {
@@ -117,12 +121,15 @@ int main(int argc, char** argv) {
       return;
     }
     main_shown = true;
+    window.show();
+    window.raise();
+    window.activateWindow();
     if (splash) {
       splash->close();
       splash->deleteLater();
       splash = nullptr;
     }
-    window.show();
+    app.setQuitOnLastWindowClosed(true);
   };
 
   if (should_check_updates()) {
@@ -130,6 +137,10 @@ int main(int argc, char** argv) {
     updater->configure(PAKFU_GITHUB_REPO, PAKFU_UPDATE_CHANNEL, PAKFU_VERSION);
     QObject::connect(updater, &UpdateService::check_completed, &app,
                      [&, updater](const UpdateCheckResult& result) {
+                       if (update_finished) {
+                         return;
+                       }
+                       update_finished = true;
                        if (splash) {
                          switch (result.state) {
                            case UpdateCheckState::UpdateAvailable:
@@ -144,56 +155,24 @@ int main(int argc, char** argv) {
                            case UpdateCheckState::NotConfigured:
                              splash->setStatusText("Update source not configured.");
                              break;
-                           case UpdateCheckState::Error:
-                             splash->setStatusText("Update check failed.");
-                             break;
-                         }
+                         case UpdateCheckState::Error:
+                           splash->setStatusText("Update check failed.");
+                           break;
                        }
+                     }
                        QTimer::singleShot(0, &app, [&, result]() {
                          finish_and_show();
-                         if (!updater) {
-                           return;
-                         }
-                         if (result.state == UpdateCheckState::Error) {
-                           QMessageBox box(&window);
-                           box.setIcon(QMessageBox::Warning);
-                           box.setWindowTitle("Update Check Failed");
-                           box.setText(result.message.isEmpty()
-                                     ? "Unable to reach GitHub for update checks."
-                                     : result.message);
-                           QPushButton* retry = box.addButton("Retry", QMessageBox::AcceptRole);
-                           box.addButton("Ignore", QMessageBox::RejectRole);
-                           box.setDefaultButton(retry);
-                           box.exec();
-                           if (box.clickedButton() == retry) {
-                             updater->check_for_updates(true, &window);
-                             return;
-                           }
-                         } else if (result.state == UpdateCheckState::UpdateAvailable) {
-                           updater->show_update_prompt(result.info, &window, true);
-                         }
-                         updater->deleteLater();
+                         Q_UNUSED(result);
                        });
                      });
 
     QTimer::singleShot(100, &app, [&, updater]() {
       if (updater) {
-        updater->check_for_updates(false, splash);
+        QWidget* parent = splash ? static_cast<QWidget*>(splash.data()) : static_cast<QWidget*>(&window);
+        updater->check_for_updates(false, parent);
       }
     });
 
-    QTimer::singleShot(20000, &app, [&, updater]() {
-      if (main_shown) {
-        return;
-      }
-      if (splash) {
-        splash->setStatusText("Skipping update check...");
-      }
-      if (updater) {
-        updater->deleteLater();
-      }
-      finish_and_show();
-    });
   } else {
     finish_and_show();
   }
