@@ -1,12 +1,16 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QFileInfo>
+#include <QMenuBar>
 #include <QPixmap>
 #include <QPointer>
 #include <QScreen>
 #include <QSettings>
+#include <QTabBar>
+#include <QTabWidget>
 #include <QTimer>
 #include <QTextStream>
+#include <QToolButton>
 #include <QWidget>
 
 #include "cli/cli.h"
@@ -76,6 +80,73 @@ SplashScreen* show_splash(QApplication& app) {
   app.processEvents();
   return splash;
 }
+
+void run_tab_smoke_test(MainWindow& window) {
+  if (!qEnvironmentVariableIsSet("PAKFU_SMOKE_TABS")) {
+    return;
+  }
+
+  auto find_action = [&](const QString& text) -> QAction* {
+    const QList<QAction*> actions = window.findChildren<QAction*>();
+    for (QAction* a : actions) {
+      if (!a) {
+        continue;
+      }
+      if (a->text().replace("&", "") == text) {
+        return a;
+      }
+    }
+    return nullptr;
+  };
+
+  auto click_tab_close = [&](QTabWidget* tabs) {
+    if (!tabs) {
+      return;
+    }
+    QTabBar* bar = tabs->tabBar();
+    if (!bar) {
+      return;
+    }
+    const int idx = tabs->currentIndex();
+    if (idx < 0) {
+      return;
+    }
+    QWidget* btn = bar->tabButton(idx, QTabBar::RightSide);
+    if (!btn) {
+      return;
+    }
+    if (auto* tool = qobject_cast<QToolButton*>(btn)) {
+      tool->click();
+      return;
+    }
+    QMetaObject::invokeMethod(btn, "click", Qt::QueuedConnection);
+  };
+
+  QTimer::singleShot(250, &window, [&]() {
+    if (QAction* act = find_action("New PAK")) {
+      act->trigger();
+    }
+  });
+
+  QTimer::singleShot(600, &window, [&]() {
+    auto* tabs = qobject_cast<QTabWidget*>(window.centralWidget());
+    click_tab_close(tabs);
+  });
+
+  QTimer::singleShot(900, &window, [&]() {
+    auto* tabs = qobject_cast<QTabWidget*>(window.centralWidget());
+    if (!tabs) {
+      return;
+    }
+    if (tabs->count() > 0) {
+      tabs->setCurrentIndex(0);
+    }
+    click_tab_close(tabs);
+  });
+
+  // If we got this far without exploding, close cleanly.
+  QTimer::singleShot(1400, &window, [&]() { window.close(); });
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -132,6 +203,7 @@ int main(int argc, char** argv) {
       splash = nullptr;
     }
     app.setQuitOnLastWindowClosed(true);
+    run_tab_smoke_test(window);
   };
 
   if (should_check_updates()) {
