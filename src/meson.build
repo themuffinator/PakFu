@@ -14,6 +14,9 @@ sources = files(
   'cli/cli.cpp',
   'ui/splash_screen.cpp',
   'ui/main_window.cpp',
+  'ui/breadcrumb_bar.cpp',
+  'ui/pak_tab.cpp',
+  'pak/pak_archive.cpp',
   'update/update_service.cpp',
 )
 
@@ -25,6 +28,8 @@ moc_sources = qt6.preprocess(
   moc_headers: [
     'update/update_service.h',
     'ui/splash_screen.h',
+    'ui/breadcrumb_bar.h',
+    'ui/pak_tab.h',
   ],
 )
 sources += rcc_sources
