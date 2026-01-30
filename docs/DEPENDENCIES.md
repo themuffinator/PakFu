@@ -8,9 +8,10 @@
   - Gui
   - Network
   - Widgets
+  - Multimedia (audio playback: WAV/MP3/Ogg Vorbis, via platform codecs)
 
 ## Planned / Optional
-- Qt 6 Multimedia (audio/video playback, waveform preview)
+- Qt 6 Multimedia (video playback, waveform preview)
 - Custom format loaders for:
   - PCX, WAL, TGA (image)
   - CIN, ROQ (video)

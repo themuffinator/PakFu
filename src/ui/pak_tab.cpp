@@ -366,6 +366,18 @@ QString file_ext_lower(const QString& name) {
   return dot >= 0 ? lower.mid(dot + 1) : QString();
 }
 
+/*
+=============
+is_supported_audio_file
+
+Return true when a file name uses a supported audio extension.
+=============
+*/
+bool is_supported_audio_file(const QString& name) {
+	const QString ext = file_ext_lower(name);
+	return (ext == "wav" || ext == "ogg" || ext == "mp3");
+}
+
 bool is_text_file_name(const QString& name) {
   const QString ext = file_ext_lower(name);
   static const QSet<QString> kTextExts = {
@@ -729,6 +741,13 @@ bool PakTab::save_as(const QString& dest_path, QString* error) {
   return true;
 }
 
+/*
+=============
+PakTab::build_ui
+
+Construct the Pak tab user interface and wire up signals.
+=============
+*/
 void PakTab::build_ui() {
   auto* layout = new QVBoxLayout(this);
   layout->setContentsMargins(22, 18, 22, 18);
@@ -764,6 +783,8 @@ void PakTab::build_ui() {
   splitter_->addWidget(preview_);
   splitter_->setStretchFactor(0, 3);
   splitter_->setStretchFactor(1, 2);
+	connect(preview_, &PreviewPane::request_previous_audio, this, [this]() { select_adjacent_audio(-1); });
+	connect(preview_, &PreviewPane::request_next_audio, this, [this]() { select_adjacent_audio(1); });
 
   details_view_ = new PakTabDetailsView(this, view_stack_);
   details_view_->setHeaderLabels({"Name", "Size", "Modified"});
@@ -2885,6 +2906,87 @@ void PakTab::refresh_listing() {
   update_preview();
 }
 
+/*
+=============
+PakTab::select_adjacent_audio
+
+Select the previous or next audio entry in the active view.
+=============
+*/
+void PakTab::select_adjacent_audio(int delta) {
+	if (delta == 0) {
+		return;
+	}
+	if (view_stack_ && view_stack_->currentWidget() == details_view_ && details_view_) {
+		const QList<QTreeWidgetItem*> items = details_view_->selectedItems();
+		if (items.size() != 1) {
+			return;
+		}
+		QTreeWidgetItem* current = items.first();
+		QTreeWidgetItem* parent = current->parent();
+		const int count = parent ? parent->childCount() : details_view_->topLevelItemCount();
+		const int start = parent ? parent->indexOfChild(current) : details_view_->indexOfTopLevelItem(current);
+		for (int i = start + delta; i >= 0 && i < count; i += delta) {
+			QTreeWidgetItem* candidate = parent ? parent->child(i) : details_view_->topLevelItem(i);
+			if (!candidate) {
+				continue;
+			}
+			const bool is_dir = candidate->data(0, kRoleIsDir).toBool();
+			if (is_dir) {
+				continue;
+			}
+			const QString pak_path = candidate->data(0, kRolePakPath).toString();
+			const QString leaf = pak_leaf_name(pak_path);
+			if (!is_supported_audio_file(leaf)) {
+				continue;
+			}
+			details_view_->clearSelection();
+			candidate->setSelected(true);
+			details_view_->setCurrentItem(candidate);
+			details_view_->scrollToItem(candidate);
+			return;
+		}
+		return;
+	}
+	if (!icon_view_) {
+		return;
+	}
+	const QList<QListWidgetItem*> items = icon_view_->selectedItems();
+	if (items.size() != 1) {
+		return;
+	}
+	QListWidgetItem* current = items.first();
+	const int count = icon_view_->count();
+	const int start = icon_view_->row(current);
+	for (int i = start + delta; i >= 0 && i < count; i += delta) {
+		QListWidgetItem* candidate = icon_view_->item(i);
+		if (!candidate) {
+			continue;
+		}
+		const bool is_dir = candidate->data(kRoleIsDir).toBool();
+		if (is_dir) {
+			continue;
+		}
+		const QString pak_path = candidate->data(kRolePakPath).toString();
+		const QString leaf = pak_leaf_name(pak_path);
+		if (!is_supported_audio_file(leaf)) {
+			continue;
+		}
+		icon_view_->clearSelection();
+		candidate->setSelected(true);
+		icon_view_->setCurrentItem(candidate);
+		icon_view_->scrollToItem(candidate);
+		return;
+	}
+}
+
+/*
+=============
+PakTab::update_preview
+
+Update the preview pane based on the current selection.
+=============
+*/
 void PakTab::update_preview() {
   if (!preview_) {
     return;
@@ -2956,7 +3058,7 @@ void PakTab::update_preview() {
   }
 
   const QString ext = file_ext_lower(leaf);
-  const bool is_audio = (ext == "wav" || ext == "ogg" || ext == "mp3" || ext == "flac");
+  const bool is_audio = is_supported_audio_file(leaf);
   const bool is_video = (ext == "roq" || ext == "cin" || ext == "mp4" || ext == "mkv");
 
   QString source_path;
@@ -2981,10 +3083,22 @@ void PakTab::update_preview() {
     return;
   }
 
-  if (is_audio) {
-    preview_->show_message(leaf, "Audio preview is not implemented yet.");
-    return;
-  }
+	if (is_audio) {
+	QString audio_path = source_path;
+	if (audio_path.isEmpty()) {
+		QString err;
+		if (!export_path_to_temp(pak_path, false, &audio_path, &err)) {
+			preview_->show_message(leaf, err.isEmpty() ? "Unable to export audio for preview." : err);
+			return;
+		}
+	}
+	if (audio_path.isEmpty()) {
+		preview_->show_message(leaf, "Unable to export audio for preview.");
+		return;
+	}
+	preview_->show_audio_from_file(leaf, subtitle, audio_path);
+	return;
+	}
 
   if (is_video) {
     preview_->show_message(leaf, "Video preview is not implemented yet.");
