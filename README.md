@@ -1,65 +1,85 @@
-# PakFu
+# PakFu 🥋📦🔥
 
-PakFu is a modern, cross-platform PAK file manager written in C++ with a Qt6
-Widgets or QML user interface and a full command-line interface (CLI). It is
-designed for fast browsing, previewing, and managing classic game asset bundles
-while remaining intuitive for new users.
+Bow to your Sensei! 🙇‍♂️🙇‍♀️🧎‍➡️🧎‍➡️🧎‍➡️  
+PakFu is a modern, cross-platform PAK file manager forged in the dojo of **C++20** ⚔️ and the ancient arts of **Qt6** 🐉 (Widgets or QML). It exists to bring balance to chaotic archives: browse 🧭, preview 👀, extract 🧤, rebuild 🛠️, and automate 🧙‍♂️ via CLI.
 
-## Project Goals
-- Deliver a modern, intuitive UI using Qt6 Widgets or QML.
-- Provide a first-class CLI for scripting and automation.
-- Run consistently on Windows, macOS, and Linux.
-- Read and preview common PAK-adjacent asset types:
-  - Images: pcx, wal, png, tga, jpg
-  - Audio: wav, ogg
-  - Video: cin, roq
-  - Text/config: cfg and similar plain-text formats
-- Keep performance and stability high for large archives.
-- Maintain clean, well-documented C++ code with minimal platform-specific
-  branching.
+This project is still training under the waterfall 💦🥋 (early development). Expect rapid evolution, occasional shin bruises, and increasingly disciplined PAKs.
 
-## Non-Goals (for now)
-- In-app editing of complex binary formats beyond basic metadata.
-- Bundling game-specific proprietary tooling.
-- Relying on platform-exclusive UI features.
+## The Dojo Scroll (What This Is) 🧾🥢
+- **GUI**: Qt6 Widgets or QML 🪟✨
+- **CLI**: first-class, scriptable, and always respected 🧑‍💻⚡
+- **Targets**: Windows 🪟, macOS 🍎, Linux 🐧 (no platform favoritism in my dojo)
+- **Build**: Meson + Ninja 🥷🛠️
 
-## Product Rules
-- The UI must be Qt6 Widgets or QML (no alternate UI frameworks).
-- The app must be cross-platform and avoid OS-locked dependencies.
-- The CLI must remain a supported, documented entry point.
-- File format support should be additive and modular (plugins or modules).
-- All new features should include documentation updates.
+## The Way of PakFu (Project Goals) 🐲📜
+- Deliver a modern, intuitive UI that feels fast, clean, and confident 🧼⚡🧠
+- Provide a first-class CLI for automation, pipelines, and batch wizardry 🪄🧰
+- Run consistently on Windows/macOS/Linux 🧘‍♂️🌍
+- Understand and preview common PAK-adjacent file types 👁️‍🗨️📁
+  - Images: `pcx`, `wal`, `png`, `tga`, `jpg` 🖼️🎨
+  - Audio: `wav`, `ogg` 🔊🎶
+  - Video: `cin`, `roq` 🎞️🍿
+  - Text/config: `cfg` and similar plain-text formats 🧾🖋️
+- Stay responsive for large archives (no freezing in the middle of a roundhouse kick) 🥶➡️🥋
+- Keep C++ code clean, portable, and documented (minimal OS-specific sorcery) 🧠🧹🧾
 
-## Tech Stack Expectations
-- C++ (modern standard, prefer C++20).
-- Qt6 (Widgets or QML).
-- Meson + Ninja for builds.
+## The Forbidden Techniques (Non-Goals... for now) 🙅‍♂️⛔
+- Deep editing of complex proprietary binary formats 🧟‍♂️📦
+- Bundling game-specific proprietary tooling 🕳️🔒
+- Platform-exclusive UI tricks that break cross-platform harmony 🧨💥
 
-## Auto-Update
-PakFu checks GitHub Releases for updates. Configure the repository with
-`-Dgithub_repo=owner/name` when running Meson so the updater knows where to look.
-Release assets should include a platform-appropriate package. Installers are
-preferred, but archives are supported (they will be downloaded and opened for
-manual installation).
+## Sacred Rules of the Dojo (Product Rules) 📜🗿
+- UI must be **Qt6 Widgets or QML**. No alternate frameworks. Ever. 🛑🪟
+- Must remain cross-platform; avoid OS-locked dependencies 🧘‍♀️🌐
+- CLI remains supported and documented 🧾🧑‍💻
+- File format support must be modular and additive 🧩➕
+- Docs must evolve with behavior (a silent Sensei is a bad Sensei) 📣📚
 
-See `docs/RELEASES.md` for versioning and release automation details.
+## The Toolbelt (Tech Stack) 🧰🧲
+- C++ (modern, prefer C++20) ⚔️
+- Qt6 (Widgets/QML) 🐉
+- Meson + Ninja 🥷🛠️
 
-## Dependencies
-See `docs/DEPENDENCIES.md` for the current baseline and planned format loaders.
+## The Update Ritual (GitHub Releases) 🔄📦
+PakFu checks GitHub Releases for new scrolls (updates) 🧾✨. Configure the repo at Meson setup time so the updater knows which mountain to climb 🏔️🐙:
 
-## Build (Meson + Ninja)
+- `-Dgithub_repo=owner/name` 🧭
+- `-Dupdate_channel=stable|beta|dev` 🧪
+
+Release assets should include platform-appropriate packages 🎁 (installers preferred 🧰✅, archives supported 📦👌).
+
+See `docs/RELEASES.md` for versioning and release automation details 🧾🤖.
+
+## Dependencies Scroll 🧾🧪
+See `docs/DEPENDENCIES.md` for the current baseline and planned format loaders 📚🔍.
+
+## Build Ritual (Meson + Ninja) 🥷🛠️
+
+### Windows (recommended) 🪟🥋
+The dojo provides a helper script that finds Qt's `qmake6` and builds with Ninja:
+
+```pwsh
+pwsh -NoProfile -File scripts/meson_build.ps1
+```
+
+### Manual (all platforms) 🌍🧙‍♂️
+
 ```sh
 meson setup build --backend ninja -Dgithub_repo=owner/name -Dupdate_channel=stable
 meson compile -C build
 ```
 
-## Run (GUI or CLI)
+## Run (GUI or CLI) 🏃‍♂️💨
+
 ```sh
-./build/pakfu
-./build/pakfu --cli --help
-./build/pakfu --cli --check-updates
+./build/src/pakfu
+./build/src/pakfu --cli --help
+./build/src/pakfu --cli --check-updates
 ```
 
-## Repository Notes
-This repository is intentionally minimal right now. As implementation starts,
-keep the goals and rules above aligned with design and build choices.
+## License & Disclaimer ⚖️🧾
+- **License**: GPLv3 📜🐧
+- **Disclaimer**: Use at your own risk. No warranty. No mercy. 🥋⚠️😅
+
+## Final Bow 🙇‍♂️🙇‍♀️
+This repository is intentionally minimal right now. As features arrive, keep the dojo rules aligned with the design and build choices 🧘‍♂️📦✨.

@@ -20,7 +20,16 @@ public:
   QString path() const { return path_; }
   const QVector<PakEntry>& entries() const { return entries_; }
 
+  // Reads the bytes of an entry from the loaded PAK.
+  // If max_bytes >= 0, reading is limited to that many bytes.
+  bool read_entry_bytes(const QString& name, QByteArray* out, QString* error, qint64 max_bytes = -1) const;
+
+  // Extracts an entry to a file on disk (overwrites atomically).
+  bool extract_entry_to_file(const QString& name, const QString& dest_path, QString* error) const;
+
 private:
+  const PakEntry* find_entry(const QString& name) const;
+
   bool loaded_ = false;
   QString path_;
   qint64 file_size_ = 0;

@@ -13,6 +13,8 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPaintEvent>
+#include <QPainter>
 #include <QPushButton>
 #include <QRandomGenerator>
 #include <QSettings>
@@ -20,9 +22,11 @@
 #include <QTabBar>
 #include <QTimer>
 #include <QToolButton>
+#include <QUndoStack>
 #include <QVariant>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QStackedLayout>
 
 #include "pakfu_config.h"
 #include "ui/pak_tab.h"
@@ -30,6 +34,34 @@
 #include "update/update_service.h"
 
 namespace {
+class WelcomeBackdrop : public QWidget {
+public:
+  explicit WelcomeBackdrop(QWidget* parent = nullptr) : QWidget(parent) {
+    setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    setAttribute(Qt::WA_NoSystemBackground, true);
+    setAutoFillBackground(false);
+  }
+
+protected:
+  void paintEvent(QPaintEvent* event) override {
+    Q_UNUSED(event);
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+
+    QFont f = font();
+    f.setPixelSize(160);
+    f.setWeight(QFont::Black);
+    painter.setFont(f);
+
+    QColor c = palette().color(QPalette::Text);
+    c.setAlphaF(0.06);
+    painter.setPen(c);
+
+    painter.drawText(rect(), Qt::AlignCenter, QString::fromUtf8(u8"存档很强大"));
+  }
+};
+
 QToolButton* make_tab_close_button(QWidget* parent, const std::function<void()>& on_clicked) {
   auto* btn = new QToolButton(parent);
   btn->setText("x");
@@ -77,13 +109,24 @@ QWidget* build_welcome_tab(QWidget* parent,
                           const std::function<void()>& on_open,
                           const std::function<void()>& on_exit) {
   auto* root = new QWidget(parent);
-  auto* layout = new QVBoxLayout(root);
+
+  // Background decoration (kept non-interactive so it never steals clicks).
+  auto* stacked = new QStackedLayout(root);
+  stacked->setStackingMode(QStackedLayout::StackAll);
+  stacked->setContentsMargins(0, 0, 0, 0);
+
+  auto* backdrop = new WelcomeBackdrop(root);
+  stacked->addWidget(backdrop);
+
+  auto* content = new QWidget(root);
+  auto* layout = new QVBoxLayout(content);
   layout->setContentsMargins(44, 40, 44, 40);
   layout->setSpacing(18);
+  stacked->addWidget(content);
 
   layout->addStretch();
 
-  auto* title = new QLabel(random_welcome_message(), root);
+  auto* title = new QLabel(random_welcome_message(), content);
   title->setAlignment(Qt::AlignCenter);
   title->setWordWrap(true);
   QFont title_font = title->font();
@@ -92,7 +135,7 @@ QWidget* build_welcome_tab(QWidget* parent,
   title->setFont(title_font);
   layout->addWidget(title);
 
-  auto* subtitle = new QLabel("Create a new PAK, open an existing one, or exit.", root);
+  auto* subtitle = new QLabel("Create a new PAK, open an existing one, or exit.", content);
   subtitle->setAlignment(Qt::AlignCenter);
   subtitle->setWordWrap(true);
   layout->addWidget(subtitle);
@@ -100,9 +143,9 @@ QWidget* build_welcome_tab(QWidget* parent,
   auto* button_row = new QHBoxLayout();
   button_row->addStretch();
 
-  auto* create_button = new QPushButton("Create PAK", root);
-  auto* load_button = new QPushButton("Open PAK", root);
-  auto* close_button = new QPushButton("Close", root);
+  auto* create_button = new QPushButton("Create PAK", content);
+  auto* load_button = new QPushButton("Open PAK", content);
+  auto* close_button = new QPushButton("Close", content);
   create_button->setMinimumWidth(170);
   load_button->setMinimumWidth(170);
   close_button->setMinimumWidth(170);
@@ -210,6 +253,58 @@ void MainWindow::setup_menus() {
   connect(exit_action_, &QAction::triggered, this, &MainWindow::close);
 
   auto* edit_menu = menuBar()->addMenu("Edit");
+
+  undo_action_ = edit_menu->addAction("Undo");
+  undo_action_->setShortcut(QKeySequence::Undo);
+  connect(undo_action_, &QAction::triggered, this, [this]() {
+    if (PakTab* tab = current_pak_tab()) {
+      tab->undo();
+    }
+  });
+
+  redo_action_ = edit_menu->addAction("Redo");
+  redo_action_->setShortcut(QKeySequence::Redo);
+  connect(redo_action_, &QAction::triggered, this, [this]() {
+    if (PakTab* tab = current_pak_tab()) {
+      tab->redo();
+    }
+  });
+
+  edit_menu->addSeparator();
+
+  cut_action_ = edit_menu->addAction("Cut");
+  cut_action_->setShortcut(QKeySequence::Cut);
+  connect(cut_action_, &QAction::triggered, this, [this]() {
+    if (PakTab* tab = current_pak_tab()) {
+      tab->cut();
+    }
+  });
+
+  copy_action_ = edit_menu->addAction("Copy");
+  copy_action_->setShortcut(QKeySequence::Copy);
+  connect(copy_action_, &QAction::triggered, this, [this]() {
+    if (PakTab* tab = current_pak_tab()) {
+      tab->copy();
+    }
+  });
+
+  paste_action_ = edit_menu->addAction("Paste");
+  paste_action_->setShortcut(QKeySequence::Paste);
+  connect(paste_action_, &QAction::triggered, this, [this]() {
+    if (PakTab* tab = current_pak_tab()) {
+      tab->paste();
+    }
+  });
+
+  rename_action_ = edit_menu->addAction("Rename");
+  rename_action_->setShortcut(QKeySequence(Qt::Key_F2));
+  connect(rename_action_, &QAction::triggered, this, [this]() {
+    if (PakTab* tab = current_pak_tab()) {
+      tab->rename();
+    }
+  });
+
+  edit_menu->addSeparator();
   preferences_action_ = edit_menu->addAction("Preferences...");
   preferences_action_->setShortcut(QKeySequence::Preferences);
   connect(preferences_action_, &QAction::triggered, this, &MainWindow::open_preferences);
@@ -352,6 +447,10 @@ int MainWindow::add_tab(const QString& title, QWidget* tab) {
       update_action_states();
       update_window_title();
     });
+    if (QUndoStack* stack = pak_tab->undo_stack()) {
+      connect(stack, &QUndoStack::canUndoChanged, this, [this](bool) { update_action_states(); });
+      connect(stack, &QUndoStack::canRedoChanged, this, [this](bool) { update_action_states(); });
+    }
     update_tab_label(pak_tab);
   }
   return index;
@@ -374,6 +473,27 @@ void MainWindow::update_action_states() {
   }
   if (save_as_action_) {
     save_as_action_->setEnabled(has_pak && loaded);
+  }
+
+  if (undo_action_) {
+    const QUndoStack* stack = pak_tab ? pak_tab->undo_stack() : nullptr;
+    undo_action_->setEnabled(has_pak && loaded && stack && stack->canUndo());
+  }
+  if (redo_action_) {
+    const QUndoStack* stack = pak_tab ? pak_tab->undo_stack() : nullptr;
+    redo_action_->setEnabled(has_pak && loaded && stack && stack->canRedo());
+  }
+  if (cut_action_) {
+    cut_action_->setEnabled(has_pak && loaded);
+  }
+  if (copy_action_) {
+    copy_action_->setEnabled(has_pak && loaded);
+  }
+  if (paste_action_) {
+    paste_action_->setEnabled(has_pak && loaded);
+  }
+  if (rename_action_) {
+    rename_action_->setEnabled(has_pak && loaded);
   }
 }
 

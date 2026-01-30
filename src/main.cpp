@@ -139,32 +139,39 @@ int main(int argc, char** argv) {
     updater->configure(PAKFU_GITHUB_REPO, PAKFU_UPDATE_CHANNEL, PAKFU_VERSION);
     QObject::connect(updater, &UpdateService::check_completed, &app,
                      [&, updater](const UpdateCheckResult& result) {
+                       Q_UNUSED(updater);
                        if (update_finished) {
                          return;
                        }
                        update_finished = true;
+
                        if (splash) {
+                         QString status;
                          switch (result.state) {
                            case UpdateCheckState::UpdateAvailable:
-                             splash->setStatusText("Update available.");
+                             status = result.info.version.isEmpty()
+                                        ? "Update available."
+                                        : QString("Update available: %1").arg(result.info.version);
                              break;
                            case UpdateCheckState::UpToDate:
-                             splash->setStatusText("You are up to date.");
+                             status = "You are up to date.";
                              break;
                            case UpdateCheckState::NoRelease:
-                             splash->setStatusText("No releases found.");
+                             status = "No releases found.";
                              break;
                            case UpdateCheckState::NotConfigured:
-                             splash->setStatusText("Update source not configured.");
+                             status = "Update source not configured.";
                              break;
-                         case UpdateCheckState::Error:
-                           splash->setStatusText("Update check failed.");
-                           break;
+                           case UpdateCheckState::Error:
+                             status = result.message.isEmpty() ? "Update check failed." : result.message;
+                             break;
+                         }
+                         splash->setStatusText(status);
                        }
-                     }
+
                        QTimer::singleShot(0, &app, [&, result]() {
-                         finish_and_show();
                          Q_UNUSED(result);
+                         finish_and_show();
                        });
                      });
 

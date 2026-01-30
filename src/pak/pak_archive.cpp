@@ -72,6 +72,20 @@ bool is_safe_entry_name(const QString& name) {
   }
   return true;
 }
+
+QString normalize_lookup_name(QString name) {
+  name = name.trimmed();
+  name.replace('\\', '/');
+  while (name.startsWith('/')) {
+    name.remove(0, 1);
+  }
+  name = QDir::cleanPath(name);
+  name.replace('\\', '/');
+  if (name == ".") {
+    name.clear();
+  }
+  return name;
+}
 }  // namespace
 
 bool PakArchive::load(const QString& path, QString* error) {
@@ -191,6 +205,179 @@ bool PakArchive::load(const QString& path, QString* error) {
 
   loaded_ = true;
   path_ = QFileInfo(path).absoluteFilePath();
+  return true;
+}
+
+const PakEntry* PakArchive::find_entry(const QString& name) const {
+  if (!loaded_) {
+    return nullptr;
+  }
+  const QString needle = normalize_lookup_name(name);
+  if (needle.isEmpty()) {
+    return nullptr;
+  }
+  for (const PakEntry& e : entries_) {
+    if (e.name == needle) {
+      return &e;
+    }
+  }
+  return nullptr;
+}
+
+bool PakArchive::read_entry_bytes(const QString& name,
+                                 QByteArray* out,
+                                 QString* error,
+                                 qint64 max_bytes) const {
+  if (out) {
+    out->clear();
+  }
+  if (!loaded_ || path_.isEmpty()) {
+    if (error) {
+      *error = "No PAK is loaded.";
+    }
+    return false;
+  }
+
+  const PakEntry* entry = find_entry(name);
+  if (!entry) {
+    if (error) {
+      *error = QString("Entry not found: %1").arg(name);
+    }
+    return false;
+  }
+
+  QFile file(path_);
+  if (!file.open(QIODevice::ReadOnly)) {
+    if (error) {
+      *error = "Unable to open PAK for reading.";
+    }
+    return false;
+  }
+
+  const qint64 end = static_cast<qint64>(entry->offset) + static_cast<qint64>(entry->size);
+  const qint64 file_size = file.size();
+  if (end < 0 || end > file_size) {
+    if (error) {
+      *error = QString("PAK entry is out of bounds: %1").arg(entry->name);
+    }
+    return false;
+  }
+
+  qint64 to_read = entry->size;
+  if (max_bytes >= 0 && to_read > max_bytes) {
+    to_read = max_bytes;
+  }
+
+  if (!file.seek(static_cast<qint64>(entry->offset))) {
+    if (error) {
+      *error = QString("Unable to seek entry: %1").arg(entry->name);
+    }
+    return false;
+  }
+
+  QByteArray bytes = file.read(to_read);
+  if (bytes.size() != to_read) {
+    if (error) {
+      *error = QString("Unable to read entry: %1").arg(entry->name);
+    }
+    return false;
+  }
+
+  if (out) {
+    *out = std::move(bytes);
+  }
+  return true;
+}
+
+bool PakArchive::extract_entry_to_file(const QString& name, const QString& dest_path, QString* error) const {
+  if (!loaded_ || path_.isEmpty()) {
+    if (error) {
+      *error = "No PAK is loaded.";
+    }
+    return false;
+  }
+
+  const PakEntry* entry = find_entry(name);
+  if (!entry) {
+    if (error) {
+      *error = QString("Entry not found: %1").arg(name);
+    }
+    return false;
+  }
+
+  const QFileInfo out_info(dest_path);
+  if (!out_info.dir().exists()) {
+    QDir d(out_info.dir().absolutePath());
+    if (!d.mkpath(".")) {
+      if (error) {
+        *error = QString("Unable to create output directory: %1").arg(out_info.dir().absolutePath());
+      }
+      return false;
+    }
+  }
+
+  QFile src(path_);
+  if (!src.open(QIODevice::ReadOnly)) {
+    if (error) {
+      *error = "Unable to open source PAK for reading.";
+    }
+    return false;
+  }
+
+  const qint64 src_size = src.size();
+  const qint64 end = static_cast<qint64>(entry->offset) + static_cast<qint64>(entry->size);
+  if (end < 0 || end > src_size) {
+    if (error) {
+      *error = QString("PAK entry is out of bounds: %1").arg(entry->name);
+    }
+    return false;
+  }
+
+  if (!src.seek(static_cast<qint64>(entry->offset))) {
+    if (error) {
+      *error = QString("Unable to seek source entry: %1").arg(entry->name);
+    }
+    return false;
+  }
+
+  QSaveFile out(dest_path);
+  if (!out.open(QIODevice::WriteOnly)) {
+    if (error) {
+      *error = QString("Unable to create output file: %1").arg(dest_path);
+    }
+    return false;
+  }
+
+  constexpr qint64 kChunk = 1 << 16;
+  QByteArray buffer;
+  buffer.resize(static_cast<int>(kChunk));
+
+  quint32 remaining = entry->size;
+  while (remaining > 0) {
+    const int want = static_cast<int>(std::min<quint32>(remaining, static_cast<quint32>(buffer.size())));
+    const qint64 got = src.read(buffer.data(), want);
+    if (got <= 0) {
+      if (error) {
+        *error = QString("Unable to read source entry: %1").arg(entry->name);
+      }
+      return false;
+    }
+    if (out.write(buffer.constData(), got) != got) {
+      if (error) {
+        *error = QString("Unable to write output file: %1").arg(dest_path);
+      }
+      return false;
+    }
+    remaining -= static_cast<quint32>(got);
+  }
+
+  if (!out.commit()) {
+    if (error) {
+      *error = QString("Unable to finalize output file: %1").arg(dest_path);
+    }
+    return false;
+  }
+
   return true;
 }
 

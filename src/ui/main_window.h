@@ -9,6 +9,7 @@ class QCloseEvent;
 
 class UpdateService;
 class PakTab;
+class QUndoStack;
 
 class MainWindow : public QMainWindow {
 public:
@@ -49,6 +50,12 @@ private:
   QAction* open_action_ = nullptr;
   QAction* save_action_ = nullptr;
   QAction* save_as_action_ = nullptr;
+  QAction* undo_action_ = nullptr;
+  QAction* redo_action_ = nullptr;
+  QAction* cut_action_ = nullptr;
+  QAction* copy_action_ = nullptr;
+  QAction* paste_action_ = nullptr;
+  QAction* rename_action_ = nullptr;
   QAction* preferences_action_ = nullptr;
   QAction* exit_action_ = nullptr;
   bool schedule_updates_ = true;

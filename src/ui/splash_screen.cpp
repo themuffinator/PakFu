@@ -56,7 +56,7 @@ SplashScreen::SplashScreen(const QPixmap& logo, QWidget* parent)
   info_box_->setMaximumWidth(static_cast<int>(width() * 0.92));
   info_box_->setStyleSheet(
     "#splashInfoBox {"
-    "  background-color: rgba(0, 0, 0, 200);"
+    "  background-color: rgba(0, 0, 0, 255);"
     "  border: 1px solid rgba(160, 160, 160, 180);"
     "  border-radius: 12px;"
     "}");

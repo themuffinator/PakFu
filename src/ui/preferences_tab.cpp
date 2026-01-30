@@ -3,9 +3,13 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QFrame>
+#include <QHBoxLayout>
 #include <QLabel>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QVBoxLayout>
 
+#include "platform/file_associations.h"
 #include "ui/theme_manager.h"
 
 namespace {
@@ -102,10 +106,49 @@ void PreferencesTab::build_ui() {
 
   card_layout->addStretch();
   layout->addWidget(card);
+
+  auto* assoc_card = new QFrame(this);
+  assoc_card->setFrameShape(QFrame::StyledPanel);
+  assoc_card->setFrameShadow(QFrame::Plain);
+  auto* assoc_layout = new QVBoxLayout(assoc_card);
+  assoc_layout->setContentsMargins(18, 18, 18, 18);
+  assoc_layout->setSpacing(10);
+
+  auto* assoc_label = new QLabel("File Associations", assoc_card);
+  assoc_label->setFont(label_font);
+  assoc_layout->addWidget(assoc_label);
+
+  auto* assoc_help = new QLabel(
+    "Associate .pak files with PakFu so double-clicking a PAK opens it here.",
+    assoc_card);
+  assoc_help->setWordWrap(true);
+  assoc_layout->addWidget(assoc_help);
+
+  assoc_status_ = new QLabel(assoc_card);
+  assoc_status_->setWordWrap(true);
+  assoc_status_->setStyleSheet("color: rgba(200, 200, 200, 210);");
+  assoc_layout->addWidget(assoc_status_);
+
+  auto* btn_row = new QHBoxLayout();
+  assoc_apply_ = new QPushButton("Associate .pak with PakFu", assoc_card);
+  assoc_details_ = new QPushButton("Details...", assoc_card);
+  btn_row->addWidget(assoc_apply_);
+  btn_row->addSpacing(10);
+  btn_row->addWidget(assoc_details_);
+  btn_row->addStretch();
+  assoc_layout->addLayout(btn_row);
+
+  layout->addWidget(assoc_card);
   layout->addStretch();
 
   connect(theme_combo_, &QComboBox::currentIndexChanged, this, [this](int) {
     apply_theme_from_combo();
+  });
+  connect(assoc_apply_, &QPushButton::clicked, this, &PreferencesTab::apply_association);
+  connect(assoc_details_, &QPushButton::clicked, this, [this]() {
+    QString details;
+    FileAssociations::is_pak_registered(&details);
+    QMessageBox::information(this, "PakFu File Associations", details);
   });
 }
 
@@ -117,6 +160,8 @@ void PreferencesTab::load_settings() {
   theme_combo_->blockSignals(true);
   theme_combo_->setCurrentIndex(index_for_theme(theme));
   theme_combo_->blockSignals(false);
+
+  refresh_association_status();
 }
 
 void PreferencesTab::apply_theme_from_combo() {
@@ -129,4 +174,30 @@ void PreferencesTab::apply_theme_from_combo() {
     ThemeManager::apply_theme(*app, theme);
   }
   emit theme_changed(theme);
+}
+
+void PreferencesTab::refresh_association_status() {
+  if (!assoc_status_) {
+    return;
+  }
+  QString details;
+  const bool ok = FileAssociations::is_pak_registered(&details);
+  assoc_status_->setText(ok ? "Status: PakFu is registered for .pak files."
+                            : "Status: PakFu is not registered for .pak files.");
+}
+
+void PreferencesTab::apply_association() {
+  QString err;
+  if (!FileAssociations::apply_pak_registration(&err)) {
+    QMessageBox::warning(this, "PakFu File Associations", err.isEmpty() ? "Unable to apply file association." : err);
+    refresh_association_status();
+    return;
+  }
+
+  QMessageBox::information(
+    this,
+    "PakFu File Associations",
+    "PakFu has been registered as a handler for .pak files.\n\n"
+    "On modern Windows, you may still need to choose PakFu in Settings -> Default apps.");
+  refresh_association_status();
 }

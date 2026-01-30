@@ -17,7 +17,9 @@ sources = files(
   'ui/preferences_tab.cpp',
   'ui/theme_manager.cpp',
   'ui/breadcrumb_bar.cpp',
+  'ui/preview_pane.cpp',
   'ui/pak_tab.cpp',
+  'platform/file_associations.cpp',
   'pak/pak_archive.cpp',
   'update/update_service.cpp',
 )
@@ -31,6 +33,7 @@ moc_sources = qt6.preprocess(
     'update/update_service.h',
     'ui/splash_screen.h',
     'ui/breadcrumb_bar.h',
+    'ui/preview_pane.h',
     'ui/pak_tab.h',
     'ui/preferences_tab.h',
   ],
