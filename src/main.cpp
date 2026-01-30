@@ -14,6 +14,7 @@
 #include "update/update_service.h"
 #include "ui/main_window.h"
 #include "ui/splash_screen.h"
+#include "ui/theme_manager.h"
 
 namespace {
 void set_app_metadata(QCoreApplication& app) {
@@ -103,6 +104,7 @@ int main(int argc, char** argv) {
 
   QApplication app(argc, argv);
   set_app_metadata(app);
+  ThemeManager::apply_saved_theme(app);
 
   const QString initial_pak = find_initial_pak(argc, argv);
   MainWindow window(initial_pak, false);

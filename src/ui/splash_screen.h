@@ -5,6 +5,7 @@
 class QLabel;
 class SpinnerWidget;
 class QTimer;
+class QFrame;
 
 class SplashScreen : public QWidget {
   Q_OBJECT
@@ -21,6 +22,7 @@ private:
   void on_tick();
 
   QPixmap logo_;
+  QFrame* info_box_ = nullptr;
   QLabel* status_label_ = nullptr;
   QLabel* version_label_ = nullptr;
   SpinnerWidget* spinner_ = nullptr;
