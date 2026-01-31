@@ -1,6 +1,7 @@
 #include "preview_pane.h"
 
 #include <QAudioOutput>
+#include <QColorDialog>
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QFrame>
@@ -10,8 +11,11 @@
 #include <QMediaMetaData>
 #include <QMediaPlayer>
 #include <QPalette>
+#include <QIcon>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSettings>
+#include <QPainter>
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QSlider>
@@ -20,6 +24,9 @@
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
+
+#include "formats/image_loader.h"
+#include "ui/cfg_syntax_highlighter.h"
 
 namespace {
 /*
@@ -101,6 +108,8 @@ PreviewPane::PreviewPane(QWidget* parent) : QWidget(parent) {
 	show_placeholder();
 }
 
+PreviewPane::~PreviewPane() = default;
+
 /*
 =============
 PreviewPane::resizeEvent
@@ -110,8 +119,8 @@ Reflow the current preview when the pane size changes.
 */
 void PreviewPane::resizeEvent(QResizeEvent* event) {
 	QWidget::resizeEvent(event);
-	if (stack_ && stack_->currentWidget() == image_page_ && !original_pixmap_.isNull()) {
-		set_image_pixmap(original_pixmap_);
+	if (stack_ && stack_->currentWidget() == image_page_ && !image_source_pixmap_.isNull()) {
+		set_image_pixmap(image_source_pixmap_);
 	}
 }
 
@@ -186,12 +195,40 @@ void PreviewPane::build_ui() {
 	image_page_ = new QWidget(stack_);
 	auto* img_layout = new QVBoxLayout(image_page_);
 	img_layout->setContentsMargins(0, 0, 0, 0);
+
+	auto* img_controls = new QWidget(image_page_);
+	auto* img_controls_layout = new QHBoxLayout(img_controls);
+	img_controls_layout->setContentsMargins(6, 4, 6, 4);
+	img_controls_layout->setSpacing(8);
+
+	auto* bg_label = new QLabel("Transparency", img_controls);
+	bg_label->setStyleSheet("color: rgba(190, 190, 190, 220);");
+	img_controls_layout->addWidget(bg_label);
+
+	image_checkerboard_button_ = new QToolButton(img_controls);
+	image_checkerboard_button_->setText("Checkerboard");
+	image_checkerboard_button_->setCheckable(true);
+	image_checkerboard_button_->setToolTip("Toggle checkerboard background behind transparent pixels.");
+	img_controls_layout->addWidget(image_checkerboard_button_);
+
+	image_bg_color_button_ = new QToolButton(img_controls);
+	image_bg_color_button_->setText("Color…");
+	image_bg_color_button_->setToolTip("Choose background color behind transparent pixels.");
+	img_controls_layout->addWidget(image_bg_color_button_);
+
+	img_controls_layout->addStretch();
+	img_layout->addWidget(img_controls, 0);
+
 	image_scroll_ = new QScrollArea(image_page_);
 	image_scroll_->setWidgetResizable(true);
 	image_scroll_->setFrameShape(QFrame::NoFrame);
+	if (QWidget* vp = image_scroll_->viewport()) {
+		vp->setAutoFillBackground(true);
+	}
 	image_label_ = new QLabel(image_scroll_);
 	image_label_->setAlignment(Qt::AlignCenter);
 	image_label_->setScaledContents(false);
+	image_label_->setStyleSheet("background: transparent;");
 	image_scroll_->setWidget(image_label_);
 	img_layout->addWidget(image_scroll_);
 	stack_->addWidget(image_page_);
@@ -308,6 +345,52 @@ void PreviewPane::build_ui() {
 		}
 	});
 	stack_->addWidget(audio_page_);
+
+	QSettings settings;
+	image_bg_checkerboard_ = settings.value("preview/image/checkerboard", true).toBool();
+
+	{
+		QVariant bg = settings.value("preview/image/backgroundColor");
+		QColor c;
+		if (bg.canConvert<QColor>()) {
+			c = bg.value<QColor>();
+		} else {
+			c = QColor(bg.toString());
+		}
+
+		if (!c.isValid()) {
+			const QColor base = palette().color(QPalette::Window);
+			c = (base.lightness() < 128) ? QColor(64, 64, 64) : QColor(224, 224, 224);
+		}
+		image_bg_color_ = c;
+	}
+
+	if (image_checkerboard_button_) {
+		image_checkerboard_button_->setChecked(image_bg_checkerboard_);
+		connect(image_checkerboard_button_, &QToolButton::toggled, this, [this](bool checked) {
+			image_bg_checkerboard_ = checked;
+			QSettings s;
+			s.setValue("preview/image/checkerboard", image_bg_checkerboard_);
+			apply_image_background();
+		});
+	}
+
+	if (image_bg_color_button_) {
+		update_image_bg_button();
+		connect(image_bg_color_button_, &QToolButton::clicked, this, [this]() {
+			const QColor chosen = QColorDialog::getColor(image_bg_color_, this, "Choose Transparency Background");
+			if (!chosen.isValid()) {
+				return;
+			}
+			image_bg_color_ = chosen;
+			QSettings s;
+			s.setValue("preview/image/backgroundColor", image_bg_color_);
+			update_image_bg_button();
+			apply_image_background();
+		});
+	}
+
+	apply_image_background();
 }
 
 /*
@@ -369,6 +452,19 @@ Show a plain-text preview panel.
 */
 void PreviewPane::show_text(const QString& title, const QString& subtitle, const QString& text) {
 	stop_audio_playback();
+	clear_text_highlighter();
+	set_header(title, subtitle);
+	if (text_view_) {
+		text_view_->setPlainText(text);
+	}
+	if (stack_ && text_page_) {
+		stack_->setCurrentWidget(text_page_);
+	}
+}
+
+void PreviewPane::show_cfg(const QString& title, const QString& subtitle, const QString& text) {
+	stop_audio_playback();
+	ensure_cfg_highlighter();
 	set_header(title, subtitle);
 	if (text_view_) {
 		text_view_->setPlainText(text);
@@ -390,6 +486,7 @@ void PreviewPane::show_binary(const QString& title,
 								const QByteArray& bytes,
 								bool truncated) {
 	stop_audio_playback();
+	clear_text_highlighter();
 	QString sub = subtitle;
 	if (truncated) {
 		sub = sub.isEmpty() ? "Preview truncated." : (sub + "  (Preview truncated)");
@@ -403,6 +500,20 @@ void PreviewPane::show_binary(const QString& title,
 	}
 }
 
+void PreviewPane::clear_text_highlighter() {
+	cfg_highlighter_.reset();
+}
+
+void PreviewPane::ensure_cfg_highlighter() {
+	if (!text_view_) {
+		return;
+	}
+	if (cfg_highlighter_) {
+		return;
+	}
+	cfg_highlighter_ = std::make_unique<CfgSyntaxHighlighter>(text_view_->document());
+}
+
 /*
 =============
 PreviewPane::set_image_pixmap
@@ -414,7 +525,7 @@ void PreviewPane::set_image_pixmap(const QPixmap& pixmap) {
 	if (!image_label_) {
 		return;
 	}
-	original_pixmap_ = pixmap;
+	image_source_pixmap_ = pixmap;
 	if (pixmap.isNull()) {
 		image_label_->setPixmap(QPixmap());
 		return;
@@ -430,6 +541,57 @@ void PreviewPane::set_image_pixmap(const QPixmap& pixmap) {
 	}
 }
 
+void PreviewPane::set_image_qimage(const QImage& image) {
+	image_original_ = image;
+	set_image_pixmap(image_original_.isNull() ? QPixmap() : QPixmap::fromImage(image_original_));
+}
+
+void PreviewPane::apply_image_background() {
+	if (!image_scroll_) {
+		return;
+	}
+	QWidget* vp = image_scroll_->viewport();
+	if (!vp) {
+		return;
+	}
+
+	QPalette pal = vp->palette();
+	if (!image_bg_checkerboard_) {
+		pal.setColor(QPalette::Window, image_bg_color_);
+	} else {
+		const int square = 14;
+		QColor a = image_bg_color_.lighter(120);
+		QColor b = image_bg_color_.darker(120);
+		if (!a.isValid()) {
+			a = QColor(160, 160, 160);
+		}
+		if (!b.isValid()) {
+			b = QColor(96, 96, 96);
+		}
+
+		QPixmap pattern(square * 2, square * 2);
+		pattern.fill(a);
+		{
+			QPainter p(&pattern);
+			p.fillRect(0, 0, square, square, b);
+			p.fillRect(square, square, square, square, b);
+		}
+		pal.setBrush(QPalette::Window, QBrush(pattern));
+	}
+	vp->setPalette(pal);
+	vp->update();
+}
+
+void PreviewPane::update_image_bg_button() {
+	if (!image_bg_color_button_) {
+		return;
+	}
+	QPixmap swatch(14, 14);
+	swatch.fill(image_bg_color_);
+	image_bg_color_button_->setIcon(QIcon(swatch));
+	image_bg_color_button_->setToolTip(QString("Choose background color behind transparent pixels.\nCurrent: %1").arg(image_bg_color_.name(QColor::HexArgb)));
+}
+
 /*
 =============
 PreviewPane::show_image_from_bytes
@@ -442,13 +604,12 @@ void PreviewPane::show_image_from_bytes(const QString& title,
 									   const QByteArray& bytes) {
 	stop_audio_playback();
 	set_header(title, subtitle);
-	QPixmap pixmap;
-	pixmap.loadFromData(bytes);
-	if (pixmap.isNull()) {
-		show_message(title, "Unable to decode this image format.");
+	const ImageDecodeResult decoded = decode_image_bytes(bytes, title);
+	if (!decoded.ok()) {
+		show_message(title, decoded.error.isEmpty() ? "Unable to decode this image format." : decoded.error);
 		return;
 	}
-	set_image_pixmap(pixmap);
+	set_image_qimage(decoded.image);
 	if (stack_ && image_page_) {
 		stack_->setCurrentWidget(image_page_);
 	}
@@ -466,12 +627,12 @@ void PreviewPane::show_image_from_file(const QString& title,
 								  const QString& file_path) {
 	stop_audio_playback();
 	set_header(title, subtitle);
-	QPixmap pixmap(file_path);
-	if (pixmap.isNull()) {
-		show_message(title, "Unable to load this image file.");
+	const ImageDecodeResult decoded = decode_image_file(file_path);
+	if (!decoded.ok()) {
+		show_message(title, decoded.error.isEmpty() ? "Unable to load this image file." : decoded.error);
 		return;
 	}
-	set_image_pixmap(pixmap);
+	set_image_qimage(decoded.image);
 	if (stack_ && image_page_) {
 		stack_->setCurrentWidget(image_page_);
 	}

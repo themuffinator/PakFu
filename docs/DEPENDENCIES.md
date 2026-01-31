@@ -13,8 +13,13 @@
 ## Planned / Optional
 - Qt 6 Multimedia (video playback, waveform preview)
 - Custom format loaders for:
-  - PCX, WAL, TGA (image)
+  - PCX, WAL (image)
   - CIN, ROQ (video)
   - OGG (if not handled by Qt Multimedia on a platform)
 - Third-party decoding libraries as needed, scoped to formats that Qt does not
   cover on all platforms
+
+## Implemented
+- Image loaders:
+  - PNG, JPEG: Qt 6 (QtGui)
+  - TGA: built-in decoder (uncompressed + RLE; true-color, grayscale, color-mapped)

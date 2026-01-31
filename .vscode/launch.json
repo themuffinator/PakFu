@@ -8,20 +8,17 @@
       "program": "${workspaceFolder}\\build\\src\\pakfu.exe",
       "args": [],
       "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Meson: build",
       "stopAtEntry": false,
       "console": "internalConsole",
       "environment": [
         {
-          "name": "PATH",
-          "value": "C:\\\\Qt\\\\6.10.1\\\\msvc2022_64\\\\bin;${env:PATH}"
-        },
-        {
           "name": "QT_PLUGIN_PATH",
-          "value": "C:\\\\Qt\\\\6.10.1\\\\msvc2022_64\\\\plugins"
+          "value": "${workspaceFolder}\\\\build\\\\src"
         },
         {
           "name": "QT_QPA_PLATFORM_PLUGIN_PATH",
-          "value": "C:\\\\Qt\\\\6.10.1\\\\msvc2022_64\\\\plugins\\\\platforms"
+          "value": "${workspaceFolder}\\\\build\\\\src\\\\platforms"
         }
       ]
     },

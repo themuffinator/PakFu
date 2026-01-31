@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QCoreApplication>
+#include <QDir>
 #include <QFileInfo>
 #include <QMenuBar>
 #include <QPixmap>
@@ -26,6 +27,61 @@ void set_app_metadata(QCoreApplication& app) {
   app.setOrganizationName("PakFu");
   app.setApplicationVersion(PAKFU_VERSION);
 }
+
+#ifdef Q_OS_WIN
+QString resolve_executable_dir(int argc, char** argv) {
+  if (!argv || argc <= 0 || !argv[0]) {
+    return {};
+  }
+
+  const QString arg0 = QString::fromLocal8Bit(argv[0]);
+  if (arg0.isEmpty()) {
+    return {};
+  }
+
+  QFileInfo info(arg0);
+  if (info.isRelative()) {
+    info = QFileInfo(QDir::current().absoluteFilePath(arg0));
+  }
+  if (!info.exists()) {
+    return {};
+  }
+  return info.absolutePath();
+}
+
+void configure_qt_plugin_paths_for_local_deploy(const QString& exe_dir) {
+  if (exe_dir.isEmpty()) {
+    return;
+  }
+
+  const QString platforms_dir = QDir(exe_dir).filePath("platforms");
+  const bool has_local_platforms = QFileInfo::exists(platforms_dir);
+
+  const auto unset_if_missing = [](const char* name) {
+    if (!qEnvironmentVariableIsSet(name)) {
+      return;
+    }
+    const QString value = qEnvironmentVariable(name);
+    if (value.isEmpty()) {
+      return;
+    }
+    if (!QFileInfo::exists(value)) {
+      qunsetenv(name);
+    }
+  };
+
+  // Avoid invalid hard-coded paths (common in editor launch configs).
+  unset_if_missing("QT_QPA_PLATFORM_PLUGIN_PATH");
+  unset_if_missing("QT_PLUGIN_PATH");
+
+  // If plugins were deployed next to the executable (via windeployqt), prefer those over any
+  // environment-provided Qt installation path to avoid version/ABI mismatches.
+  if (has_local_platforms) {
+    qputenv("QT_QPA_PLATFORM_PLUGIN_PATH", platforms_dir.toLocal8Bit());
+    qputenv("QT_PLUGIN_PATH", exe_dir.toLocal8Bit());
+  }
+}
+#endif
 
 QString find_initial_pak(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
@@ -86,8 +142,13 @@ void run_tab_smoke_test(MainWindow& window) {
     return;
   }
 
-  auto find_action = [&](const QString& text) -> QAction* {
-    const QList<QAction*> actions = window.findChildren<QAction*>();
+  QPointer<MainWindow> window_ptr(&window);
+
+  auto find_action = [window_ptr](const QString& text) -> QAction* {
+    if (!window_ptr) {
+      return nullptr;
+    }
+    const QList<QAction*> actions = window_ptr->findChildren<QAction*>();
     for (QAction* a : actions) {
       if (!a) {
         continue;
@@ -99,7 +160,7 @@ void run_tab_smoke_test(MainWindow& window) {
     return nullptr;
   };
 
-  auto click_tab_close = [&](QTabWidget* tabs) {
+  auto click_tab_close = [](QTabWidget* tabs) {
     if (!tabs) {
       return;
     }
@@ -122,19 +183,28 @@ void run_tab_smoke_test(MainWindow& window) {
     QMetaObject::invokeMethod(btn, "click", Qt::QueuedConnection);
   };
 
-  QTimer::singleShot(250, &window, [&]() {
+  QTimer::singleShot(250, &window, [window_ptr, find_action]() {
+    if (!window_ptr) {
+      return;
+    }
     if (QAction* act = find_action("New PAK")) {
       act->trigger();
     }
   });
 
-  QTimer::singleShot(600, &window, [&]() {
-    auto* tabs = qobject_cast<QTabWidget*>(window.centralWidget());
+  QTimer::singleShot(600, &window, [window_ptr, click_tab_close]() {
+    if (!window_ptr) {
+      return;
+    }
+    auto* tabs = qobject_cast<QTabWidget*>(window_ptr->centralWidget());
     click_tab_close(tabs);
   });
 
-  QTimer::singleShot(900, &window, [&]() {
-    auto* tabs = qobject_cast<QTabWidget*>(window.centralWidget());
+  QTimer::singleShot(900, &window, [window_ptr, click_tab_close]() {
+    if (!window_ptr) {
+      return;
+    }
+    auto* tabs = qobject_cast<QTabWidget*>(window_ptr->centralWidget());
     if (!tabs) {
       return;
     }
@@ -145,7 +215,11 @@ void run_tab_smoke_test(MainWindow& window) {
   });
 
   // If we got this far without exploding, close cleanly.
-  QTimer::singleShot(1400, &window, [&]() { window.close(); });
+  QTimer::singleShot(1400, &window, [window_ptr]() {
+    if (window_ptr) {
+      window_ptr->close();
+    }
+  });
 }
 }  // namespace
 
@@ -172,6 +246,10 @@ int main(int argc, char** argv) {
 
     return run_cli(options);
   }
+
+#ifdef Q_OS_WIN
+  configure_qt_plugin_paths_for_local_deploy(resolve_executable_dir(argc, argv));
+#endif
 
   QApplication app(argc, argv);
   set_app_metadata(app);

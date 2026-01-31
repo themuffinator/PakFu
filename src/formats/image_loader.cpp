@@ -1,0 +1,99 @@
+#include "formats/image_loader.h"
+
+#include <utility>
+
+#include <QBuffer>
+#include <QFile>
+#include <QFileInfo>
+#include <QImageReader>
+
+#include "formats/tga_image.h"
+
+namespace {
+QString file_ext_lower(const QString& name) {
+	const QString lower = name.toLower();
+	const int dot = lower.lastIndexOf('.');
+	return dot >= 0 ? lower.mid(dot + 1) : QString();
+}
+
+ImageDecodeResult decode_with_qt_reader(const QByteArray& bytes, const QByteArray& format_hint) {
+	QBuffer buffer;
+	buffer.setData(bytes);
+	if (!buffer.open(QIODevice::ReadOnly)) {
+		return ImageDecodeResult{QImage(), "Unable to open image buffer."};
+	}
+
+	QImageReader reader(&buffer, format_hint);
+	reader.setAutoTransform(true);
+	QImage image = reader.read();
+	if (image.isNull()) {
+		return ImageDecodeResult{QImage(), reader.errorString().isEmpty() ? "Unable to decode image." : reader.errorString()};
+	}
+	return ImageDecodeResult{std::move(image), QString()};
+}
+
+ImageDecodeResult decode_with_qt_reader(const QString& file_path, const QByteArray& format_hint) {
+	QImageReader reader(file_path, format_hint);
+	reader.setAutoTransform(true);
+	QImage image = reader.read();
+	if (image.isNull()) {
+		return ImageDecodeResult{QImage(), reader.errorString().isEmpty() ? "Unable to decode image." : reader.errorString()};
+	}
+	return ImageDecodeResult{std::move(image), QString()};
+}
+}  // namespace
+
+ImageDecodeResult decode_image_bytes(const QByteArray& bytes, const QString& file_name) {
+	if (bytes.isEmpty()) {
+		return ImageDecodeResult{QImage(), "Empty image data."};
+	}
+
+	const QString ext = file_ext_lower(file_name);
+	if (ext == "tga") {
+		QString err;
+		QImage image = decode_tga_image(bytes, &err);
+		if (image.isNull()) {
+			return ImageDecodeResult{QImage(), err.isEmpty() ? "Unable to decode TGA image." : err};
+		}
+		return ImageDecodeResult{std::move(image), QString()};
+	}
+
+	if (ext == "png") {
+		return decode_with_qt_reader(bytes, "png");
+	}
+	if (ext == "jpg" || ext == "jpeg") {
+		return decode_with_qt_reader(bytes, "jpeg");
+	}
+
+	return decode_with_qt_reader(bytes, QByteArray());
+}
+
+ImageDecodeResult decode_image_file(const QString& file_path) {
+	if (file_path.isEmpty()) {
+		return ImageDecodeResult{QImage(), "Empty image path."};
+	}
+
+	const QFileInfo info(file_path);
+	if (!info.exists()) {
+		return ImageDecodeResult{QImage(), "Image file not found."};
+	}
+
+	const QString ext = file_ext_lower(info.fileName());
+	if (ext == "tga") {
+		QFile f(file_path);
+		if (!f.open(QIODevice::ReadOnly)) {
+			return ImageDecodeResult{QImage(), "Unable to open image file."};
+		}
+		const QByteArray bytes = f.readAll();
+		return decode_image_bytes(bytes, info.fileName());
+	}
+
+	if (ext == "png") {
+		return decode_with_qt_reader(file_path, "png");
+	}
+	if (ext == "jpg" || ext == "jpeg") {
+		return decode_with_qt_reader(file_path, "jpeg");
+	}
+
+	return decode_with_qt_reader(file_path, QByteArray());
+}

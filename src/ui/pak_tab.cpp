@@ -3133,7 +3133,11 @@ void PakTab::update_preview() {
       preview_->show_binary(leaf, subtitle, bytes.left(4096), truncated);
       return;
     }
-    preview_->show_text(leaf, truncated ? (subtitle + "  (Preview truncated)") : subtitle, text);
+    if (ext == "cfg") {
+      preview_->show_cfg(leaf, truncated ? (subtitle + "  (Preview truncated)") : subtitle, text);
+    } else {
+      preview_->show_text(leaf, truncated ? (subtitle + "  (Preview truncated)") : subtitle, text);
+    }
     return;
   }
 
