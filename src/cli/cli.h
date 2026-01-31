@@ -9,6 +9,9 @@ struct CliOptions {
   bool info = false;
   bool extract = false;
   bool check_updates = false;
+  bool list_game_sets = false;
+  bool auto_detect_game_sets = false;
+  QString select_game_set;
   QString output_dir;
   QString pak_path;
   QString update_repo;

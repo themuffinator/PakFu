@@ -4,13 +4,130 @@
 #include <QCoreApplication>
 #include <QFileInfo>
 #include <QTextStream>
+#include <QUuid>
 
+#include "game/game_auto_detect.h"
+#include "game/game_set.h"
 #include "pakfu_config.h"
 #include "update/update_service.h"
 
 namespace {
 QString normalize_output(const QString& text) {
   return text.endsWith('\n') ? text : text + '\n';
+}
+
+QString describe_game_set_line(const GameSet& set, bool selected) {
+  QString line;
+  line += selected ? "* " : "  ";
+  line += set.uid.isEmpty() ? "(missing-uid)" : set.uid;
+  line += "  ";
+  line += set.name.isEmpty() ? game_display_name(set.game) : set.name;
+  line += "  [" + game_id_key(set.game) + "]";
+  if (!set.default_dir.isEmpty()) {
+    line += "  default=" + QFileInfo(set.default_dir).absoluteFilePath();
+  }
+  if (!set.root_dir.isEmpty()) {
+    line += "  root=" + QFileInfo(set.root_dir).absoluteFilePath();
+  }
+  return line;
+}
+
+int apply_auto_detect_to_state(GameSetState& state, QStringList* log) {
+  const GameAutoDetectResult detected = auto_detect_supported_games();
+  if (log) {
+    *log = detected.log;
+  }
+
+  int changes = 0;
+  for (const DetectedGameInstall& install : detected.installs) {
+    GameSet* existing = nullptr;
+    for (GameSet& set : state.sets) {
+      if (set.game == install.game) {
+        existing = &set;
+        break;
+      }
+    }
+
+    if (existing) {
+      existing->root_dir = install.root_dir;
+      existing->default_dir = install.default_dir;
+      if (!install.launch.executable_path.isEmpty()) {
+        existing->launch.executable_path = install.launch.executable_path;
+      }
+      if (!install.launch.working_dir.isEmpty()) {
+        existing->launch.working_dir = install.launch.working_dir;
+      }
+      if (existing->palette_id.isEmpty()) {
+        existing->palette_id = default_palette_for_game(existing->game);
+      }
+      if (existing->name.isEmpty()) {
+        existing->name = game_display_name(existing->game);
+      }
+      ++changes;
+      continue;
+    }
+
+    GameSet set;
+    set.uid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    set.game = install.game;
+    set.name = game_display_name(set.game);
+    set.root_dir = install.root_dir;
+    set.default_dir = install.default_dir;
+    set.palette_id = default_palette_for_game(set.game);
+    set.launch = install.launch;
+    state.sets.push_back(set);
+    ++changes;
+  }
+
+  if (state.selected_uid.isEmpty() && !state.sets.isEmpty()) {
+    state.selected_uid = state.sets.first().uid;
+  }
+
+  return changes;
+}
+
+const GameSet* find_game_set_by_selector(const GameSetState& state, const QString& selector, QString* error) {
+  if (error) {
+    error->clear();
+  }
+  const QString s = selector.trimmed();
+  if (s.isEmpty()) {
+    if (error) {
+      *error = "Empty game set selector.";
+    }
+    return nullptr;
+  }
+
+  if (const GameSet* by_uid = find_game_set(state, s)) {
+    return by_uid;
+  }
+
+  QVector<const GameSet*> matches;
+  matches.reserve(state.sets.size());
+  for (const GameSet& set : state.sets) {
+    const QString key = game_id_key(set.game);
+    const QString display = game_display_name(set.game);
+    const QString name = set.name;
+    if (key.compare(s, Qt::CaseInsensitive) == 0 ||
+        display.compare(s, Qt::CaseInsensitive) == 0 ||
+        name.compare(s, Qt::CaseInsensitive) == 0) {
+      matches.push_back(&set);
+    }
+  }
+
+  if (matches.isEmpty()) {
+    if (error) {
+      *error = "Game set not found: " + s;
+    }
+    return nullptr;
+  }
+  if (matches.size() > 1) {
+    if (error) {
+      *error = "Game set selector is ambiguous: " + s;
+    }
+    return nullptr;
+  }
+  return matches.first();
 }
 }  // namespace
 
@@ -19,6 +136,7 @@ bool wants_cli(int argc, char** argv) {
     const QString arg = QString::fromLocal8Bit(argv[i]);
     if (arg == "--cli" || arg == "--list" || arg == "--info" || arg == "--extract" ||
         arg == "--check-updates" || arg == "--update-repo" || arg == "--update-channel" ||
+        arg == "--list-game-sets" || arg == "--auto-detect-game-sets" || arg == "--select-game-set" ||
         arg == "--help" || arg == "-h" || arg == "--version" || arg == "-v") {
       return true;
     }
@@ -37,6 +155,14 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   const QCommandLineOption info_option({"i", "info"}, "Show archive summary information.");
   const QCommandLineOption extract_option({"x", "extract"}, "Extract archive contents.");
   const QCommandLineOption check_updates_option("check-updates", "Check GitHub for new releases.");
+  const QCommandLineOption list_game_sets_option("list-game-sets", "List configured Game Sets.");
+  const QCommandLineOption auto_detect_game_sets_option(
+    "auto-detect-game-sets",
+    "Auto-detect supported games (Steam) and create/update Game Sets.");
+  const QCommandLineOption select_game_set_option(
+    "select-game-set",
+    "Select the active Game Set (by UID, game key, or name).",
+    "selector");
   const QCommandLineOption update_repo_option(
     "update-repo",
     "Override the GitHub repo used for update checks (owner/name).",
@@ -55,6 +181,9 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   parser.addOption(info_option);
   parser.addOption(extract_option);
   parser.addOption(check_updates_option);
+  parser.addOption(list_game_sets_option);
+  parser.addOption(auto_detect_game_sets_option);
+  parser.addOption(select_game_set_option);
   parser.addOption(update_repo_option);
   parser.addOption(update_channel_option);
   parser.addOption(output_option);
@@ -85,6 +214,9 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   options.info = parser.isSet(info_option);
   options.extract = parser.isSet(extract_option);
   options.check_updates = parser.isSet(check_updates_option);
+  options.list_game_sets = parser.isSet(list_game_sets_option);
+  options.auto_detect_game_sets = parser.isSet(auto_detect_game_sets_option);
+  options.select_game_set = parser.value(select_game_set_option);
   options.output_dir = parser.value(output_option);
   options.update_repo = parser.value(update_repo_option);
   options.update_channel = parser.value(update_channel_option);
@@ -94,7 +226,9 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
     options.pak_path = positional.first();
   }
 
-  const bool any_action = options.list || options.info || options.extract || options.check_updates;
+  const bool any_action = options.list || options.info || options.extract || options.check_updates ||
+                          options.list_game_sets || options.auto_detect_game_sets ||
+                          !options.select_game_set.isEmpty();
   if (!any_action && options.pak_path.isEmpty()) {
     if (output) {
       *output = parser.helpText();
@@ -119,6 +253,62 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
 int run_cli(const CliOptions& options) {
   QTextStream out(stdout);
   QTextStream err(stderr);
+
+  if (options.list_game_sets || options.auto_detect_game_sets || !options.select_game_set.isEmpty()) {
+    QString load_err;
+    GameSetState state = load_game_set_state(&load_err);
+    if (!load_err.isEmpty()) {
+      err << load_err << "\n";
+      return 2;
+    }
+
+    if (options.auto_detect_game_sets) {
+      QStringList log;
+      const int changes = apply_auto_detect_to_state(state, &log);
+      QString save_err;
+      if (!save_game_set_state(state, &save_err)) {
+        err << (save_err.isEmpty() ? "Failed to save game sets.\n" : save_err + "\n");
+        return 2;
+      }
+      out << "Auto-detect: " << changes << " change(s)\n";
+      if (!log.isEmpty()) {
+        for (const QString& line : log) {
+          out << line << "\n";
+        }
+      }
+    }
+
+    if (!options.select_game_set.isEmpty()) {
+      QString sel_err;
+      const GameSet* selected = find_game_set_by_selector(state, options.select_game_set, &sel_err);
+      if (!selected) {
+        err << (sel_err.isEmpty() ? "Game set not found.\n" : sel_err + "\n");
+        return 2;
+      }
+      state.selected_uid = selected->uid;
+      QString save_err;
+      if (!save_game_set_state(state, &save_err)) {
+        err << (save_err.isEmpty() ? "Failed to save game sets.\n" : save_err + "\n");
+        return 2;
+      }
+      out << "Selected Game Set:\n";
+      out << describe_game_set_line(*selected, true) << "\n";
+    }
+
+    if (options.list_game_sets) {
+      if (state.sets.isEmpty()) {
+        out << "No Game Sets configured.\n";
+        return 0;
+      }
+      for (const GameSet& set : state.sets) {
+        out << describe_game_set_line(set, set.uid == state.selected_uid) << "\n";
+      }
+    }
+
+    if (options.list_game_sets || options.auto_detect_game_sets || !options.select_game_set.isEmpty()) {
+      return 0;
+    }
+  }
 
   if (options.check_updates) {
     UpdateService updater;

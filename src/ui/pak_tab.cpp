@@ -2166,6 +2166,9 @@ void PakTab::add_files() {
   dialog.setWindowTitle("Add Files");
   dialog.setFileMode(QFileDialog::ExistingFiles);
   dialog.setNameFilters({"All files (*.*)"});
+  if (!default_directory_.isEmpty() && QFileInfo::exists(default_directory_)) {
+    dialog.setDirectory(default_directory_);
+  }
 #if defined(Q_OS_WIN)
   dialog.setOption(QFileDialog::DontUseNativeDialog, true);
 #endif
@@ -2177,6 +2180,7 @@ void PakTab::add_files() {
   if (selected.isEmpty()) {
     return;
   }
+  default_directory_ = QFileInfo(selected.first()).absolutePath();
 
   QStringList failures;
   bool changed = false;
@@ -2277,6 +2281,9 @@ void PakTab::add_folder() {
   dialog.setWindowTitle("Add Folder");
   dialog.setFileMode(QFileDialog::Directory);
   dialog.setOption(QFileDialog::ShowDirsOnly, true);
+  if (!default_directory_.isEmpty() && QFileInfo::exists(default_directory_)) {
+    dialog.setDirectory(default_directory_);
+  }
 #if defined(Q_OS_WIN)
   dialog.setOption(QFileDialog::DontUseNativeDialog, true);
 #endif
@@ -2288,6 +2295,7 @@ void PakTab::add_folder() {
   if (selected.isEmpty()) {
     return;
   }
+  default_directory_ = QFileInfo(selected.first()).absoluteFilePath();
 
   QStringList failures;
   const bool changed = add_folder_from_path(selected.first(), current_prefix(), QString(), &failures);

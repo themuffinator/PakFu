@@ -53,6 +53,9 @@ public:
 
   explicit PakTab(Mode mode, const QString& pak_path, QWidget* parent = nullptr);
 
+  void set_default_directory(const QString& path) { default_directory_ = path; }
+  QString default_directory() const { return default_directory_; }
+
   QString pak_path() const { return pak_path_; }
   bool is_loaded() const { return loaded_; }
   QString load_error() const { return load_error_; }
@@ -127,6 +130,7 @@ private:
   void activate_crumb(int index);
 
   Mode mode_;
+  QString default_directory_;
   QString pak_path_;
   bool loaded_ = false;
   QString load_error_;

@@ -2,6 +2,8 @@
 
 #include <QMainWindow>
 
+#include "game/game_set.h"
+
 class QAction;
 class QMenu;
 class QTabWidget;
@@ -14,7 +16,9 @@ class QUndoStack;
 
 class MainWindow : public QMainWindow {
 public:
-  explicit MainWindow(const QString& initial_pak_path = QString(), bool schedule_updates = true);
+  explicit MainWindow(const GameSet& game_set,
+                      const QString& initial_pak_path = QString(),
+                      bool schedule_updates = true);
 
 protected:
   void closeEvent(QCloseEvent* event) override;
@@ -47,7 +51,9 @@ private:
   void remove_recent_file(const QString& path);
   void clear_recent_files();
   void rebuild_recent_files_menu();
+  QString default_directory_for_dialogs() const;
 
+  GameSet game_set_;
   UpdateService* updater_ = nullptr;
   QTabWidget* tabs_ = nullptr;
   QWidget* welcome_tab_ = nullptr;

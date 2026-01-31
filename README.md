@@ -73,6 +73,14 @@ meson compile -C build
 
 ## Run (GUI or CLI) 🏃‍♂️💨
 
+## Game Sets 🎮🧾
+PakFu uses **Game Sets** to store per-game defaults:
+- Default directory (for file dialogs / common workflows)
+- Palette selection (for game-specific previews)
+- Launch settings (executable + args)
+
+On startup, the **Game Sets** window appears. Use **Auto-detect** (Steam) or **Add…** to configure a game, then select it to open the main window.
+
 ```sh
 ./build/src/pakfu
 ./build/src/pakfu --cli --help
@@ -84,6 +92,14 @@ On Windows, use:
 ```pwsh
 .\build\src\pakfu.exe
 .\build\src\pakfu.exe --cli --help
+```
+
+Game Sets can also be managed via CLI:
+
+```sh
+./build/src/pakfu --cli --list-game-sets
+./build/src/pakfu --cli --auto-detect-game-sets
+./build/src/pakfu --cli --select-game-set quake2
 ```
 
 ## License & Disclaimer ⚖️🧾

@@ -17,6 +17,7 @@
 #include "cli/cli.h"
 #include "pakfu_config.h"
 #include "update/update_service.h"
+#include "ui/game_set_dialog.h"
 #include "ui/main_window.h"
 #include "ui/splash_screen.h"
 #include "ui/theme_manager.h"
@@ -256,7 +257,17 @@ int main(int argc, char** argv) {
   ThemeManager::apply_saved_theme(app);
 
   const QString initial_pak = find_initial_pak(argc, argv);
-  MainWindow window(initial_pak, false);
+
+  GameSetDialog game_set_dialog;
+  if (game_set_dialog.exec() != QDialog::Accepted) {
+    return 0;
+  }
+  const auto selected = game_set_dialog.selected_game_set();
+  if (!selected.has_value()) {
+    return 0;
+  }
+
+  MainWindow window(*selected, initial_pak, false);
 
   QPointer<SplashScreen> splash = show_splash(app);
   if (splash) {

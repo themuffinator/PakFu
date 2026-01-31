@@ -6,6 +6,7 @@
 #include <QDateTime>
 #include <QCloseEvent>
 #include <QDialog>
+#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QKeySequence>
@@ -187,8 +188,8 @@ QWidget* build_welcome_tab(QWidget* parent,
 }
 }  // namespace
 
-MainWindow::MainWindow(const QString& initial_pak_path, bool schedule_updates)
-    : schedule_updates_(schedule_updates) {
+MainWindow::MainWindow(const GameSet& game_set, const QString& initial_pak_path, bool schedule_updates)
+    : game_set_(game_set), schedule_updates_(schedule_updates) {
   setup_central();
   setup_menus();
 
@@ -206,6 +207,16 @@ MainWindow::MainWindow(const QString& initial_pak_path, bool schedule_updates)
   }
 
   update_window_title();
+}
+
+QString MainWindow::default_directory_for_dialogs() const {
+  if (!game_set_.default_dir.isEmpty() && QFileInfo::exists(game_set_.default_dir)) {
+    return game_set_.default_dir;
+  }
+  if (!game_set_.root_dir.isEmpty() && QFileInfo::exists(game_set_.root_dir)) {
+    return game_set_.root_dir;
+  }
+  return QDir::homePath();
 }
 
 void MainWindow::setup_central() {
@@ -399,6 +410,7 @@ void MainWindow::check_for_updates() {
 void MainWindow::create_new_pak() {
   const QString title = QString("Untitled %1").arg(untitled_counter_++);
   auto* tab = new PakTab(PakTab::Mode::NewPak, QString(), this);
+  tab->set_default_directory(default_directory_for_dialogs());
   const int index = add_tab(title, tab);
   tabs_->setCurrentIndex(index);
 }
@@ -408,6 +420,7 @@ void MainWindow::open_pak_dialog() {
   dialog.setWindowTitle("Open PAK");
   dialog.setFileMode(QFileDialog::ExistingFile);
   dialog.setNameFilters({"PAK files (*.pak)", "All files (*.*)"});
+  dialog.setDirectory(default_directory_for_dialogs());
 #if defined(Q_OS_WIN)
   // Work around sporadic native dialog crashes reported in early development.
   dialog.setOption(QFileDialog::DontUseNativeDialog, true);
@@ -538,6 +551,7 @@ void MainWindow::open_pak(const QString& path) {
 
   QString error;
   auto* tab = new PakTab(PakTab::Mode::ExistingPak, info.absoluteFilePath(), this);
+  tab->set_default_directory(default_directory_for_dialogs());
   if (!tab->is_loaded()) {
     error = tab->load_error();
     tab->deleteLater();
@@ -590,12 +604,13 @@ void MainWindow::open_preferences() {
 
 void MainWindow::update_window_title() {
   if (!tabs_) {
-    setWindowTitle("PakFu");
+    setWindowTitle(game_set_.name.isEmpty() ? "PakFu" : QString("PakFu (%1)").arg(game_set_.name));
     return;
   }
   const int idx = tabs_->currentIndex();
   const QString tab_title = idx >= 0 ? tabs_->tabText(idx) : QString();
-  setWindowTitle(tab_title.isEmpty() ? "PakFu" : QString("PakFu - %1").arg(tab_title));
+  const QString base = game_set_.name.isEmpty() ? "PakFu" : QString("PakFu (%1)").arg(game_set_.name);
+  setWindowTitle(tab_title.isEmpty() ? base : QString("%1 - %2").arg(base, tab_title));
 }
 
 void MainWindow::close_tab(int index) {
@@ -727,6 +742,7 @@ bool MainWindow::save_tab_as(PakTab* tab) {
   dialog.setAcceptMode(QFileDialog::AcceptSave);
   dialog.setFileMode(QFileDialog::AnyFile);
   dialog.setNameFilters({"PAK files (*.pak)", "All files (*.*)"});
+  dialog.setDirectory(default_directory_for_dialogs());
   dialog.selectFile(suggested);
 #if defined(Q_OS_WIN)
   dialog.setOption(QFileDialog::DontUseNativeDialog, true);
