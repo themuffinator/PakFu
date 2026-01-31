@@ -34,6 +34,24 @@
 #include "update/update_service.h"
 
 namespace {
+constexpr int kMaxRecentFiles = 12;
+constexpr char kRecentFilesKey[] = "ui/recentFiles";
+
+QString normalize_recent_path(const QString& path) {
+  if (path.isEmpty()) {
+    return {};
+  }
+  return QFileInfo(path).absoluteFilePath();
+}
+
+bool recent_paths_equal(const QString& a, const QString& b) {
+#if defined(Q_OS_WIN)
+  return a.compare(b, Qt::CaseInsensitive) == 0;
+#else
+  return a == b;
+#endif
+}
+
 class WelcomeBackdrop : public QWidget {
 public:
   explicit WelcomeBackdrop(QWidget* parent = nullptr) : QWidget(parent) {
@@ -237,6 +255,10 @@ void MainWindow::setup_menus() {
   open_action_ = file_menu->addAction("Open PAK...");
   open_action_->setShortcut(QKeySequence::Open);
   connect(open_action_, &QAction::triggered, this, &MainWindow::open_pak_dialog);
+
+  recent_files_menu_ = file_menu->addMenu("Recent Files");
+  connect(recent_files_menu_, &QMenu::aboutToShow, this, &MainWindow::rebuild_recent_files_menu);
+  rebuild_recent_files_menu();
 
   save_action_ = file_menu->addAction("Save");
   save_action_->setShortcut(QKeySequence::Save);
@@ -501,13 +523,16 @@ void MainWindow::open_pak(const QString& path) {
   if (!tabs_) {
     return;
   }
-  QFileInfo info(path);
+  const QString normalized = normalize_recent_path(path);
+  QFileInfo info(normalized.isEmpty() ? path : normalized);
   if (!info.exists()) {
+    remove_recent_file(normalized.isEmpty() ? path : normalized);
     QMessageBox::warning(this, "Open PAK", QString("PAK not found:\n%1").arg(path));
     return;
   }
 
-  if (focus_tab_by_path(path)) {
+  if (focus_tab_by_path(info.absoluteFilePath())) {
+    add_recent_file(info.absoluteFilePath());
     return;
   }
 
@@ -519,6 +544,8 @@ void MainWindow::open_pak(const QString& path) {
     QMessageBox::warning(this, "Open PAK", error.isEmpty() ? "Failed to load PAK." : error);
     return;
   }
+
+  add_recent_file(info.absoluteFilePath());
 
   const QString title = info.fileName();
   const int index = add_tab(title, tab);
@@ -724,6 +751,8 @@ bool MainWindow::save_tab_as(PakTab* tab) {
     return false;
   }
 
+  add_recent_file(QFileInfo(dest).absoluteFilePath());
+
   const QFileInfo info(tab->pak_path().isEmpty() ? dest : tab->pak_path());
   set_tab_base_title(tab, info.fileName());
   if (tabs_) {
@@ -736,6 +765,129 @@ bool MainWindow::save_tab_as(PakTab* tab) {
   update_window_title();
   update_action_states();
   return true;
+}
+
+void MainWindow::add_recent_file(const QString& path) {
+  const QString normalized = normalize_recent_path(path);
+  if (normalized.isEmpty()) {
+    return;
+  }
+
+  QSettings settings;
+  QStringList files = settings.value(kRecentFilesKey).toStringList();
+
+  for (int i = files.size() - 1; i >= 0; --i) {
+    if (recent_paths_equal(files[i], normalized)) {
+      files.removeAt(i);
+    }
+  }
+  files.prepend(normalized);
+  while (files.size() > kMaxRecentFiles) {
+    files.removeLast();
+  }
+
+  settings.setValue(kRecentFilesKey, files);
+  rebuild_recent_files_menu();
+}
+
+void MainWindow::remove_recent_file(const QString& path) {
+  const QString normalized = normalize_recent_path(path);
+  if (normalized.isEmpty()) {
+    return;
+  }
+
+  QSettings settings;
+  QStringList files = settings.value(kRecentFilesKey).toStringList();
+  bool changed = false;
+  for (int i = files.size() - 1; i >= 0; --i) {
+    if (recent_paths_equal(files[i], normalized)) {
+      files.removeAt(i);
+      changed = true;
+    }
+  }
+  if (changed) {
+    settings.setValue(kRecentFilesKey, files);
+    rebuild_recent_files_menu();
+  }
+}
+
+void MainWindow::clear_recent_files() {
+  QSettings settings;
+  settings.remove(kRecentFilesKey);
+  rebuild_recent_files_menu();
+}
+
+void MainWindow::rebuild_recent_files_menu() {
+  if (!recent_files_menu_) {
+    return;
+  }
+
+  QSettings settings;
+  QStringList files = settings.value(kRecentFilesKey).toStringList();
+
+  // Normalize, drop empty, de-dupe (preserve order).
+  QStringList normalized;
+  normalized.reserve(files.size());
+  for (const QString& f : files) {
+    const QString n = normalize_recent_path(f);
+    if (n.isEmpty()) {
+      continue;
+    }
+    bool seen = false;
+    for (const QString& existing : normalized) {
+      if (recent_paths_equal(existing, n)) {
+        seen = true;
+        break;
+      }
+    }
+    if (!seen) {
+      normalized.push_back(n);
+    }
+    if (normalized.size() >= kMaxRecentFiles) {
+      break;
+    }
+  }
+
+  if (normalized != files) {
+    settings.setValue(kRecentFilesKey, normalized);
+  }
+
+  recent_files_menu_->clear();
+  recent_files_menu_->setToolTipsVisible(true);
+
+  if (normalized.isEmpty()) {
+    QAction* none = recent_files_menu_->addAction("(No recent files)");
+    none->setEnabled(false);
+  } else {
+    for (int i = 0; i < normalized.size(); ++i) {
+      const QString path = normalized[i];
+      const QFileInfo info(path);
+      QString label = info.fileName().isEmpty() ? path : info.fileName();
+      label.replace("&", "&&");
+
+      QString text;
+      if (i < 9) {
+        text = QString("&%1 %2").arg(i + 1).arg(label);
+      } else {
+        text = QString("%1 %2").arg(i + 1).arg(label);
+      }
+
+      QAction* act = recent_files_menu_->addAction(text);
+      act->setToolTip(path);
+      act->setStatusTip(path);
+      if (!info.exists()) {
+        act->setText(text + " (missing)");
+        act->setEnabled(false);
+        continue;
+      }
+      connect(act, &QAction::triggered, this, [this, path]() { open_pak(path); });
+    }
+  }
+
+  recent_files_menu_->addSeparator();
+  QAction* clear = recent_files_menu_->addAction("Clear Recent Files");
+  clear->setEnabled(!normalized.isEmpty());
+  connect(clear, &QAction::triggered, this, &MainWindow::clear_recent_files);
 }
 
 void MainWindow::set_tab_base_title(QWidget* tab, const QString& title) {

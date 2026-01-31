@@ -3,6 +3,7 @@
 #include <QMainWindow>
 
 class QAction;
+class QMenu;
 class QTabWidget;
 class QWidget;
 class QCloseEvent;
@@ -42,6 +43,11 @@ private:
   QString tab_base_title(QWidget* tab) const;
   void update_tab_label(QWidget* tab);
 
+  void add_recent_file(const QString& path);
+  void remove_recent_file(const QString& path);
+  void clear_recent_files();
+  void rebuild_recent_files_menu();
+
   UpdateService* updater_ = nullptr;
   QTabWidget* tabs_ = nullptr;
   QWidget* welcome_tab_ = nullptr;
@@ -58,6 +64,7 @@ private:
   QAction* rename_action_ = nullptr;
   QAction* preferences_action_ = nullptr;
   QAction* exit_action_ = nullptr;
+  QMenu* recent_files_menu_ = nullptr;
   bool schedule_updates_ = true;
   int untitled_counter_ = 1;
 };
