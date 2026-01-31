@@ -587,14 +587,6 @@ void PreviewPane::update_audio_tooltip() {
 		if (bitrate.isValid()) {
 			lines << QString("Bitrate: %1 kbps").arg(bitrate.toInt() / 1000);
 		}
-		const QVariant sample_rate = meta.value(QMediaMetaData::SampleRate);
-		if (sample_rate.isValid()) {
-			lines << QString("Sample rate: %1 Hz").arg(sample_rate.toInt());
-		}
-		const QVariant channels = meta.value(QMediaMetaData::ChannelCount);
-		if (channels.isValid()) {
-			lines << QString("Channels: %1").arg(channels.toInt());
-		}
 		const QVariant codec = meta.value(QMediaMetaData::AudioCodec);
 		if (codec.isValid() && !codec.toString().isEmpty()) {
 			lines << QString("Codec: %1").arg(codec.toString());

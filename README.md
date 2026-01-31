@@ -62,6 +62,8 @@ The dojo provides a helper script that finds Qt's `qmake6` and builds with Ninja
 pwsh -NoProfile -File scripts/meson_build.ps1
 ```
 
+On Windows, the script also deploys the required Qt runtime DLLs into `build/src/` so `build/src/pakfu.exe` runs without needing to add Qt to `PATH`.
+
 ### Manual (all platforms) 🌍🧙‍♂️
 
 ```sh
@@ -75,6 +77,13 @@ meson compile -C build
 ./build/src/pakfu
 ./build/src/pakfu --cli --help
 ./build/src/pakfu --cli --check-updates
+```
+
+On Windows, use:
+
+```pwsh
+.\build\src\pakfu.exe
+.\build\src\pakfu.exe --cli --help
 ```
 
 ## License & Disclaimer ⚖️🧾

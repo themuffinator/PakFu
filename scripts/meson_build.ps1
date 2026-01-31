@@ -1,6 +1,7 @@
 param(
   [string]$BuildDir = "build",
-  [string]$Backend = "ninja"
+  [string]$Backend = "ninja",
+  [bool]$DeployQtRuntime = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -49,6 +50,24 @@ function Find-QMake {
     }
   }
 
+  return $null
+}
+
+function Find-WinDeployQt {
+  param(
+    [string]$QMakePath
+  )
+
+  if ($QMakePath -and (Test-Path $QMakePath)) {
+    $qtBin = Split-Path -Parent $QMakePath
+    $candidate = Join-Path $qtBin "windeployqt.exe"
+    if (Test-Path $candidate) {
+      return $candidate
+    }
+  }
+
+  $cmd = Get-Command windeployqt.exe -ErrorAction SilentlyContinue
+  if ($cmd) { return $cmd.Source }
   return $null
 }
 
@@ -112,4 +131,21 @@ if ($needsSetup) {
 & meson compile -C $BuildDir
 if ($LASTEXITCODE -ne 0) {
   exit $LASTEXITCODE
+}
+
+if ($DeployQtRuntime -and $IsWindows) {
+  $exe = Join-Path $BuildDir "src\\pakfu.exe"
+  if (Test-Path $exe) {
+    $windeployqt = Find-WinDeployQt -QMakePath $qmake
+    if ($windeployqt -and (Test-Path $windeployqt)) {
+      $deployDir = Join-Path $BuildDir "src"
+      Write-Host "Deploying Qt runtime to: $deployDir"
+      & $windeployqt --no-translations --dir $deployDir $exe
+      if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+      }
+    } else {
+      Write-Host "windeployqt.exe not found; pakfu.exe may fail to start unless Qt's bin directory is on PATH." -ForegroundColor Yellow
+    }
+  }
 }

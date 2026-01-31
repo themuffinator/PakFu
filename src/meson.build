@@ -41,10 +41,25 @@ moc_sources = qt6.preprocess(
 sources += rcc_sources
 sources += moc_sources
 
+pakfu_link_args = []
+pakfu_win_subsystem = 'console'
+if host_machine.system() == 'windows'
+  pakfu_win_subsystem = 'windows'
+
+  qt_libdir = qt6_dep.get_variable(configtool: 'QT_INSTALL_LIBS')
+  qt_entrypoint_name = 'Qt6EntryPoint.lib'
+  if get_option('buildtype') == 'debug' or get_option('buildtype') == 'debugoptimized'
+    qt_entrypoint_name = 'Qt6EntryPointd.lib'
+  endif
+  pakfu_link_args += join_paths(qt_libdir, qt_entrypoint_name)
+endif
+
 pakfu = executable(
   'pakfu',
   sources,
   include_directories: include_directories('.'),
   dependencies: [qt6_dep],
+  link_args: pakfu_link_args,
+  win_subsystem: pakfu_win_subsystem,
   install: true,
 )
