@@ -8,6 +8,9 @@ enum class GameId {
   QuakeRerelease,
   Quake2,
   Quake2Rerelease,
+  Quake3Arena,
+  QuakeLive,
+  Quake4,
 };
 
 QString game_id_key(GameId id);

@@ -1,11 +1,16 @@
 #include "cli.h"
 
+#include <algorithm>
+
 #include <QCommandLineParser>
 #include <QCoreApplication>
+#include <QDir>
 #include <QFileInfo>
 #include <QTextStream>
 #include <QUuid>
 
+#include "archive/archive.h"
+#include "archive/path_safety.h"
 #include "game/game_auto_detect.h"
 #include "game/game_set.h"
 #include "pakfu_config.h"
@@ -151,14 +156,14 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   parser.addVersionOption();
 
   const QCommandLineOption cli_option("cli", "Run in CLI mode (no UI).");
-  const QCommandLineOption list_option({"l", "list"}, "List entries in the PAK.");
+  const QCommandLineOption list_option({"l", "list"}, "List entries in the archive.");
   const QCommandLineOption info_option({"i", "info"}, "Show archive summary information.");
   const QCommandLineOption extract_option({"x", "extract"}, "Extract archive contents.");
   const QCommandLineOption check_updates_option("check-updates", "Check GitHub for new releases.");
   const QCommandLineOption list_game_sets_option("list-game-sets", "List configured Game Sets.");
   const QCommandLineOption auto_detect_game_sets_option(
     "auto-detect-game-sets",
-    "Auto-detect supported games (Steam) and create/update Game Sets.");
+    "Auto-detect supported games (Steam, GOG.com, EOS) and create/update Game Sets.");
   const QCommandLineOption select_game_set_option(
     "select-game-set",
     "Select the active Game Set (by UID, game key, or name).",
@@ -187,7 +192,7 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   parser.addOption(update_repo_option);
   parser.addOption(update_channel_option);
   parser.addOption(output_option);
-  parser.addPositionalArgument("pak", "Path to a PAK file.");
+  parser.addPositionalArgument("archive", "Path to an archive (PAK/PK3/PK4/PKZ/ZIP).");
 
   if (!parser.parse(app.arguments())) {
     if (output) {
@@ -242,7 +247,7 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
 
   if ((options.list || options.info || options.extract) && options.pak_path.isEmpty()) {
     if (output) {
-      *output = normalize_output("Missing PAK path.") + '\n' + parser.helpText();
+      *output = normalize_output("Missing archive path.") + '\n' + parser.helpText();
     }
     return CliParseResult::ExitError;
   }
@@ -342,28 +347,117 @@ int run_cli(const CliOptions& options) {
   }
 
   if (options.pak_path.isEmpty()) {
-    err << "No PAK path provided.\n";
+    err << "No archive path provided.\n";
     return 2;
   }
 
-  QFileInfo pak_info(options.pak_path);
-  if (!pak_info.exists()) {
-    err << "PAK not found: " << options.pak_path << "\n";
+  QFileInfo archive_info(options.pak_path);
+  if (!archive_info.exists()) {
+    err << "Archive not found: " << options.pak_path << "\n";
     return 2;
   }
 
-  out << "PakFu CLI scaffold\n";
-  out << "PAK: " << pak_info.absoluteFilePath() << "\n";
-  if (options.list) {
-    out << "Action: list (not implemented)\n";
+  Archive archive;
+  QString load_err;
+  if (!archive.load(archive_info.absoluteFilePath(), &load_err)) {
+    err << (load_err.isEmpty() ? "Unable to load archive.\n" : load_err + "\n");
+    return 2;
   }
+
+  auto format_string = [](Archive::Format f) -> QString {
+    switch (f) {
+      case Archive::Format::Pak:
+        return "PAK";
+      case Archive::Format::Zip:
+        return "ZIP";
+      case Archive::Format::Unknown:
+        break;
+    }
+    return "Unknown";
+  };
+
+  const QVector<ArchiveEntry>& entries = archive.entries();
+
   if (options.info) {
-    out << "Action: info (not implemented)\n";
+    out << "Archive: " << QFileInfo(archive.path()).absoluteFilePath() << "\n";
+    if (archive.readable_path() != archive.path()) {
+      out << "Readable: " << QFileInfo(archive.readable_path()).absoluteFilePath() << "\n";
+    }
+    out << "Format: " << format_string(archive.format()) << "\n";
+    if (archive.is_quakelive_encrypted_pk3()) {
+      out << "Quake Live encrypted PK3: yes\n";
+    }
+    out << "Entries: " << entries.size() << "\n";
+
+    quint64 total = 0;
+    for (const ArchiveEntry& e : entries) {
+      if (!e.name.endsWith('/')) {
+        total += static_cast<quint64>(e.size);
+      }
+    }
+    out << "Total uncompressed: " << total << " bytes\n";
   }
+
+  if (options.list) {
+    QVector<ArchiveEntry> sorted = entries;
+    std::sort(sorted.begin(), sorted.end(), [](const ArchiveEntry& a, const ArchiveEntry& b) {
+      return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
+    });
+    for (const ArchiveEntry& e : sorted) {
+      out << e.size << "\t" << e.name << "\n";
+    }
+  }
+
   if (options.extract) {
-    out << "Action: extract (not implemented)\n";
-    if (!options.output_dir.isEmpty()) {
-      out << "Output directory: " << options.output_dir << "\n";
+    QString out_dir = options.output_dir.trimmed();
+    if (out_dir.isEmpty()) {
+      const QString base = archive_info.completeBaseName().isEmpty() ? "archive" : archive_info.completeBaseName();
+      out_dir = QDir::current().filePath(base + "_extract");
+    }
+    QDir od(out_dir);
+    if (!od.exists() && !od.mkpath(".")) {
+      err << "Unable to create output directory: " << QFileInfo(out_dir).absoluteFilePath() << "\n";
+      return 2;
+    }
+
+    int ok = 0;
+    int failed = 0;
+    int skipped = 0;
+
+    for (const ArchiveEntry& e : entries) {
+      const QString name = normalize_archive_entry_name(e.name);
+      if (!is_safe_archive_entry_name(name)) {
+        ++skipped;
+        err << "Skipping unsafe entry: " << e.name << "\n";
+        continue;
+      }
+
+      const QString dest = od.filePath(name);
+      if (name.endsWith('/')) {
+        QDir d(dest);
+        if (!d.exists() && !d.mkpath(".")) {
+          ++failed;
+          err << "Unable to create directory: " << dest << "\n";
+        }
+        continue;
+      }
+
+      QString ex_err;
+      if (!archive.extract_entry_to_file(name, dest, &ex_err)) {
+        ++failed;
+        err << (ex_err.isEmpty() ? "Extract failed: " + name + "\n" : ex_err + "\n");
+        continue;
+      }
+      ++ok;
+    }
+
+    out << "Extracted: " << ok << " file(s)\n";
+    if (skipped > 0) {
+      out << "Skipped: " << skipped << " unsafe entr" << (skipped == 1 ? "y" : "ies") << "\n";
+    }
+    if (failed > 0) {
+      err << "Failed: " << failed << " item(s)\n";
+      return 2;
     }
   }
 

@@ -70,7 +70,7 @@ void GameSetDialog::build_ui() {
 
   hint_label_ = new QLabel(
     "Game Sets hold per-game defaults (directories, palettes, launch settings). "
-    "Add one, auto-detect installs, then select a game to continue.",
+    "Add one, or auto-detect installs (Steam, then GOG.com, then EOS), then select a game to continue.",
     this);
   hint_label_->setWordWrap(true);
   hint_label_->setStyleSheet("color: rgba(180, 180, 180, 220);");

@@ -7,6 +7,8 @@
 
 #include <memory>
 
+#include "formats/image_loader.h"
+
 class QLabel;
 class QPlainTextEdit;
 class QScrollArea;
@@ -30,8 +32,8 @@ public:
 	void show_text(const QString& title, const QString& subtitle, const QString& text);
 	void show_cfg(const QString& title, const QString& subtitle, const QString& text);
 	void show_binary(const QString& title, const QString& subtitle, const QByteArray& bytes, bool truncated);
-	void show_image_from_bytes(const QString& title, const QString& subtitle, const QByteArray& bytes);
-	void show_image_from_file(const QString& title, const QString& subtitle, const QString& file_path);
+	void show_image_from_bytes(const QString& title, const QString& subtitle, const QByteArray& bytes, const ImageDecodeOptions& options = {});
+	void show_image_from_file(const QString& title, const QString& subtitle, const QString& file_path, const ImageDecodeOptions& options = {});
 	void show_audio_from_file(const QString& title, const QString& subtitle, const QString& file_path);
 
 signals:

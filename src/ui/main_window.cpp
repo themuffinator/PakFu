@@ -18,6 +18,7 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QRandomGenerator>
+#include <QSet>
 #include <QSettings>
 #include <QTabWidget>
 #include <QTabBar>
@@ -163,7 +164,7 @@ QWidget* build_welcome_tab(QWidget* parent,
   button_row->addStretch();
 
   auto* create_button = new QPushButton("Create PAK", content);
-  auto* load_button = new QPushButton("Open PAK", content);
+  auto* load_button = new QPushButton("Open Archive", content);
   auto* close_button = new QPushButton("Close", content);
   create_button->setMinimumWidth(170);
   load_button->setMinimumWidth(170);
@@ -263,7 +264,7 @@ void MainWindow::setup_menus() {
   new_action_->setShortcut(QKeySequence::New);
   connect(new_action_, &QAction::triggered, this, &MainWindow::create_new_pak);
 
-  open_action_ = file_menu->addAction("Open PAK...");
+  open_action_ = file_menu->addAction("Open Archive...");
   open_action_->setShortcut(QKeySequence::Open);
   connect(open_action_, &QAction::triggered, this, &MainWindow::open_pak_dialog);
 
@@ -417,9 +418,14 @@ void MainWindow::create_new_pak() {
 
 void MainWindow::open_pak_dialog() {
   QFileDialog dialog(this);
-  dialog.setWindowTitle("Open PAK");
+  dialog.setWindowTitle("Open Archive");
   dialog.setFileMode(QFileDialog::ExistingFile);
-  dialog.setNameFilters({"PAK files (*.pak)", "All files (*.*)"});
+  dialog.setNameFilters({
+    "Archives (*.pak *.pk3 *.pk4 *.pkz *.zip)",
+    "Quake PAK (*.pak)",
+    "ZIP-based (PK3/PK4/PKZ/ZIP) (*.pk3 *.pk4 *.pkz *.zip)",
+    "All files (*.*)",
+  });
   dialog.setDirectory(default_directory_for_dialogs());
 #if defined(Q_OS_WIN)
   // Work around sporadic native dialog crashes reported in early development.
@@ -540,7 +546,7 @@ void MainWindow::open_pak(const QString& path) {
   QFileInfo info(normalized.isEmpty() ? path : normalized);
   if (!info.exists()) {
     remove_recent_file(normalized.isEmpty() ? path : normalized);
-    QMessageBox::warning(this, "Open PAK", QString("PAK not found:\n%1").arg(path));
+    QMessageBox::warning(this, "Open Archive", QString("Archive not found:\n%1").arg(path));
     return;
   }
 
@@ -555,7 +561,7 @@ void MainWindow::open_pak(const QString& path) {
   if (!tab->is_loaded()) {
     error = tab->load_error();
     tab->deleteLater();
-    QMessageBox::warning(this, "Open PAK", error.isEmpty() ? "Failed to load PAK." : error);
+    QMessageBox::warning(this, "Open Archive", error.isEmpty() ? "Failed to load archive." : error);
     return;
   }
 
@@ -711,7 +717,7 @@ bool MainWindow::save_tab(PakTab* tab) {
 
   QString err;
   if (!tab->save(&err)) {
-    QMessageBox::warning(this, "Save PAK", err.isEmpty() ? "Unable to save PAK." : err);
+    QMessageBox::warning(this, "Save Archive", err.isEmpty() ? "Unable to save archive." : err);
     return false;
   }
 
@@ -738,10 +744,40 @@ bool MainWindow::save_tab_as(PakTab* tab) {
   }
 
   QFileDialog dialog(this);
-  dialog.setWindowTitle("Save PAK As");
+  dialog.setWindowTitle("Save Archive As");
   dialog.setAcceptMode(QFileDialog::AcceptSave);
   dialog.setFileMode(QFileDialog::AnyFile);
-  dialog.setNameFilters({"PAK files (*.pak)", "All files (*.*)"});
+  {
+    QStringList filters;
+    const Archive::Format fmt = tab->archive_format();
+    const bool is_new = tab->pak_path().isEmpty();
+    if (is_new || fmt == Archive::Format::Unknown) {
+      filters = {
+        "Quake PAK (*.pak)",
+        "PK3 (ZIP) (*.pk3)",
+        "PK3 (Quake Live encrypted) (*.pk3)",
+        "PK4 (ZIP) (*.pk4)",
+        "PKZ (ZIP) (*.pkz)",
+        "ZIP (*.zip)",
+        "All files (*.*)",
+      };
+    } else if (fmt == Archive::Format::Pak) {
+      filters = {
+        "Quake PAK (*.pak)",
+        "All files (*.*)",
+      };
+    } else {
+      filters = {
+        "PK3 (ZIP) (*.pk3)",
+        "PK3 (Quake Live encrypted) (*.pk3)",
+        "PK4 (ZIP) (*.pk4)",
+        "PKZ (ZIP) (*.pkz)",
+        "ZIP (*.zip)",
+        "All files (*.*)",
+      };
+    }
+    dialog.setNameFilters(filters);
+  }
   dialog.setDirectory(default_directory_for_dialogs());
   dialog.selectFile(suggested);
 #if defined(Q_OS_WIN)
@@ -757,13 +793,46 @@ bool MainWindow::save_tab_as(PakTab* tab) {
   }
 
   QString dest = selected.first();
-  if (!dest.endsWith(".pak", Qt::CaseInsensitive)) {
-    dest += ".pak";
+  const QString filter = dialog.selectedNameFilter();
+
+  PakTab::SaveOptions options;
+  QString want_ext;
+  if (filter.contains("Quake Live encrypted", Qt::CaseInsensitive)) {
+    options.format = Archive::Format::Zip;
+    options.quakelive_encrypt_pk3 = true;
+    want_ext = ".pk3";
+  } else if (filter.contains("PK3", Qt::CaseInsensitive)) {
+    options.format = Archive::Format::Zip;
+    want_ext = ".pk3";
+  } else if (filter.contains("PK4", Qt::CaseInsensitive)) {
+    options.format = Archive::Format::Zip;
+    want_ext = ".pk4";
+  } else if (filter.contains("PKZ", Qt::CaseInsensitive)) {
+    options.format = Archive::Format::Zip;
+    want_ext = ".pkz";
+  } else if (filter.contains("ZIP", Qt::CaseInsensitive)) {
+    options.format = Archive::Format::Zip;
+    want_ext = ".zip";
+  } else if (filter.contains("PAK", Qt::CaseInsensitive)) {
+    options.format = Archive::Format::Pak;
+    want_ext = ".pak";
+  }
+
+  if (!want_ext.isEmpty() && !dest.endsWith(want_ext, Qt::CaseInsensitive)) {
+    const int sep = std::max(dest.lastIndexOf('/'), dest.lastIndexOf('\\'));
+    const int dot = dest.lastIndexOf('.');
+    const QString current_ext = (dot > sep) ? dest.mid(dot).toLower() : QString();
+    const QSet<QString> known_exts = {".pak", ".pk3", ".pk4", ".pkz", ".zip"};
+    if (known_exts.contains(current_ext) && dot > sep) {
+      dest = dest.left(dot) + want_ext;
+    } else {
+      dest += want_ext;
+    }
   }
 
   QString err;
-  if (!tab->save_as(dest, &err)) {
-    QMessageBox::warning(this, "Save PAK As", err.isEmpty() ? "Unable to save PAK." : err);
+  if (!tab->save_as(dest, options, &err)) {
+    QMessageBox::warning(this, "Save Archive As", err.isEmpty() ? "Unable to save archive." : err);
     return false;
   }
 

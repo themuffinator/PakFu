@@ -78,6 +78,12 @@ QString game_id_key(GameId id) {
       return "quake2";
     case GameId::Quake2Rerelease:
       return "quake2_rerelease";
+    case GameId::Quake3Arena:
+      return "quake3_arena";
+    case GameId::QuakeLive:
+      return "quake_live";
+    case GameId::Quake4:
+      return "quake4";
   }
   return "quake";
 }
@@ -98,6 +104,15 @@ GameId game_id_from_key(const QString& key, bool* ok) {
   if (key == "quake2_rerelease") {
     return GameId::Quake2Rerelease;
   }
+  if (key == "quake3_arena") {
+    return GameId::Quake3Arena;
+  }
+  if (key == "quake_live") {
+    return GameId::QuakeLive;
+  }
+  if (key == "quake4") {
+    return GameId::Quake4;
+  }
   if (ok) {
     *ok = false;
   }
@@ -114,6 +129,12 @@ QString game_display_name(GameId id) {
       return "Quake II";
     case GameId::Quake2Rerelease:
       return "Quake II Rerelease";
+    case GameId::Quake3Arena:
+      return "Quake III Arena";
+    case GameId::QuakeLive:
+      return "Quake Live";
+    case GameId::Quake4:
+      return "Quake 4";
   }
   return "Quake";
 }
@@ -125,6 +146,9 @@ QString default_palette_for_game(GameId id) {
       return "quake";
     case GameId::Quake2:
     case GameId::Quake2Rerelease:
+    case GameId::Quake3Arena:
+    case GameId::QuakeLive:
+    case GameId::Quake4:
       return "quake2";
   }
   return "quake";
@@ -136,6 +160,9 @@ QVector<GameId> supported_game_ids() {
     GameId::QuakeRerelease,
     GameId::Quake2,
     GameId::Quake2Rerelease,
+    GameId::Quake3Arena,
+    GameId::QuakeLive,
+    GameId::Quake4,
   };
 }
 

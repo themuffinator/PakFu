@@ -242,6 +242,11 @@ QString GameSetEditorDialog::suggested_default_dir(GameId game, const QString& r
         return root.filePath("baseq2");
       }
       return root.filePath("rerelease");
+    case GameId::Quake3Arena:
+    case GameId::QuakeLive:
+      return root.filePath("baseq3");
+    case GameId::Quake4:
+      return root.filePath("q4base");
   }
   return root_dir;
 }

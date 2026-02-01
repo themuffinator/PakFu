@@ -7,7 +7,9 @@
 #include <QFileInfo>
 #include <QImageReader>
 
+#include "formats/pcx_image.h"
 #include "formats/tga_image.h"
+#include "formats/wal_image.h"
 
 namespace {
 QString file_ext_lower(const QString& name) {
@@ -43,7 +45,7 @@ ImageDecodeResult decode_with_qt_reader(const QString& file_path, const QByteArr
 }
 }  // namespace
 
-ImageDecodeResult decode_image_bytes(const QByteArray& bytes, const QString& file_name) {
+ImageDecodeResult decode_image_bytes(const QByteArray& bytes, const QString& file_name, const ImageDecodeOptions& options) {
 	if (bytes.isEmpty()) {
 		return ImageDecodeResult{QImage(), "Empty image data."};
 	}
@@ -54,6 +56,25 @@ ImageDecodeResult decode_image_bytes(const QByteArray& bytes, const QString& fil
 		QImage image = decode_tga_image(bytes, &err);
 		if (image.isNull()) {
 			return ImageDecodeResult{QImage(), err.isEmpty() ? "Unable to decode TGA image." : err};
+		}
+		return ImageDecodeResult{std::move(image), QString()};
+	}
+	if (ext == "pcx") {
+		QString err;
+		QImage image = decode_pcx_image(bytes, &err);
+		if (image.isNull()) {
+			return ImageDecodeResult{QImage(), err.isEmpty() ? "Unable to decode PCX image." : err};
+		}
+		return ImageDecodeResult{std::move(image), QString()};
+	}
+	if (ext == "wal") {
+		if (!options.palette || options.palette->size() != 256) {
+			return ImageDecodeResult{QImage(), "WAL textures require a 256-color palette (Quake II: pics/colormap.pcx)."};
+		}
+		QString err;
+		QImage image = decode_wal_image_with_mips(bytes, *options.palette, &err);
+		if (image.isNull()) {
+			return ImageDecodeResult{QImage(), err.isEmpty() ? "Unable to decode WAL texture." : err};
 		}
 		return ImageDecodeResult{std::move(image), QString()};
 	}
@@ -68,7 +89,7 @@ ImageDecodeResult decode_image_bytes(const QByteArray& bytes, const QString& fil
 	return decode_with_qt_reader(bytes, QByteArray());
 }
 
-ImageDecodeResult decode_image_file(const QString& file_path) {
+ImageDecodeResult decode_image_file(const QString& file_path, const ImageDecodeOptions& options) {
 	if (file_path.isEmpty()) {
 		return ImageDecodeResult{QImage(), "Empty image path."};
 	}
@@ -85,7 +106,23 @@ ImageDecodeResult decode_image_file(const QString& file_path) {
 			return ImageDecodeResult{QImage(), "Unable to open image file."};
 		}
 		const QByteArray bytes = f.readAll();
-		return decode_image_bytes(bytes, info.fileName());
+		return decode_image_bytes(bytes, info.fileName(), options);
+	}
+	if (ext == "pcx") {
+		QFile f(file_path);
+		if (!f.open(QIODevice::ReadOnly)) {
+			return ImageDecodeResult{QImage(), "Unable to open image file."};
+		}
+		const QByteArray bytes = f.readAll();
+		return decode_image_bytes(bytes, info.fileName(), options);
+	}
+	if (ext == "wal") {
+		QFile f(file_path);
+		if (!f.open(QIODevice::ReadOnly)) {
+			return ImageDecodeResult{QImage(), "Unable to open image file."};
+		}
+		const QByteArray bytes = f.readAll();
+		return decode_image_bytes(bytes, info.fileName(), options);
 	}
 
 	if (ext == "png") {

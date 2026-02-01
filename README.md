@@ -79,7 +79,17 @@ PakFu uses **Game Sets** to store per-game defaults:
 - Palette selection (for game-specific previews)
 - Launch settings (executable + args)
 
-On startup, the **Game Sets** window appears. Use **Auto-detect** (Steam) or **Add…** to configure a game, then select it to open the main window.
+On startup, the **Game Sets** window appears. Use **Auto-detect** or **Add…** to configure a game, then select it to open the main window.
+Auto-detect checks installs in priority order: **Steam → GOG.com → EOS**.
+
+Supported auto-detect games:
+- Quake
+- Quake Rerelease
+- Quake II
+- Quake II Rerelease
+- Quake III Arena
+- Quake Live
+- Quake 4
 
 ```sh
 ./build/src/pakfu
@@ -100,6 +110,9 @@ Game Sets can also be managed via CLI:
 ./build/src/pakfu --cli --list-game-sets
 ./build/src/pakfu --cli --auto-detect-game-sets
 ./build/src/pakfu --cli --select-game-set quake2
+./build/src/pakfu --cli --select-game-set quake3_arena
+./build/src/pakfu --cli --select-game-set quake_live
+./build/src/pakfu --cli --select-game-set quake4
 ```
 
 ## License & Disclaimer ⚖️🧾

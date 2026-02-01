@@ -11,7 +11,7 @@
 #include <QTemporaryDir>
 #include <QUrl>
 
-#include "pak/pak_archive.h"
+#include "archive/archive.h"
 
 class BreadcrumbBar;
 class QAction;
@@ -58,10 +58,17 @@ public:
 
   QString pak_path() const { return pak_path_; }
   bool is_loaded() const { return loaded_; }
+  Archive::Format archive_format() const { return archive_.format(); }
   QString load_error() const { return load_error_; }
   bool is_dirty() const { return dirty_; }
   bool save(QString* error);
-  bool save_as(const QString& dest_path, QString* error);
+  struct SaveOptions {
+    // When saving as a ZIP-based archive, optionally encrypt using Quake Live Beta PK3 XOR.
+    bool quakelive_encrypt_pk3 = false;
+    // Force output format (default: inferred from destination path).
+    Archive::Format format = Archive::Format::Unknown;
+  };
+  bool save_as(const QString& dest_path, const SaveOptions& options, QString* error);
   QUndoStack* undo_stack() const;
 
   // High-level UI actions (used by menus/shortcuts).
@@ -89,6 +96,9 @@ private:
   void refresh_listing();
   void update_preview();
 	void select_adjacent_audio(int delta);
+  bool ensure_quake2_palette(QString* error);
+  SaveOptions default_save_options_for_current_path() const;
+  bool write_archive_file(const QString& dest_path, const SaveOptions& options, QString* error);
 
   void setup_actions();
   void show_context_menu(QWidget* view, const QPoint& pos);
@@ -108,6 +118,7 @@ private:
   QMimeData* make_mime_data_for_items(const QVector<QPair<QString, bool>>& items, bool cut, QStringList* failures);
   bool add_file_mapping(const QString& pak_name, const QString& source_path, QString* error);
   bool write_pak_file(const QString& dest_path, QString* error);
+  bool write_zip_file(const QString& dest_path, bool quakelive_encrypt_pk3, QString* error);
   QString current_prefix() const;
   void set_dirty(bool dirty);
 
@@ -160,7 +171,7 @@ private:
   QScopedPointer<QTemporaryDir> export_temp_dir_;
   int export_seq_ = 1;
   QStringList current_dir_;
-  PakArchive archive_;
+  Archive archive_;
   QVector<AddedFile> added_files_;
   QHash<QString, int> added_index_by_name_;
   QSet<QString> virtual_dirs_;
@@ -169,4 +180,7 @@ private:
   ViewMode view_mode_ = ViewMode::Auto;
   ViewMode effective_view_ = ViewMode::Details;
   bool dirty_ = false;
+  bool quake2_palette_loaded_ = false;
+  QVector<QRgb> quake2_palette_;
+  QString quake2_palette_error_;
 };

@@ -5,6 +5,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QRegularExpression>
 #include <QSettings>
 
@@ -14,6 +16,14 @@ QString clean_path(const QString& path) {
     return {};
   }
   return QDir::cleanPath(QDir::fromNativeSeparators(path));
+}
+
+bool paths_equal(const QString& a, const QString& b) {
+#if defined(Q_OS_WIN)
+  return a.compare(b, Qt::CaseInsensitive) == 0;
+#else
+  return a == b;
+#endif
 }
 
 QStringList dedupe_existing_dirs(const QStringList& paths) {
@@ -30,7 +40,15 @@ QStringList dedupe_existing_dirs(const QStringList& paths) {
     if (!QFileInfo(cleaned).isDir()) {
       continue;
     }
-    if (!out.contains(cleaned)) {
+
+    bool seen = false;
+    for (const QString& existing : out) {
+      if (paths_equal(existing, cleaned)) {
+        seen = true;
+        break;
+      }
+    }
+    if (!seen) {
       out.push_back(cleaned);
     }
   }
@@ -134,6 +152,136 @@ QStringList steam_common_dirs() {
   return dedupe_existing_dirs(common_dirs);
 }
 
+QStringList roots_from_named_folders(const QStringList& parent_dirs, const QStringList& folder_names) {
+  QStringList out;
+  for (const QString& parent : parent_dirs) {
+    const QDir base(parent);
+    for (const QString& folder : folder_names) {
+      const QString root = clean_path(base.filePath(folder));
+      if (root.isEmpty()) {
+        continue;
+      }
+      if (QFileInfo::exists(root) && QFileInfo(root).isDir()) {
+        out.push_back(root);
+      }
+    }
+  }
+  return dedupe_existing_dirs(out);
+}
+
+QString first_settings_value(QSettings& settings, const QStringList& keys) {
+  for (const QString& key : keys) {
+    const QString v = settings.value(key).toString().trimmed();
+    if (!v.isEmpty()) {
+      return v;
+    }
+  }
+  return {};
+}
+
+QStringList gog_registry_roots() {
+  QStringList roots;
+
+#if defined(Q_OS_WIN)
+  const QStringList base_keys = {
+    "HKEY_LOCAL_MACHINE\\SOFTWARE\\GOG.com\\Games",
+    "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\GOG.com\\Games",
+    "HKEY_CURRENT_USER\\SOFTWARE\\GOG.com\\Games",
+  };
+  const QStringList path_keys = {
+    "path",
+    "Path",
+    "installPath",
+    "InstallPath",
+    "installLocation",
+    "InstallLocation",
+  };
+
+  for (const QString& base_key : base_keys) {
+    QSettings reg(base_key, QSettings::NativeFormat);
+    const QStringList groups = reg.childGroups();
+    for (const QString& group : groups) {
+      reg.beginGroup(group);
+      const QString path = first_settings_value(reg, path_keys);
+      reg.endGroup();
+      if (!path.isEmpty()) {
+        roots.push_back(path);
+      }
+    }
+  }
+#endif
+
+  return dedupe_existing_dirs(roots);
+}
+
+QStringList gog_base_dirs() {
+  QStringList bases;
+
+  bases.push_back(QDir::home().filePath("GOG Games"));
+
+#if defined(Q_OS_WIN)
+  bases.push_back("C:/GOG Games");
+
+  const QString pf86 = qEnvironmentVariable("PROGRAMFILES(X86)");
+  if (!pf86.isEmpty()) {
+    bases.push_back(QDir(pf86).filePath("GOG Galaxy/Games"));
+  }
+  const QString pf = qEnvironmentVariable("PROGRAMFILES");
+  if (!pf.isEmpty()) {
+    bases.push_back(QDir(pf).filePath("GOG Galaxy/Games"));
+  }
+#endif
+
+  return dedupe_existing_dirs(bases);
+}
+
+QStringList epic_manifest_dirs() {
+  QStringList dirs;
+
+#if defined(Q_OS_WIN)
+  QString program_data = qEnvironmentVariable("PROGRAMDATA");
+  if (program_data.isEmpty()) {
+    program_data = "C:/ProgramData";
+  }
+  const QDir base(program_data);
+  dirs.push_back(base.filePath("Epic/EpicGamesLauncher/Data/Manifests"));
+  dirs.push_back(base.filePath("Epic/UnrealEngineLauncher/Data/Manifests"));
+#elif defined(Q_OS_MACOS)
+  const QDir base(QDir::home().filePath("Library/Application Support"));
+  dirs.push_back(base.filePath("Epic/EpicGamesLauncher/Data/Manifests"));
+  dirs.push_back(base.filePath("Epic/UnrealEngineLauncher/Data/Manifests"));
+#endif
+
+  return dedupe_existing_dirs(dirs);
+}
+
+QStringList epic_install_roots(const QStringList& manifest_dirs) {
+  QStringList roots;
+
+  for (const QString& dir : manifest_dirs) {
+    const QDir base(dir);
+    const QStringList items = base.entryList({"*.item"}, QDir::Files);
+    for (const QString& item : items) {
+      QFile f(base.filePath(item));
+      if (!f.open(QIODevice::ReadOnly)) {
+        continue;
+      }
+      QJsonParseError parse_error;
+      const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &parse_error);
+      if (doc.isNull() || !doc.isObject()) {
+        continue;
+      }
+      const QJsonObject obj = doc.object();
+      const QString install_location = obj.value("InstallLocation").toString().trimmed();
+      if (!install_location.isEmpty()) {
+        roots.push_back(install_location);
+      }
+    }
+  }
+
+  return dedupe_existing_dirs(roots);
+}
+
 QString first_existing_file(const QString& root, const QStringList& relative_paths) {
   if (root.isEmpty()) {
     return {};
@@ -187,7 +335,7 @@ QString choose_default_dir(const QString& root, const QStringList& candidates) {
 
 struct GameSupportInfo {
   GameId game = GameId::Quake;
-  QStringList steam_folder_names;
+  QStringList folder_names;
   QStringList marker_any;
   QStringList default_dir_candidates;
   QStringList executable_candidates;
@@ -198,7 +346,7 @@ QVector<GameSupportInfo> supported_game_support() {
 
   out.push_back(GameSupportInfo{
     .game = GameId::Quake,
-    .steam_folder_names = {"Quake"},
+    .folder_names = {"Quake"},
     .marker_any = {"id1/pak0.pak", "id1/PAK0.PAK"},
     .default_dir_candidates = {"id1"},
     .executable_candidates = {"quake.exe", "glquake.exe", "winquake.exe", "quake", "glquake"},
@@ -206,7 +354,7 @@ QVector<GameSupportInfo> supported_game_support() {
 
   out.push_back(GameSupportInfo{
     .game = GameId::QuakeRerelease,
-    .steam_folder_names = {"Quake"},
+    .folder_names = {"Quake"},
     .marker_any = {"rerelease/id1/pak0.pak", "rerelease/id1/PAK0.PAK", "rerelease"},
     .default_dir_candidates = {"rerelease/id1", "rerelease"},
     .executable_candidates = {"Quake_x64.exe", "Quake.exe", "quake_x64.exe", "rerelease/Quake_x64.exe", "Quake"},
@@ -214,7 +362,7 @@ QVector<GameSupportInfo> supported_game_support() {
 
   out.push_back(GameSupportInfo{
     .game = GameId::Quake2,
-    .steam_folder_names = {"Quake II"},
+    .folder_names = {"Quake II", "Quake II Enhanced"},
     .marker_any = {"baseq2/pak0.pak", "baseq2/PAK0.PAK"},
     .default_dir_candidates = {"baseq2"},
     .executable_candidates = {"quake2.exe", "q2.exe", "quake2", "q2"},
@@ -222,68 +370,103 @@ QVector<GameSupportInfo> supported_game_support() {
 
   out.push_back(GameSupportInfo{
     .game = GameId::Quake2Rerelease,
-    .steam_folder_names = {"Quake II"},
-    .marker_any = {"rerelease/baseq2/pak0.pak", "rerelease/baseq2/PAK0.PAK", "rerelease"},
+    .folder_names = {"Quake II", "Quake II Enhanced"},
+    .marker_any = {"rerelease/baseq2/pak0.pak", "rerelease/baseq2/PAK0.PAK", "Q2Game.kpf", "q2game.kpf", "rerelease"},
     .default_dir_candidates = {"rerelease/baseq2", "baseq2", "rerelease"},
-    .executable_candidates = {"Quake2_x64.exe", "Quake2.exe", "quake2_x64.exe", "rerelease/Quake2_x64.exe", "Quake2"},
+    .executable_candidates = {"Quake2_x64.exe", "Quake2.exe", "quake2_x64.exe", "quake2ex.exe", "quake2ex_steam.exe",
+                              "quake2ex_gog.exe", "rerelease/Quake2_x64.exe", "rerelease/quake2_x64.exe", "rerelease/quake2ex.exe", "Quake2"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::Quake3Arena,
+    .folder_names = {"Quake III Arena"},
+    .marker_any = {"baseq3/pak0.pk3", "baseq3/PAK0.PK3"},
+    .default_dir_candidates = {"baseq3"},
+    .executable_candidates = {"quake3.exe", "Quake3.exe", "quake3", "ioquake3.x86_64", "ioquake3"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::QuakeLive,
+    .folder_names = {"Quake Live"},
+    .marker_any = {"baseq3/pak00.pk3", "baseq3/PAK00.PK3", "baseq3/pak01.pk3", "baseq3/PAK01.PK3"},
+    .default_dir_candidates = {"baseq3"},
+    .executable_candidates = {"quakelive_steam.exe", "quakelive.exe", "quakelive_steam", "quakelive"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::Quake4,
+    .folder_names = {"Quake 4", "Quake4"},
+    .marker_any = {"q4base/pak001.pk4", "q4base/PAK001.PK4", "q4base/pak000.pk4", "q4base/pak00.pk4"},
+    .default_dir_candidates = {"q4base"},
+    .executable_candidates = {"Quake4.exe", "quake4.exe", "quake4", "Quake4"},
   });
 
   return out;
-}
-
-QStringList candidate_roots_for_support(const GameSupportInfo& support, const QStringList& common_dirs) {
-  QStringList out;
-  for (const QString& common : common_dirs) {
-    const QDir base(common);
-    for (const QString& folder : support.steam_folder_names) {
-      const QString root = clean_path(base.filePath(folder));
-      if (root.isEmpty()) {
-        continue;
-      }
-      if (QFileInfo::exists(root) && QFileInfo(root).isDir()) {
-        out.push_back(root);
-      }
-    }
-  }
-  return dedupe_existing_dirs(out);
 }
 }  // namespace
 
 GameAutoDetectResult auto_detect_supported_games() {
   GameAutoDetectResult out;
 
-  const QStringList common_dirs = steam_common_dirs();
-  if (common_dirs.isEmpty()) {
-    out.log.push_back("Steam library not found (or no Steam games installed).");
-  }
+  const QStringList steam_dirs = steam_common_dirs();
+  const QStringList gog_reg = gog_registry_roots();
+  const QStringList gog_bases = gog_base_dirs();
+  const QStringList eos_manifest_dirs = epic_manifest_dirs();
+  const QStringList eos_roots = epic_install_roots(eos_manifest_dirs);
 
   for (const GameSupportInfo& support : supported_game_support()) {
-    const QStringList roots = candidate_roots_for_support(support, common_dirs);
-    if (roots.isEmpty()) {
-      out.log.push_back(QString("Not found: %1").arg(game_display_name(support.game)));
+    const auto try_roots = [&](const QStringList& roots, const QString& source) -> bool {
+      for (const QString& root : roots) {
+        if (!any_marker_exists(root, support.marker_any)) {
+          continue;
+        }
+
+        DetectedGameInstall install;
+        install.game = support.game;
+        install.root_dir = root;
+        install.default_dir = choose_default_dir(root, support.default_dir_candidates);
+        install.launch.executable_path = first_existing_file(root, support.executable_candidates);
+        install.launch.working_dir = root;
+        out.installs.push_back(install);
+        out.log.push_back(QString("Detected %1 (%2): %3").arg(game_display_name(support.game), source, root));
+        return true;
+      }
+      return false;
+    };
+
+    const QStringList steam_roots = roots_from_named_folders(steam_dirs, support.folder_names);
+    if (try_roots(steam_roots, "Steam")) {
       continue;
     }
 
-    bool found_for_game = false;
-    for (const QString& root : roots) {
-      if (!any_marker_exists(root, support.marker_any)) {
-        continue;
-      }
-
-      DetectedGameInstall install;
-      install.game = support.game;
-      install.root_dir = root;
-      install.default_dir = choose_default_dir(root, support.default_dir_candidates);
-      install.launch.executable_path = first_existing_file(root, support.executable_candidates);
-      install.launch.working_dir = root;
-      out.installs.push_back(install);
-      out.log.push_back(QString("Detected %1: %2").arg(game_display_name(support.game), root));
-      found_for_game = true;
-      break;
+    QStringList gog_roots = gog_reg;
+    gog_roots.append(roots_from_named_folders(gog_bases, support.folder_names));
+    gog_roots = dedupe_existing_dirs(gog_roots);
+    if (try_roots(gog_roots, "GOG.com")) {
+      continue;
     }
 
-    if (!found_for_game) {
-      out.log.push_back(QString("Not found: %1").arg(game_display_name(support.game)));
+    if (try_roots(eos_roots, "EOS")) {
+      continue;
+    }
+
+    out.log.push_back(QString("Not found: %1").arg(game_display_name(support.game)));
+  }
+
+  if (out.installs.isEmpty()) {
+    QStringList prefix;
+    if (steam_dirs.isEmpty()) {
+      prefix.push_back("Steam library not found (or no Steam games installed).");
+    }
+    if (gog_reg.isEmpty() && gog_bases.isEmpty()) {
+      prefix.push_back("GOG.com installs not found.");
+    }
+    if (eos_roots.isEmpty()) {
+      prefix.push_back("EOS installs not found.");
+    }
+    if (!prefix.isEmpty()) {
+      prefix.append(out.log);
+      out.log = prefix;
     }
   }
 

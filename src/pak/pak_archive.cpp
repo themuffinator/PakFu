@@ -196,10 +196,11 @@ bool PakArchive::load(const QString& path, QString* error) {
       return false;
     }
 
-    PakEntry entry;
+    ArchiveEntry entry;
     entry.name = name;
     entry.offset = offset;
     entry.size = size;
+    entry.mtime_utc_secs = -1;
     entries_.push_back(std::move(entry));
   }
 
@@ -208,7 +209,7 @@ bool PakArchive::load(const QString& path, QString* error) {
   return true;
 }
 
-const PakEntry* PakArchive::find_entry(const QString& name) const {
+const ArchiveEntry* PakArchive::find_entry(const QString& name) const {
   if (!loaded_) {
     return nullptr;
   }
@@ -216,7 +217,7 @@ const PakEntry* PakArchive::find_entry(const QString& name) const {
   if (needle.isEmpty()) {
     return nullptr;
   }
-  for (const PakEntry& e : entries_) {
+  for (const ArchiveEntry& e : entries_) {
     if (e.name == needle) {
       return &e;
     }
@@ -238,7 +239,7 @@ bool PakArchive::read_entry_bytes(const QString& name,
     return false;
   }
 
-  const PakEntry* entry = find_entry(name);
+  const ArchiveEntry* entry = find_entry(name);
   if (!entry) {
     if (error) {
       *error = QString("Entry not found: %1").arg(name);
@@ -297,7 +298,7 @@ bool PakArchive::extract_entry_to_file(const QString& name, const QString& dest_
     return false;
   }
 
-  const PakEntry* entry = find_entry(name);
+  const ArchiveEntry* entry = find_entry(name);
   if (!entry) {
     if (error) {
       *error = QString("Entry not found: %1").arg(name);
@@ -454,14 +455,14 @@ bool PakArchive::save_as(const QString& dest_path, QString* error) const {
     return false;
   }
 
-  QVector<PakEntry> new_entries;
+  QVector<ArchiveEntry> new_entries;
   new_entries.reserve(entries_.size());
 
   constexpr qint64 kChunk = 1 << 16;
   QByteArray buffer;
   buffer.resize(static_cast<int>(kChunk));
 
-  for (const PakEntry& e : entries_) {
+  for (const ArchiveEntry& e : entries_) {
     if (!is_safe_entry_name(e.name)) {
       if (error) {
         *error = QString("Refusing to save unsafe entry: %1").arg(e.name);
@@ -520,10 +521,11 @@ bool PakArchive::save_as(const QString& dest_path, QString* error) const {
       remaining -= static_cast<quint32>(got);
     }
 
-    PakEntry out_entry;
+    ArchiveEntry out_entry;
     out_entry.name = e.name;
     out_entry.offset = out_offset;
     out_entry.size = e.size;
+    out_entry.mtime_utc_secs = -1;
     new_entries.push_back(out_entry);
   }
 
@@ -550,7 +552,7 @@ bool PakArchive::save_as(const QString& dest_path, QString* error) const {
   dir.fill('\0');
 
   for (int i = 0; i < new_entries.size(); ++i) {
-    const PakEntry& e = new_entries[i];
+    const ArchiveEntry& e = new_entries[i];
     const int base = i * kPakDirEntrySize;
     const QByteArray name = e.name.toLatin1();
     std::memcpy(dir.data() + base, name.constData(), static_cast<size_t>(name.size()));

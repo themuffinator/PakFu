@@ -601,10 +601,11 @@ Decode and display an image from raw bytes.
 */
 void PreviewPane::show_image_from_bytes(const QString& title,
 									   const QString& subtitle,
-									   const QByteArray& bytes) {
+									   const QByteArray& bytes,
+									   const ImageDecodeOptions& options) {
 	stop_audio_playback();
 	set_header(title, subtitle);
-	const ImageDecodeResult decoded = decode_image_bytes(bytes, title);
+	const ImageDecodeResult decoded = decode_image_bytes(bytes, title, options);
 	if (!decoded.ok()) {
 		show_message(title, decoded.error.isEmpty() ? "Unable to decode this image format." : decoded.error);
 		return;
@@ -624,10 +625,11 @@ Load and display an image from a file path.
 */
 void PreviewPane::show_image_from_file(const QString& title,
 								  const QString& subtitle,
-								  const QString& file_path) {
+								  const QString& file_path,
+								  const ImageDecodeOptions& options) {
 	stop_audio_playback();
 	set_header(title, subtitle);
-	const ImageDecodeResult decoded = decode_image_file(file_path);
+	const ImageDecodeResult decoded = decode_image_file(file_path, options);
 	if (!decoded.ok()) {
 		show_message(title, decoded.error.isEmpty() ? "Unable to load this image file." : decoded.error);
 		return;

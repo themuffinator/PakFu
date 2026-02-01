@@ -4,11 +4,7 @@
 #include <QString>
 #include <QtGlobal>
 
-struct PakEntry {
-  QString name;
-  quint32 offset = 0;
-  quint32 size = 0;
-};
+#include "archive/archive_entry.h"
 
 class PakArchive {
 public:
@@ -18,7 +14,7 @@ public:
 
   bool is_loaded() const { return loaded_; }
   QString path() const { return path_; }
-  const QVector<PakEntry>& entries() const { return entries_; }
+  const QVector<ArchiveEntry>& entries() const { return entries_; }
 
   // Reads the bytes of an entry from the loaded PAK.
   // If max_bytes >= 0, reading is limited to that many bytes.
@@ -28,10 +24,10 @@ public:
   bool extract_entry_to_file(const QString& name, const QString& dest_path, QString* error) const;
 
 private:
-  const PakEntry* find_entry(const QString& name) const;
+  const ArchiveEntry* find_entry(const QString& name) const;
 
   bool loaded_ = false;
   QString path_;
   qint64 file_size_ = 0;
-  QVector<PakEntry> entries_;
+  QVector<ArchiveEntry> entries_;
 };
