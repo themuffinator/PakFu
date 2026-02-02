@@ -18,6 +18,7 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QTemporaryFile>
 #include <QTimer>
 #include <QVersionNumber>
 
@@ -26,11 +27,6 @@ constexpr char kUserAgent[] = "PakFu-Updater";
 constexpr char kLastCheckKey[] = "updates/lastCheckUtc";
 constexpr char kSkipVersionKey[] = "updates/skipVersion";
 constexpr char kAutoCheckKey[] = "updates/autoCheck";
-
-QString asset_extension(const QString& name) {
-  const QFileInfo info(name);
-  return info.suffix().toLower();
-}
 
 int score_asset_name(const QString& name) {
   const QString lower = name.toLower();
@@ -110,6 +106,114 @@ bool is_installable_name(const QString& name) {
 #endif
 }
 
+}  // namespace
+
+namespace {
+[[nodiscard]] bool start_installer_after_exit(const QString& installer_path, QString* error) {
+  if (installer_path.isEmpty()) {
+    if (error) {
+      *error = "Installer path is empty.";
+    }
+    return false;
+  }
+
+  const QString temp_dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+  if (temp_dir.isEmpty()) {
+    if (error) {
+      *error = "No temporary directory is available.";
+    }
+    return false;
+  }
+
+  const qint64 pid = QCoreApplication::applicationPid();
+  if (pid <= 0) {
+    if (error) {
+      *error = "Unable to determine application PID.";
+    }
+    return false;
+  }
+
+#if defined(Q_OS_WIN)
+  QTemporaryFile script(QDir(temp_dir).filePath("pakfu-update-XXXXXX.cmd"));
+  script.setAutoRemove(false);
+  if (!script.open()) {
+    if (error) {
+      *error = "Unable to create update launcher script.";
+    }
+    return false;
+  }
+
+  const QByteArray payload =
+    "@echo off\r\n"
+    "setlocal\r\n"
+    "set \"PID=%1\"\r\n"
+    "set \"INSTALLER=%~2\"\r\n"
+    ":waitloop\r\n"
+    "tasklist /FI \"PID eq %PID%\" 2>NUL | findstr /I \"%PID%\" >NUL\r\n"
+    "if not errorlevel 1 (\r\n"
+    "  timeout /T 1 /NOBREAK >NUL\r\n"
+    "  goto waitloop\r\n"
+    ")\r\n"
+    "start \"\" \"%INSTALLER%\"\r\n"
+    "del \"%~f0\" >NUL 2>&1\r\n"
+    "endlocal\r\n";
+  script.write(payload);
+  script.close();
+
+  const QString script_path = QDir::toNativeSeparators(script.fileName());
+  const QString installer_arg = QDir::toNativeSeparators(installer_path);
+  const QString cmd =
+    QString("\"\"%1\" %2 \"%3\"\"").arg(script_path, QString::number(pid), installer_arg);
+
+  if (!QProcess::startDetached("cmd.exe", {"/C", cmd})) {
+    if (error) {
+      *error = "Unable to start deferred update launcher.";
+    }
+    return false;
+  }
+
+  return true;
+#else
+  QTemporaryFile script(QDir(temp_dir).filePath("pakfu-update-XXXXXX.sh"));
+  script.setAutoRemove(false);
+  if (!script.open()) {
+    if (error) {
+      *error = "Unable to create update launcher script.";
+    }
+    return false;
+  }
+
+  const QByteArray payload =
+    "#!/bin/sh\n"
+    "PID=\"$1\"\n"
+    "INSTALLER=\"$2\"\n"
+    "while kill -0 \"$PID\" 2>/dev/null; do\n"
+    "  sleep 1\n"
+    "done\n"
+    "if [ \"$(uname)\" = \"Darwin\" ]; then\n"
+    "  open \"$INSTALLER\"\n"
+    "else\n"
+    "  chmod +x \"$INSTALLER\" 2>/dev/null\n"
+    "  \"$INSTALLER\" >/dev/null 2>&1 &\n"
+    "fi\n"
+    "rm -- \"$0\" >/dev/null 2>&1\n";
+  script.write(payload);
+  script.close();
+
+  QFile::setPermissions(script.fileName(),
+                        QFile::permissions(script.fileName()) | QFileDevice::ExeUser | QFileDevice::ReadUser |
+                          QFileDevice::WriteUser);
+
+  if (!QProcess::startDetached("sh", {script.fileName(), QString::number(pid), installer_path})) {
+    if (error) {
+      *error = "Unable to start deferred update launcher.";
+    }
+    return false;
+  }
+
+  return true;
+#endif
+}
 }  // namespace
 
 UpdateService::UpdateService(QObject* parent)
@@ -484,11 +588,11 @@ bool UpdateService::is_installable_asset(const QString& name) const {
   return is_installable_name(name);
 }
 
-void UpdateService::show_no_update_message(QWidget* parent) {
+void UpdateService::show_no_update_message(QWidget* parent) const {
   QMessageBox::information(parent, "PakFu Updates", "You are already on the latest version.");
 }
 
-void UpdateService::show_error_message(QWidget* parent, const QString& message) {
+void UpdateService::show_error_message(QWidget* parent, const QString& message) const {
   QMessageBox::warning(parent, "PakFu Updates", message);
 }
 
@@ -703,7 +807,7 @@ void UpdateService::on_download_finished() {
     return;
   }
 
-  if (!launch_installer(download_path_, nullptr)) {
+  if (!launch_installer(download_path_, parent_window_)) {
     show_error_message(parent_window_, "Downloaded update could not be launched.");
   }
 
@@ -720,41 +824,32 @@ bool UpdateService::launch_installer(const QString& file_path, QWidget* parent) 
     return false;
   }
 
-  const QString ext = asset_extension(file_path);
-  bool launched = false;
-
-#if defined(Q_OS_WIN)
-  if (ext == "exe" || ext == "msi") {
-    launched = QProcess::startDetached(file_path, {});
-  } else {
-    launched = QDesktopServices::openUrl(QUrl::fromLocalFile(file_path));
-  }
-#elif defined(Q_OS_MACOS)
-  if (ext == "dmg" || ext == "pkg") {
-    launched = QProcess::startDetached("open", {file_path});
-  } else {
-    launched = QDesktopServices::openUrl(QUrl::fromLocalFile(file_path));
-  }
-#else
-  if (ext == "appimage") {
-    QFile::setPermissions(file_path, QFile::permissions(file_path) | QFileDevice::ExeUser);
-    launched = QProcess::startDetached(file_path, {});
-  } else {
-    launched = QDesktopServices::openUrl(QUrl::fromLocalFile(file_path));
-  }
-#endif
-
-  if (launched) {
-    const auto response = QMessageBox::question(
-      parent,
-      "Finish Update",
-      "The installer has been launched. Quit PakFu now to complete the update?",
-      QMessageBox::Yes | QMessageBox::No,
-      QMessageBox::Yes);
-    if (response == QMessageBox::Yes) {
-      QCoreApplication::quit();
-    }
+  QMessageBox box(parent);
+  box.setIcon(QMessageBox::Information);
+  box.setWindowTitle("Install Update");
+  box.setText("The update has been downloaded.\n\nPakFu can quit now and launch the installer after it closes.");
+  if (parent && parent->windowFlags().testFlag(Qt::SplashScreen)) {
+    box.setWindowFlag(Qt::WindowStaysOnTopHint, true);
   }
 
-  return launched;
+  QPushButton* install = box.addButton("Install and Quit", QMessageBox::AcceptRole);
+  QPushButton* later = box.addButton("Later", QMessageBox::RejectRole);
+  box.setDefaultButton(install);
+  box.raise();
+  box.activateWindow();
+  box.exec();
+
+  if (box.clickedButton() != install) {
+    Q_UNUSED(later);
+    return true;  // Download succeeded; user chose to install later.
+  }
+
+  QString err;
+  if (!start_installer_after_exit(file_path, &err)) {
+    show_error_message(parent, err.isEmpty() ? "Unable to schedule the installer launch." : err);
+    return false;
+  }
+
+  QCoreApplication::quit();
+  return true;
 }

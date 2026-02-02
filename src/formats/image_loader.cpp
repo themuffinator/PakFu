@@ -7,6 +7,8 @@
 #include <QFileInfo>
 #include <QImageReader>
 
+#include "formats/dds_image.h"
+#include "formats/lmp_image.h"
 #include "formats/pcx_image.h"
 #include "formats/tga_image.h"
 #include "formats/wal_image.h"
@@ -78,6 +80,22 @@ ImageDecodeResult decode_image_bytes(const QByteArray& bytes, const QString& fil
 		}
 		return ImageDecodeResult{std::move(image), QString()};
 	}
+	if (ext == "dds") {
+		QString err;
+		QImage image = decode_dds_image(bytes, &err);
+		if (image.isNull()) {
+			return ImageDecodeResult{QImage(), err.isEmpty() ? "Unable to decode DDS image." : err};
+		}
+		return ImageDecodeResult{std::move(image), QString()};
+	}
+	if (ext == "lmp") {
+		QString err;
+		QImage image = decode_lmp_image(bytes, file_name, options.palette, &err);
+		if (image.isNull()) {
+			return ImageDecodeResult{QImage(), err.isEmpty() ? "Unable to decode LMP image." : err};
+		}
+		return ImageDecodeResult{std::move(image), QString()};
+	}
 
 	if (ext == "png") {
 		return decode_with_qt_reader(bytes, "png");
@@ -117,6 +135,22 @@ ImageDecodeResult decode_image_file(const QString& file_path, const ImageDecodeO
 		return decode_image_bytes(bytes, info.fileName(), options);
 	}
 	if (ext == "wal") {
+		QFile f(file_path);
+		if (!f.open(QIODevice::ReadOnly)) {
+			return ImageDecodeResult{QImage(), "Unable to open image file."};
+		}
+		const QByteArray bytes = f.readAll();
+		return decode_image_bytes(bytes, info.fileName(), options);
+	}
+	if (ext == "dds") {
+		QFile f(file_path);
+		if (!f.open(QIODevice::ReadOnly)) {
+			return ImageDecodeResult{QImage(), "Unable to open image file."};
+		}
+		const QByteArray bytes = f.readAll();
+		return decode_image_bytes(bytes, info.fileName(), options);
+	}
+	if (ext == "lmp") {
 		QFile f(file_path);
 		if (!f.open(QIODevice::ReadOnly)) {
 			return ImageDecodeResult{QImage(), "Unable to open image file."};

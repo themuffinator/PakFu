@@ -16,9 +16,10 @@ This project is still training under the waterfall 💦🥋 (early development).
 - Provide a first-class CLI for automation, pipelines, and batch wizardry 🪄🧰
 - Run consistently on Windows/macOS/Linux 🧘‍♂️🌍
 - Understand and preview common PAK-adjacent file types 👁️‍🗨️📁
-  - Images: `pcx`, `wal`, `png`, `tga`, `jpg` 🖼️🎨
+  - Images: `pcx`, `wal`, `dds`, `lmp`, `png`, `tga`, `jpg` 🖼️🎨
   - Audio: `wav`, `ogg`, `mp3` 🔊🎶
   - Video: `cin`, `roq` 🎞️🍿
+  - Models: `mdl`, `md2`, `md3` 🧊🧩
   - Text/config: `cfg` and similar plain-text formats 🧾🖋️
 - Stay responsive for large archives (no freezing in the middle of a roundhouse kick) 🥶➡️🥋
 - Keep C++ code clean, portable, and documented (minimal OS-specific sorcery) 🧠🧹🧾
@@ -79,7 +80,10 @@ PakFu uses **Game Sets** to store per-game defaults:
 - Palette selection (for game-specific previews)
 - Launch settings (executable + args)
 
-On startup, the **Game Sets** window appears. Use **Auto-detect** or **Add…** to configure a game, then select it to open the main window.
+If **Game Sets** are already configured, PakFu opens directly into the main window.
+If none are configured yet, the **Game Sets** window appears on startup.
+In the main window, use the **Game** drop-down to switch sets instantly, or choose **Configure Game Sets…** to edit/auto-detect.
+When opening an archive, PakFu will try to auto-select the most likely Game Set based on the archive’s path and nearby install markers.
 Auto-detect checks installs in priority order: **Steam → GOG.com → EOS**.
 
 Supported auto-detect games:

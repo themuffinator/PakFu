@@ -1,6 +1,7 @@
 #include "archive/archive.h"
 
 #include <QFileInfo>
+#include <QMutexLocker>
 
 namespace {
 QString file_ext_lower(const QString& name) {
@@ -96,6 +97,7 @@ bool Archive::read_entry_bytes(const QString& name, QByteArray* out, QString* er
 	if (out) {
 		out->clear();
 	}
+	QMutexLocker locker(&mutex_);
 	if (!loaded_) {
 		if (error) {
 			*error = "No archive is loaded.";
@@ -120,6 +122,7 @@ bool Archive::extract_entry_to_file(const QString& name, const QString& dest_pat
 	if (error) {
 		error->clear();
 	}
+	QMutexLocker locker(&mutex_);
 	if (!loaded_) {
 		if (error) {
 			*error = "No archive is loaded.";
@@ -139,4 +142,3 @@ bool Archive::extract_entry_to_file(const QString& name, const QString& dest_pat
 	}
 	return false;
 }
-

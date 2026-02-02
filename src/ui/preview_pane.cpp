@@ -13,20 +13,25 @@
 #include <QPalette>
 #include <QIcon>
 #include <QPlainTextEdit>
-#include <QPushButton>
 #include <QSettings>
 #include <QPainter>
 #include <QResizeEvent>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSlider>
 #include <QStackedWidget>
 #include <QStringList>
 #include <QToolButton>
+#include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QStyle>
 
 #include "formats/image_loader.h"
 #include "ui/cfg_syntax_highlighter.h"
+#include "ui/cinematic_player_widget.h"
+#include "ui/model_viewer_widget.h"
+#include "ui/simple_syntax_highlighter.h"
 
 namespace {
 /*
@@ -256,14 +261,31 @@ void PreviewPane::build_ui() {
 
 	auto* controls_layout = new QHBoxLayout();
 	controls_layout->setSpacing(8);
-	audio_prev_button_ = new QPushButton("Previous", audio_page_);
+	audio_prev_button_ = new QToolButton(audio_page_);
+	audio_prev_button_->setAutoRaise(true);
+	audio_prev_button_->setCursor(Qt::PointingHandCursor);
+	audio_prev_button_->setIcon(style()->standardIcon(QStyle::SP_MediaSkipBackward));
+	audio_prev_button_->setIconSize(QSize(18, 18));
 	audio_prev_button_->setToolTip("Previous audio file");
-	audio_play_button_ = new QPushButton("Play", audio_page_);
-	audio_play_button_->setToolTip("Play or pause");
-	audio_next_button_ = new QPushButton("Next", audio_page_);
+
+	audio_play_button_ = new QToolButton(audio_page_);
+	audio_play_button_->setAutoRaise(true);
+	audio_play_button_->setCursor(Qt::PointingHandCursor);
+	audio_play_button_->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+	audio_play_button_->setIconSize(QSize(18, 18));
+	audio_play_button_->setToolTip("Play/Pause");
+
+	audio_next_button_ = new QToolButton(audio_page_);
+	audio_next_button_->setAutoRaise(true);
+	audio_next_button_->setCursor(Qt::PointingHandCursor);
+	audio_next_button_->setIcon(style()->standardIcon(QStyle::SP_MediaSkipForward));
+	audio_next_button_->setIconSize(QSize(18, 18));
 	audio_next_button_->setToolTip("Next audio file");
 	audio_info_button_ = new QToolButton(audio_page_);
-	audio_info_button_->setText("?");
+	audio_info_button_->setAutoRaise(true);
+	audio_info_button_->setCursor(Qt::PointingHandCursor);
+	audio_info_button_->setIcon(style()->standardIcon(QStyle::SP_MessageBoxInformation));
+	audio_info_button_->setIconSize(QSize(16, 16));
 	audio_info_button_->setToolTip("Audio details will appear here once loaded.");
 
 	controls_layout->addWidget(audio_prev_button_);
@@ -271,6 +293,21 @@ void PreviewPane::build_ui() {
 	controls_layout->addWidget(audio_next_button_);
 	controls_layout->addStretch();
 	controls_layout->addWidget(audio_info_button_);
+
+	audio_volume_scroll_ = new QScrollBar(Qt::Vertical, audio_page_);
+	audio_volume_scroll_->setRange(0, 100);
+	audio_volume_scroll_->setValue(80);
+	audio_volume_scroll_->setPageStep(10);
+	audio_volume_scroll_->setSingleStep(2);
+	audio_volume_scroll_->setFixedWidth(14);
+	audio_volume_scroll_->setFixedHeight(56);
+	audio_volume_scroll_->setInvertedAppearance(true);
+	audio_volume_scroll_->setToolTip("Volume");
+	audio_volume_scroll_->setStyleSheet(
+		"QScrollBar { background: transparent; }"
+		"QScrollBar::add-line, QScrollBar::sub-line { height: 0px; }"
+		"QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }");
+	controls_layout->addWidget(audio_volume_scroll_, 0, Qt::AlignVCenter);
 	audio_layout->addLayout(controls_layout);
 
 	audio_position_slider_ = new QSlider(Qt::Horizontal, audio_page_);
@@ -278,25 +315,14 @@ void PreviewPane::build_ui() {
 	audio_position_slider_->setToolTip("Seek");
 	audio_layout->addWidget(audio_position_slider_);
 
-	auto* volume_layout = new QHBoxLayout();
-	volume_layout->setSpacing(8);
-	auto* volume_label = new QLabel("Volume", audio_page_);
-	audio_volume_slider_ = new QSlider(Qt::Horizontal, audio_page_);
-	audio_volume_slider_->setRange(0, 100);
-	audio_volume_slider_->setValue(80);
-	audio_volume_slider_->setToolTip("Volume");
-	volume_layout->addWidget(volume_label);
-	volume_layout->addWidget(audio_volume_slider_, 1);
-	audio_layout->addLayout(volume_layout);
-
 	audio_player_ = new QMediaPlayer(this);
 	audio_output_ = new QAudioOutput(this);
-	audio_output_->setVolume(static_cast<float>(audio_volume_slider_->value()) / 100.0f);
+	audio_output_->setVolume(static_cast<float>(audio_volume_scroll_->value()) / 100.0f);
 	audio_player_->setAudioOutput(audio_output_);
 
-	connect(audio_prev_button_, &QPushButton::clicked, this, &PreviewPane::request_previous_audio);
-	connect(audio_next_button_, &QPushButton::clicked, this, &PreviewPane::request_next_audio);
-	connect(audio_play_button_, &QPushButton::clicked, this, [this]() {
+	connect(audio_prev_button_, &QToolButton::clicked, this, &PreviewPane::request_previous_audio);
+	connect(audio_next_button_, &QToolButton::clicked, this, &PreviewPane::request_next_audio);
+	connect(audio_play_button_, &QToolButton::clicked, this, [this]() {
 		if (!audio_player_) {
 			return;
 		}
@@ -306,7 +332,7 @@ void PreviewPane::build_ui() {
 			audio_player_->play();
 		}
 	});
-	connect(audio_volume_slider_, &QSlider::valueChanged, this, [this](int value) {
+	connect(audio_volume_scroll_, &QScrollBar::valueChanged, this, [this](int value) {
 		if (audio_output_) {
 			audio_output_->setVolume(static_cast<float>(value) / 100.0f);
 		}
@@ -340,11 +366,32 @@ void PreviewPane::build_ui() {
 		update_audio_tooltip();
 	});
 	connect(audio_player_, &QMediaPlayer::playbackStateChanged, this, [this](QMediaPlayer::PlaybackState state) {
-		if (audio_play_button_) {
-			audio_play_button_->setText(state == QMediaPlayer::PlayingState ? "Pause" : "Play");
+		if (!audio_play_button_) {
+			return;
 		}
+		audio_play_button_->setIcon(
+			style()->standardIcon(state == QMediaPlayer::PlayingState ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
 	});
 	stack_->addWidget(audio_page_);
+
+	// Cinematic/video page (CIN/ROQ).
+	cinematic_page_ = new QWidget(stack_);
+	auto* cin_layout = new QVBoxLayout(cinematic_page_);
+	cin_layout->setContentsMargins(0, 0, 0, 0);
+	cinematic_widget_ = new CinematicPlayerWidget(cinematic_page_);
+	cin_layout->addWidget(cinematic_widget_, 1);
+	stack_->addWidget(cinematic_page_);
+
+	connect(cinematic_widget_, &CinematicPlayerWidget::request_previous_media, this, &PreviewPane::request_previous_video);
+	connect(cinematic_widget_, &CinematicPlayerWidget::request_next_media, this, &PreviewPane::request_next_video);
+
+	// Model page (MDL/MD2/MD3).
+	model_page_ = new QWidget(stack_);
+	auto* model_layout = new QVBoxLayout(model_page_);
+	model_layout->setContentsMargins(0, 0, 0, 0);
+	model_widget_ = new ModelViewerWidget(model_page_);
+	model_layout->addWidget(model_widget_, 1);
+	stack_->addWidget(model_page_);
 
 	QSettings settings;
 	image_bg_checkerboard_ = settings.value("preview/image/checkerboard", true).toBool();
@@ -418,6 +465,8 @@ Show the default placeholder panel when no item is selected.
 */
 void PreviewPane::show_placeholder() {
 	stop_audio_playback();
+	stop_cinematic_playback();
+	stop_model_preview();
 	set_header("Preview", "Select a file from the list.");
 	if (stack_ && placeholder_page_) {
 		stack_->setCurrentWidget(placeholder_page_);
@@ -433,6 +482,8 @@ Show a centered message panel with a title and body text.
 */
 void PreviewPane::show_message(const QString& title, const QString& body) {
 	stop_audio_playback();
+	stop_cinematic_playback();
+	stop_model_preview();
 	set_header(title, QString());
 	if (message_label_) {
 		message_label_->setText(body);
@@ -452,7 +503,9 @@ Show a plain-text preview panel.
 */
 void PreviewPane::show_text(const QString& title, const QString& subtitle, const QString& text) {
 	stop_audio_playback();
-	clear_text_highlighter();
+	stop_cinematic_playback();
+	stop_model_preview();
+	set_text_highlighter(TextSyntax::None);
 	set_header(title, subtitle);
 	if (text_view_) {
 		text_view_->setPlainText(text);
@@ -464,7 +517,9 @@ void PreviewPane::show_text(const QString& title, const QString& subtitle, const
 
 void PreviewPane::show_cfg(const QString& title, const QString& subtitle, const QString& text) {
 	stop_audio_playback();
-	ensure_cfg_highlighter();
+	stop_cinematic_playback();
+	stop_model_preview();
+	set_text_highlighter(TextSyntax::Cfg);
 	set_header(title, subtitle);
 	if (text_view_) {
 		text_view_->setPlainText(text);
@@ -486,7 +541,9 @@ void PreviewPane::show_binary(const QString& title,
 								const QByteArray& bytes,
 								bool truncated) {
 	stop_audio_playback();
-	clear_text_highlighter();
+	stop_cinematic_playback();
+	stop_model_preview();
+	set_text_highlighter(TextSyntax::None);
 	QString sub = subtitle;
 	if (truncated) {
 		sub = sub.isEmpty() ? "Preview truncated." : (sub + "  (Preview truncated)");
@@ -500,18 +557,34 @@ void PreviewPane::show_binary(const QString& title,
 	}
 }
 
-void PreviewPane::clear_text_highlighter() {
-	cfg_highlighter_.reset();
-}
+void PreviewPane::set_text_highlighter(TextSyntax syntax) {
+	if (syntax == current_text_syntax_ && text_highlighter_) {
+		return;
+	}
 
-void PreviewPane::ensure_cfg_highlighter() {
-	if (!text_view_) {
+	text_highlighter_.reset();
+	current_text_syntax_ = syntax;
+
+	if (!text_view_ || !text_view_->document()) {
 		return;
 	}
-	if (cfg_highlighter_) {
-		return;
+
+	switch (syntax) {
+		case TextSyntax::None:
+			return;
+		case TextSyntax::Cfg:
+			text_highlighter_ = std::make_unique<CfgSyntaxHighlighter>(text_view_->document());
+			return;
+		case TextSyntax::Json:
+			text_highlighter_ = std::make_unique<SimpleSyntaxHighlighter>(SimpleSyntaxHighlighter::Mode::Json, text_view_->document());
+			return;
+		case TextSyntax::Quake3Menu:
+			text_highlighter_ = std::make_unique<SimpleSyntaxHighlighter>(SimpleSyntaxHighlighter::Mode::Quake3Menu, text_view_->document());
+			return;
+		case TextSyntax::Quake3Shader:
+			text_highlighter_ = std::make_unique<SimpleSyntaxHighlighter>(SimpleSyntaxHighlighter::Mode::Quake3Shader, text_view_->document());
+			return;
 	}
-	cfg_highlighter_ = std::make_unique<CfgSyntaxHighlighter>(text_view_->document());
 }
 
 /*
@@ -604,16 +677,24 @@ void PreviewPane::show_image_from_bytes(const QString& title,
 									   const QByteArray& bytes,
 									   const ImageDecodeOptions& options) {
 	stop_audio_playback();
+	stop_cinematic_playback();
+	stop_model_preview();
 	set_header(title, subtitle);
+	if (stack_ && image_page_) {
+		stack_->setCurrentWidget(image_page_);
+	}
 	const ImageDecodeResult decoded = decode_image_bytes(bytes, title, options);
 	if (!decoded.ok()) {
 		show_message(title, decoded.error.isEmpty() ? "Unable to decode this image format." : decoded.error);
 		return;
 	}
 	set_image_qimage(decoded.image);
-	if (stack_ && image_page_) {
-		stack_->setCurrentWidget(image_page_);
-	}
+	QTimer::singleShot(0, this, [this]() {
+		if (!stack_ || stack_->currentWidget() != image_page_ || image_source_pixmap_.isNull()) {
+			return;
+		}
+		set_image_pixmap(image_source_pixmap_);
+	});
 }
 
 /*
@@ -628,16 +709,24 @@ void PreviewPane::show_image_from_file(const QString& title,
 								  const QString& file_path,
 								  const ImageDecodeOptions& options) {
 	stop_audio_playback();
+	stop_cinematic_playback();
+	stop_model_preview();
 	set_header(title, subtitle);
+	if (stack_ && image_page_) {
+		stack_->setCurrentWidget(image_page_);
+	}
 	const ImageDecodeResult decoded = decode_image_file(file_path, options);
 	if (!decoded.ok()) {
 		show_message(title, decoded.error.isEmpty() ? "Unable to load this image file." : decoded.error);
 		return;
 	}
 	set_image_qimage(decoded.image);
-	if (stack_ && image_page_) {
-		stack_->setCurrentWidget(image_page_);
-	}
+	QTimer::singleShot(0, this, [this]() {
+		if (!stack_ || stack_->currentWidget() != image_page_ || image_source_pixmap_.isNull()) {
+			return;
+		}
+		set_image_pixmap(image_source_pixmap_);
+	});
 }
 
 /*
@@ -650,10 +739,74 @@ Prepare the audio player controls for a selected audio file.
 void PreviewPane::show_audio_from_file(const QString& title,
 								const QString& subtitle,
 								const QString& file_path) {
+	stop_cinematic_playback();
+	stop_model_preview();
 	set_header(title, subtitle);
 	set_audio_source(file_path);
 	if (stack_ && audio_page_) {
 		stack_->setCurrentWidget(audio_page_);
+	}
+}
+
+void PreviewPane::show_cinematic_from_file(const QString& title, const QString& subtitle, const QString& file_path) {
+	stop_audio_playback();
+	stop_cinematic_playback();
+	stop_model_preview();
+	set_header(title, subtitle);
+
+	if (!cinematic_widget_ || !cinematic_page_) {
+		show_message(title, "Cinematic preview is not available.");
+		return;
+	}
+
+	if (stack_) {
+		stack_->setCurrentWidget(cinematic_page_);
+	}
+
+	QString err;
+	if (!cinematic_widget_->load_file(file_path, &err)) {
+		show_message(title, err.isEmpty() ? "Unable to load cinematic." : err);
+		return;
+	}
+}
+
+void PreviewPane::show_model_from_file(const QString& title, const QString& subtitle, const QString& file_path) {
+	stop_audio_playback();
+	stop_cinematic_playback();
+	stop_model_preview();
+	set_header(title, subtitle);
+
+	if (!model_widget_ || !model_page_) {
+		show_message(title, "Model preview is not available.");
+		return;
+	}
+
+	if (stack_) {
+		stack_->setCurrentWidget(model_page_);
+	}
+
+	QString err;
+	if (!model_widget_->load_file(file_path, &err)) {
+		show_message(title, err.isEmpty() ? "Unable to load model." : err);
+		return;
+	}
+}
+
+void PreviewPane::start_playback_from_beginning() {
+	if (stack_ && audio_page_ && stack_->currentWidget() == audio_page_) {
+		if (!audio_player_ || audio_file_path_.isEmpty()) {
+			return;
+		}
+		audio_player_->setPosition(0);
+		audio_player_->play();
+		return;
+	}
+
+	if (stack_ && cinematic_page_ && stack_->currentWidget() == cinematic_page_) {
+		if (cinematic_widget_) {
+			cinematic_widget_->play_from_start();
+		}
+		return;
 	}
 }
 
@@ -670,6 +823,18 @@ void PreviewPane::stop_audio_playback() {
 	}
 	if (audio_player_->playbackState() != QMediaPlayer::StoppedState) {
 		audio_player_->stop();
+	}
+}
+
+void PreviewPane::stop_cinematic_playback() {
+	if (cinematic_widget_) {
+		cinematic_widget_->unload();
+	}
+}
+
+void PreviewPane::stop_model_preview() {
+	if (model_widget_) {
+		model_widget_->unload();
 	}
 }
 
@@ -705,7 +870,7 @@ void PreviewPane::sync_audio_controls() {
 		audio_position_slider_->setValue(0);
 	}
 	if (audio_play_button_) {
-		audio_play_button_->setText("Play");
+		audio_play_button_->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
 	}
 }
 
@@ -759,4 +924,45 @@ void PreviewPane::update_audio_tooltip() {
 		lines << "Audio details unavailable.";
 	}
 	audio_info_button_->setToolTip(lines.join("\n"));
+}
+void PreviewPane::show_json(const QString& title, const QString& subtitle, const QString& text) {
+	stop_audio_playback();
+	stop_cinematic_playback();
+	stop_model_preview();
+	set_text_highlighter(TextSyntax::Json);
+	set_header(title, subtitle);
+	if (text_view_) {
+		text_view_->setPlainText(text);
+	}
+	if (stack_ && text_page_) {
+		stack_->setCurrentWidget(text_page_);
+	}
+}
+
+void PreviewPane::show_menu(const QString& title, const QString& subtitle, const QString& text) {
+	stop_audio_playback();
+	stop_cinematic_playback();
+	stop_model_preview();
+	set_text_highlighter(TextSyntax::Quake3Menu);
+	set_header(title, subtitle);
+	if (text_view_) {
+		text_view_->setPlainText(text);
+	}
+	if (stack_ && text_page_) {
+		stack_->setCurrentWidget(text_page_);
+	}
+}
+
+void PreviewPane::show_shader(const QString& title, const QString& subtitle, const QString& text) {
+	stop_audio_playback();
+	stop_cinematic_playback();
+	stop_model_preview();
+	set_text_highlighter(TextSyntax::Quake3Shader);
+	set_header(title, subtitle);
+	if (text_view_) {
+		text_view_->setPlainText(text);
+	}
+	if (stack_ && text_page_) {
+		stack_->setCurrentWidget(text_page_);
+	}
 }

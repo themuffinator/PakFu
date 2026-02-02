@@ -6,19 +6,22 @@
       "type": "cppvsdbg",
       "request": "launch",
       "program": "${workspaceFolder}\\build\\src\\pakfu.exe",
-      "args": [],
+      "args": [
+        "-platform",
+        "windows:nodirectwrite"
+      ],
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "Meson: build",
       "stopAtEntry": false,
       "console": "internalConsole",
       "environment": [
         {
-          "name": "QT_PLUGIN_PATH",
-          "value": "${workspaceFolder}\\\\build\\\\src"
+          "name": "PAKFU_DISABLE_WELCOME_BACKDROP_TEXT",
+          "value": "1"
         },
         {
-          "name": "QT_QPA_PLATFORM_PLUGIN_PATH",
-          "value": "${workspaceFolder}\\\\build\\\\src\\\\platforms"
+          "name": "PAKFU_ALLOW_MULTI_INSTANCE",
+          "value": "1"
         }
       ]
     },

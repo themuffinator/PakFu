@@ -3,12 +3,14 @@
 #include <functional>
 
 #include <QAction>
+#include <QComboBox>
 #include <QDateTime>
 #include <QCloseEvent>
 #include <QDialog>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QHash>
 #include <QKeySequence>
 #include <QLabel>
 #include <QMenu>
@@ -24,20 +26,27 @@
 #include <QTabBar>
 #include <QTimer>
 #include <QToolButton>
+#include <QStyle>
 #include <QUndoStack>
 #include <QVariant>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QStackedLayout>
 
+#include "game/game_auto_detect.h"
+#include "game/game_set.h"
 #include "pakfu_config.h"
+#include "ui/game_set_dialog.h"
 #include "ui/pak_tab.h"
 #include "ui/preferences_tab.h"
 #include "update/update_service.h"
 
 namespace {
 constexpr int kMaxRecentFiles = 12;
-constexpr char kRecentFilesKey[] = "ui/recentFiles";
+constexpr char kLegacyRecentFilesKey[] = "ui/recentFiles";
+constexpr char kRecentFilesByGameSetKeyPrefix[] = "ui/recentFilesByGameSet";
+constexpr char kRecentFilesByGameSetMigratedKey[] = "ui/recentFilesByGameSetMigrated";
+constexpr char kConfigureGameSetsUid[] = "__configure_game_sets__";
 
 QString normalize_recent_path(const QString& path) {
   if (path.isEmpty()) {
@@ -54,6 +63,65 @@ bool recent_paths_equal(const QString& a, const QString& b) {
 #endif
 }
 
+QString recent_files_key_for_game_set_uid(const QString& uid) {
+  if (uid.isEmpty()) {
+    return QLatin1String(kLegacyRecentFilesKey);
+  }
+  QString key = QLatin1String(kRecentFilesByGameSetKeyPrefix);
+  key += '/';
+  key += uid;
+  return key;
+}
+
+QString clean_path(const QString& path) {
+  if (path.isEmpty()) {
+    return {};
+  }
+  return QDir::cleanPath(QDir::fromNativeSeparators(path));
+}
+
+bool path_is_under(const QString& path, const QString& root) {
+  const QString p = clean_path(path);
+  QString r = clean_path(root);
+  if (p.isEmpty() || r.isEmpty()) {
+    return false;
+  }
+  if (!r.endsWith('/')) {
+    r += '/';
+  }
+#if defined(Q_OS_WIN)
+  return p.startsWith(r, Qt::CaseInsensitive);
+#else
+  return p.startsWith(r);
+#endif
+}
+
+QStringList normalize_recent_paths(const QStringList& files) {
+  // Normalize, drop empty, de-dupe (preserve order).
+  QStringList normalized;
+  normalized.reserve(files.size());
+  for (const QString& f : files) {
+    const QString n = normalize_recent_path(f);
+    if (n.isEmpty()) {
+      continue;
+    }
+    bool seen = false;
+    for (const QString& existing : normalized) {
+      if (recent_paths_equal(existing, n)) {
+        seen = true;
+        break;
+      }
+    }
+    if (!seen) {
+      normalized.push_back(n);
+    }
+    if (normalized.size() >= kMaxRecentFiles) {
+      break;
+    }
+  }
+  return normalized;
+}
+
 class WelcomeBackdrop : public QWidget {
 public:
   explicit WelcomeBackdrop(QWidget* parent = nullptr) : QWidget(parent) {
@@ -65,6 +133,9 @@ public:
 protected:
   void paintEvent(QPaintEvent* event) override {
     Q_UNUSED(event);
+    if (qEnvironmentVariableIsSet("PAKFU_DISABLE_WELCOME_BACKDROP_TEXT")) {
+      return;
+    }
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setRenderHint(QPainter::TextAntialiasing, true);
@@ -192,6 +263,8 @@ QWidget* build_welcome_tab(QWidget* parent,
 MainWindow::MainWindow(const GameSet& game_set, const QString& initial_pak_path, bool schedule_updates)
     : game_set_(game_set), schedule_updates_(schedule_updates) {
   setup_central();
+  load_game_sets();
+  rebuild_game_combo();
   setup_menus();
 
   resize(1120, 760);
@@ -210,6 +283,14 @@ MainWindow::MainWindow(const GameSet& game_set, const QString& initial_pak_path,
   update_window_title();
 }
 
+void MainWindow::open_archives(const QStringList& paths) {
+  for (const QString& path : paths) {
+    if (!path.isEmpty()) {
+      open_pak(path);
+    }
+  }
+}
+
 QString MainWindow::default_directory_for_dialogs() const {
   if (!game_set_.default_dir.isEmpty() && QFileInfo::exists(game_set_.default_dir)) {
     return game_set_.default_dir;
@@ -221,12 +302,35 @@ QString MainWindow::default_directory_for_dialogs() const {
 }
 
 void MainWindow::setup_central() {
-  tabs_ = new QTabWidget(this);
+  auto* central = new QWidget(this);
+  auto* layout = new QVBoxLayout(central);
+  layout->setContentsMargins(0, 0, 0, 0);
+  layout->setSpacing(0);
+
+  // Game selector row.
+  auto* game_row = new QWidget(central);
+  auto* game_layout = new QHBoxLayout(game_row);
+  game_layout->setContentsMargins(12, 8, 12, 8);
+  game_layout->setSpacing(10);
+
+  auto* game_label = new QLabel("Game", game_row);
+  game_combo_ = new QComboBox(game_row);
+  game_combo_->setMinimumWidth(280);
+  game_combo_->setToolTip("Select the active Game Set");
+
+  game_layout->addWidget(game_label, 0);
+  game_layout->addWidget(game_combo_, 0);
+  game_layout->addStretch(1);
+
+  layout->addWidget(game_row, 0);
+
+  tabs_ = new QTabWidget(central);
   tabs_->setDocumentMode(true);
   tabs_->setMovable(true);
   // We'll provide our own per-tab close button so it is always on the right.
   tabs_->setTabsClosable(false);
-  setCentralWidget(tabs_);
+  layout->addWidget(tabs_, 1);
+  setCentralWidget(central);
 
   welcome_tab_ = build_welcome_tab(
     tabs_,
@@ -253,8 +357,25 @@ void MainWindow::setup_central() {
   connect(tabs_, &QTabWidget::currentChanged, this, [this](int) {
     update_window_title();
     update_action_states();
+    if (const PakTab* tab = current_pak_tab()) {
+      auto_select_game_for_archive_path(tab->pak_path());
+    }
   });
   connect(tabs_, &QTabWidget::tabCloseRequested, this, &MainWindow::close_tab);
+
+  if (game_combo_) {
+    connect(game_combo_, &QComboBox::activated, this, [this](int idx) {
+      if (!game_combo_ || updating_game_combo_) {
+        return;
+      }
+      const QString uid = game_combo_->itemData(idx, Qt::UserRole).toString();
+      if (uid == kConfigureGameSetsUid) {
+        open_game_set_manager();
+        return;
+      }
+      apply_game_set(uid, true);
+    });
+  }
 }
 
 void MainWindow::setup_menus() {
@@ -550,6 +671,8 @@ void MainWindow::open_pak(const QString& path) {
     return;
   }
 
+  auto_select_game_for_archive_path(info.absoluteFilePath());
+
   if (focus_tab_by_path(info.absoluteFilePath())) {
     add_recent_file(info.absoluteFilePath());
     return;
@@ -571,6 +694,176 @@ void MainWindow::open_pak(const QString& path) {
   const int index = add_tab(title, tab);
   tabs_->setTabToolTip(index, info.absoluteFilePath());
   tabs_->setCurrentIndex(index);
+}
+
+void MainWindow::load_game_sets() {
+  game_sets_ = load_game_set_state();
+  if (game_sets_.sets.isEmpty()) {
+    return;
+  }
+
+  // Ensure we have a valid selected UID.
+  QString want = game_set_.uid;
+  if (want.isEmpty()) {
+    want = game_sets_.selected_uid;
+  }
+
+  const GameSet* set = find_game_set(game_sets_, want);
+  if (!set && !game_sets_.selected_uid.isEmpty()) {
+    set = find_game_set(game_sets_, game_sets_.selected_uid);
+  }
+  if (!set && !game_sets_.sets.isEmpty()) {
+    set = &game_sets_.sets.first();
+  }
+  if (set) {
+    game_set_ = *set;
+    game_sets_.selected_uid = game_set_.uid;
+  }
+}
+
+void MainWindow::rebuild_game_combo() {
+  if (!game_combo_) {
+    return;
+  }
+
+  updating_game_combo_ = true;
+  game_combo_->clear();
+
+  for (const GameSet& set : game_sets_.sets) {
+    const QString label = set.name.isEmpty() ? game_display_name(set.game) : set.name;
+    game_combo_->addItem(label, set.uid);
+  }
+
+  if (game_combo_->count() > 0) {
+    game_combo_->insertSeparator(game_combo_->count());
+    game_combo_->addItem(style()->standardIcon(QStyle::SP_FileDialogDetailedView), "Configure Game Sets…", kConfigureGameSetsUid);
+  } else {
+    game_combo_->addItem(style()->standardIcon(QStyle::SP_FileDialogDetailedView), "Configure Game Sets…", kConfigureGameSetsUid);
+  }
+
+  int idx = game_combo_->findData(game_set_.uid);
+  if (idx < 0 && !game_sets_.selected_uid.isEmpty()) {
+    idx = game_combo_->findData(game_sets_.selected_uid);
+  }
+  if (idx < 0 && !game_sets_.sets.isEmpty()) {
+    idx = 0;
+  }
+  if (idx >= 0) {
+    game_combo_->setCurrentIndex(idx);
+  }
+
+  updating_game_combo_ = false;
+}
+
+void MainWindow::apply_game_set(const QString& uid, bool persist_selection) {
+  if (uid.isEmpty() || uid == kConfigureGameSetsUid) {
+    return;
+  }
+
+  const GameSet* set = find_game_set(game_sets_, uid);
+  if (!set) {
+    return;
+  }
+
+  if (game_set_.uid != set->uid) {
+    game_set_ = *set;
+  }
+
+  if (persist_selection) {
+    game_sets_.selected_uid = uid;
+    (void)save_game_set_state(game_sets_);
+  }
+
+  if (game_combo_) {
+    const int idx = game_combo_->findData(uid);
+    if (idx >= 0 && game_combo_->currentIndex() != idx) {
+      updating_game_combo_ = true;
+      game_combo_->setCurrentIndex(idx);
+      updating_game_combo_ = false;
+    }
+  }
+
+  // Apply updated default directory to all open tabs.
+  if (tabs_) {
+    for (int i = 0; i < tabs_->count(); ++i) {
+      if (auto* tab = qobject_cast<PakTab*>(tabs_->widget(i))) {
+        tab->set_default_directory(default_directory_for_dialogs());
+      }
+    }
+  }
+
+  update_window_title();
+  rebuild_recent_files_menu();
+}
+
+void MainWindow::open_game_set_manager() {
+  GameSetDialog dialog(this);
+  const int r = dialog.exec();
+
+  // Reload after closing: the dialog can add/update/delete sets.
+  load_game_sets();
+  rebuild_game_combo();
+
+  if (r != QDialog::Accepted) {
+    return;
+  }
+
+  const auto selected = dialog.selected_game_set();
+  if (!selected.has_value()) {
+    return;
+  }
+
+  apply_game_set(selected->uid, true);
+}
+
+void MainWindow::auto_select_game_for_archive_path(const QString& path) {
+  if (path.isEmpty() || game_sets_.sets.isEmpty()) {
+    return;
+  }
+
+  const QString clean = clean_path(path);
+  if (clean.isEmpty()) {
+    return;
+  }
+
+  const auto best_uid_by_roots = [&]() -> QString {
+    QString best;
+    int best_score = -1;
+
+    for (const GameSet& set : game_sets_.sets) {
+      int score = -1;
+      if (!set.root_dir.isEmpty() && path_is_under(clean, set.root_dir)) {
+        score = 2000 + set.root_dir.size();
+      } else if (!set.default_dir.isEmpty() && path_is_under(clean, set.default_dir)) {
+        score = 1500 + set.default_dir.size();
+      }
+      if (score > best_score) {
+        best_score = score;
+        best = set.uid;
+      }
+    }
+    return best;
+  };
+
+  const QString best_by_roots = best_uid_by_roots();
+  if (!best_by_roots.isEmpty() && best_by_roots != game_set_.uid) {
+    apply_game_set(best_by_roots, true);
+    return;
+  }
+
+  const auto detected = detect_game_id_for_path(clean);
+  if (!detected.has_value()) {
+    return;
+  }
+
+  for (const GameSet& set : game_sets_.sets) {
+    if (set.game == *detected) {
+      if (set.uid != game_set_.uid) {
+        apply_game_set(set.uid, true);
+      }
+      return;
+    }
+  }
 }
 
 void MainWindow::save_current() {
@@ -859,7 +1152,8 @@ void MainWindow::add_recent_file(const QString& path) {
   }
 
   QSettings settings;
-  QStringList files = settings.value(kRecentFilesKey).toStringList();
+  const QString key = recent_files_key_for_game_set_uid(game_set_.uid);
+  QStringList files = settings.value(key).toStringList();
 
   for (int i = files.size() - 1; i >= 0; --i) {
     if (recent_paths_equal(files[i], normalized)) {
@@ -871,7 +1165,7 @@ void MainWindow::add_recent_file(const QString& path) {
     files.removeLast();
   }
 
-  settings.setValue(kRecentFilesKey, files);
+  settings.setValue(key, files);
   rebuild_recent_files_menu();
 }
 
@@ -882,7 +1176,8 @@ void MainWindow::remove_recent_file(const QString& path) {
   }
 
   QSettings settings;
-  QStringList files = settings.value(kRecentFilesKey).toStringList();
+  const QString key = recent_files_key_for_game_set_uid(game_set_.uid);
+  QStringList files = settings.value(key).toStringList();
   bool changed = false;
   for (int i = files.size() - 1; i >= 0; --i) {
     if (recent_paths_equal(files[i], normalized)) {
@@ -891,14 +1186,15 @@ void MainWindow::remove_recent_file(const QString& path) {
     }
   }
   if (changed) {
-    settings.setValue(kRecentFilesKey, files);
+    settings.setValue(key, files);
     rebuild_recent_files_menu();
   }
 }
 
 void MainWindow::clear_recent_files() {
   QSettings settings;
-  settings.remove(kRecentFilesKey);
+  const QString key = recent_files_key_for_game_set_uid(game_set_.uid);
+  settings.remove(key);
   rebuild_recent_files_menu();
 }
 
@@ -908,33 +1204,80 @@ void MainWindow::rebuild_recent_files_menu() {
   }
 
   QSettings settings;
-  QStringList files = settings.value(kRecentFilesKey).toStringList();
 
-  // Normalize, drop empty, de-dupe (preserve order).
-  QStringList normalized;
-  normalized.reserve(files.size());
-  for (const QString& f : files) {
-    const QString n = normalize_recent_path(f);
-    if (n.isEmpty()) {
-      continue;
-    }
-    bool seen = false;
-    for (const QString& existing : normalized) {
-      if (recent_paths_equal(existing, n)) {
-        seen = true;
-        break;
+  if (!settings.value(kRecentFilesByGameSetMigratedKey, false).toBool() &&
+      settings.contains(kLegacyRecentFilesKey) && !game_sets_.sets.isEmpty() && !game_set_.uid.isEmpty()) {
+    const QStringList legacy = normalize_recent_paths(settings.value(kLegacyRecentFilesKey).toStringList());
+    QHash<QString, QStringList> by_uid;
+
+    auto best_uid_for_path = [this](const QString& p) -> QString {
+      if (p.isEmpty() || game_sets_.sets.isEmpty()) {
+        return {};
       }
+
+      const QString clean = clean_path(p);
+      if (clean.isEmpty()) {
+        return {};
+      }
+
+      QString best;
+      int best_score = -1;
+      for (const GameSet& set : game_sets_.sets) {
+        int score = -1;
+        if (!set.root_dir.isEmpty() && path_is_under(clean, set.root_dir)) {
+          score = 2000 + set.root_dir.size();
+        } else if (!set.default_dir.isEmpty() && path_is_under(clean, set.default_dir)) {
+          score = 1500 + set.default_dir.size();
+        }
+        if (score > best_score) {
+          best_score = score;
+          best = set.uid;
+        }
+      }
+      if (!best.isEmpty()) {
+        return best;
+      }
+
+      const auto detected = detect_game_id_for_path(clean);
+      if (!detected.has_value()) {
+        return {};
+      }
+      for (const GameSet& set : game_sets_.sets) {
+        if (set.game == *detected) {
+          return set.uid;
+        }
+      }
+      return {};
+    };
+
+    for (const QString& path : legacy) {
+      QString uid = best_uid_for_path(path);
+      if (uid.isEmpty()) {
+        uid = game_set_.uid;
+      }
+      QStringList& list = by_uid[uid];
+      list.push_back(path);
     }
-    if (!seen) {
-      normalized.push_back(n);
+
+    for (auto it = by_uid.begin(); it != by_uid.end(); ++it) {
+      QStringList list = normalize_recent_paths(it.value());
+      while (list.size() > kMaxRecentFiles) {
+        list.removeLast();
+      }
+      settings.setValue(recent_files_key_for_game_set_uid(it.key()), list);
     }
-    if (normalized.size() >= kMaxRecentFiles) {
-      break;
-    }
+
+    settings.remove(kLegacyRecentFilesKey);
+    settings.setValue(kRecentFilesByGameSetMigratedKey, true);
   }
 
+  const QString key = recent_files_key_for_game_set_uid(game_set_.uid);
+  QStringList files = settings.value(key).toStringList();
+
+  const QStringList normalized = normalize_recent_paths(files);
+
   if (normalized != files) {
-    settings.setValue(kRecentFilesKey, normalized);
+    settings.setValue(key, normalized);
   }
 
   recent_files_menu_->clear();

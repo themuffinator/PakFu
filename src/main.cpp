@@ -2,10 +2,16 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QLocalServer>
+#include <QLocalSocket>
 #include <QMenuBar>
 #include <QPixmap>
 #include <QPointer>
 #include <QScreen>
+#include <QSet>
 #include <QSettings>
 #include <QTabBar>
 #include <QTabWidget>
@@ -14,7 +20,23 @@
 #include <QToolButton>
 #include <QWidget>
 
+#include <QCryptographicHash>
+
+#include <memory>
+#include <string>
+
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 #include "cli/cli.h"
+#include "game/game_set.h"
 #include "pakfu_config.h"
 #include "update/update_service.h"
 #include "ui/game_set_dialog.h"
@@ -30,34 +52,26 @@ void set_app_metadata(QCoreApplication& app) {
 }
 
 #ifdef Q_OS_WIN
-QString resolve_executable_dir(int argc, char** argv) {
-  if (!argv || argc <= 0 || !argv[0]) {
-    return {};
+QString resolve_executable_dir_winapi() {
+  DWORD cap = MAX_PATH;
+  for (int attempt = 0; attempt < 8; ++attempt) {
+    std::wstring buf;
+    buf.resize(cap);
+    DWORD got = GetModuleFileNameW(nullptr, buf.data(), cap);
+    if (got == 0) {
+      return {};
+    }
+    if (got < cap - 1) {
+      buf.resize(got);
+      const QString path = QString::fromWCharArray(buf.c_str(), static_cast<int>(buf.size()));
+      return QFileInfo(path).absolutePath();
+    }
+    cap *= 2;
   }
-
-  const QString arg0 = QString::fromLocal8Bit(argv[0]);
-  if (arg0.isEmpty()) {
-    return {};
-  }
-
-  QFileInfo info(arg0);
-  if (info.isRelative()) {
-    info = QFileInfo(QDir::current().absoluteFilePath(arg0));
-  }
-  if (!info.exists()) {
-    return {};
-  }
-  return info.absolutePath();
+  return {};
 }
 
 void configure_qt_plugin_paths_for_local_deploy(const QString& exe_dir) {
-  if (exe_dir.isEmpty()) {
-    return;
-  }
-
-  const QString platforms_dir = QDir(exe_dir).filePath("platforms");
-  const bool has_local_platforms = QFileInfo::exists(platforms_dir);
-
   const auto unset_if_missing = [](const char* name) {
     if (!qEnvironmentVariableIsSet(name)) {
       return;
@@ -75,6 +89,13 @@ void configure_qt_plugin_paths_for_local_deploy(const QString& exe_dir) {
   unset_if_missing("QT_QPA_PLATFORM_PLUGIN_PATH");
   unset_if_missing("QT_PLUGIN_PATH");
 
+  if (exe_dir.isEmpty()) {
+    return;
+  }
+
+  const QString platforms_dir = QDir(exe_dir).filePath("platforms");
+  const bool has_local_platforms = QFileInfo::exists(platforms_dir);
+
   // If plugins were deployed next to the executable (via windeployqt), prefer those over any
   // environment-provided Qt installation path to avoid version/ABI mismatches.
   if (has_local_platforms) {
@@ -84,18 +105,87 @@ void configure_qt_plugin_paths_for_local_deploy(const QString& exe_dir) {
 }
 #endif
 
-QString find_initial_pak(int argc, char** argv) {
+bool is_archive_path(const QString& path) {
+  const QString lower = path.toLower();
+  const int dot = lower.lastIndexOf('.');
+  const QString ext = dot >= 0 ? lower.mid(dot + 1) : QString();
+  static const QSet<QString> kExts = {"pak", "pk3", "pk4", "pkz", "zip"};
+  return kExts.contains(ext);
+}
+
+QStringList find_initial_archives(int argc, char** argv) {
+  QStringList paths;
   for (int i = 1; i < argc; ++i) {
     const QString arg = QString::fromLocal8Bit(argv[i]);
     if (arg.startsWith('-')) {
       continue;
     }
     const QFileInfo info(arg);
-    if (info.exists()) {
-      return info.absoluteFilePath();
+    if (!info.exists() || !info.isFile()) {
+      continue;
+    }
+    const QString abs = info.absoluteFilePath();
+    if (!is_archive_path(abs)) {
+      continue;
+    }
+    paths.push_back(abs);
+  }
+
+#if defined(Q_OS_WIN)
+  auto eq = [](const QString& a, const QString& b) { return a.compare(b, Qt::CaseInsensitive) == 0; };
+#else
+  auto eq = [](const QString& a, const QString& b) { return a == b; };
+#endif
+
+  QStringList unique;
+  unique.reserve(paths.size());
+  for (const QString& p : paths) {
+    bool seen = false;
+    for (const QString& u : unique) {
+      if (eq(u, p)) {
+        seen = true;
+        break;
+      }
+    }
+    if (!seen) {
+      unique.push_back(p);
     }
   }
-  return {};
+  return unique;
+}
+
+QString single_instance_server_name() {
+  // Per-user stable name (prevents different accounts colliding).
+  const QByteArray home = QDir::homePath().toUtf8();
+  const QByteArray hash = QCryptographicHash::hash(home, QCryptographicHash::Sha1).toHex();
+  return QString("PakFu-%1").arg(QString::fromLatin1(hash.left(12)));
+}
+
+QByteArray build_ipc_payload(const QStringList& paths, bool focus) {
+  QJsonObject root;
+  root.insert("v", 1);
+  root.insert("focus", focus);
+  QJsonArray arr;
+  for (const QString& p : paths) {
+    if (!p.isEmpty()) {
+      arr.append(p);
+    }
+  }
+  root.insert("paths", arr);
+  return QJsonDocument(root).toJson(QJsonDocument::Compact);
+}
+
+bool send_ipc_payload(const QString& server_name, const QByteArray& payload) {
+  QLocalSocket socket;
+  socket.connectToServer(server_name, QIODevice::WriteOnly);
+  if (!socket.waitForConnected(100)) {
+    return false;
+  }
+  socket.write(payload);
+  socket.flush();
+  (void)socket.waitForBytesWritten(200);
+  socket.disconnectFromServer();
+  return true;
 }
 
 bool should_check_updates() {
@@ -249,32 +339,135 @@ int main(int argc, char** argv) {
   }
 
 #ifdef Q_OS_WIN
-  configure_qt_plugin_paths_for_local_deploy(resolve_executable_dir(argc, argv));
+  configure_qt_plugin_paths_for_local_deploy(resolve_executable_dir_winapi());
 #endif
 
   QApplication app(argc, argv);
   set_app_metadata(app);
+  const QString server_name = single_instance_server_name();
+  const QStringList initial_archives = find_initial_archives(argc, argv);
+
+  // Allow multiple instances for testing/debugging.
+  const bool allow_multi_instance = qEnvironmentVariableIsSet("PAKFU_ALLOW_MULTI_INSTANCE");
+
+  if (!allow_multi_instance) {
+    if (send_ipc_payload(server_name, build_ipc_payload(initial_archives, true))) {
+      return 0;
+    }
+  }
+
+  // Primary instance: listen for open requests from subsequent launches (e.g. file associations).
+  QPointer<MainWindow> main_window;
+  bool main_shown = false;
+  QLocalServer* ipc_server = nullptr;
+  QStringList pending_paths;
+  bool pending_focus = false;
+  if (!allow_multi_instance) {
+    ipc_server = new QLocalServer(&app);
+    ipc_server->setSocketOptions(QLocalServer::UserAccessOption);
+    // Clean up stale servers (e.g. after a crash) on platforms that use a socket file.
+    QLocalServer::removeServer(server_name);
+    if (!ipc_server->listen(server_name)) {
+      QLocalServer::removeServer(server_name);
+      (void)ipc_server->listen(server_name);
+    }
+
+    QObject::connect(ipc_server, &QLocalServer::newConnection, &app, [&]() {
+      while (ipc_server && ipc_server->hasPendingConnections()) {
+        QLocalSocket* sock = ipc_server->nextPendingConnection();
+        if (!sock) {
+          break;
+        }
+        auto buf = std::make_shared<QByteArray>();
+        QObject::connect(sock, &QLocalSocket::readyRead, sock, [sock, buf]() { buf->append(sock->readAll()); });
+        QObject::connect(sock,
+                         &QLocalSocket::disconnected,
+                         sock,
+                         [sock, buf, &pending_paths, &pending_focus, &main_window, &main_shown]() {
+          const QByteArray payload = *buf;
+          QStringList paths;
+          bool focus = true;
+
+          QJsonParseError parse_error{};
+          const QJsonDocument doc = QJsonDocument::fromJson(payload, &parse_error);
+          if (parse_error.error == QJsonParseError::NoError && doc.isObject()) {
+            const QJsonObject obj = doc.object();
+            focus = obj.value("focus").toBool(true);
+            const QJsonArray arr = obj.value("paths").toArray();
+            for (const QJsonValue& v : arr) {
+              const QString p = QFileInfo(v.toString()).absoluteFilePath();
+              if (!p.isEmpty() && is_archive_path(p)) {
+                paths.push_back(p);
+              }
+            }
+          } else if (!payload.isEmpty()) {
+            // Legacy/fallback: treat payload as a single path.
+            const QString p = QFileInfo(QString::fromUtf8(payload)).absoluteFilePath();
+            if (!p.isEmpty() && is_archive_path(p)) {
+              paths.push_back(p);
+            }
+          }
+
+          if (!paths.isEmpty() && main_window && main_shown) {
+            main_window->open_archives(paths);
+          } else if (!paths.isEmpty()) {
+            pending_paths.append(paths);
+          }
+
+          if (focus) {
+            if (main_window && main_shown) {
+              if (main_window->isMinimized()) {
+                main_window->showNormal();
+              }
+              main_window->show();
+              main_window->raise();
+              main_window->activateWindow();
+            } else {
+              pending_focus = true;
+            }
+          }
+
+          sock->deleteLater();
+        });
+      }
+    });
+  }
+
   ThemeManager::apply_saved_theme(app);
 
-  const QString initial_pak = find_initial_pak(argc, argv);
-
-  GameSetDialog game_set_dialog;
-  if (game_set_dialog.exec() != QDialog::Accepted) {
-    return 0;
+  std::optional<GameSet> selected;
+  {
+    GameSetState state = load_game_set_state();
+    if (state.sets.isEmpty()) {
+      GameSetDialog game_set_dialog;
+      if (game_set_dialog.exec() != QDialog::Accepted) {
+        return 0;
+      }
+      selected = game_set_dialog.selected_game_set();
+    } else {
+      const GameSet* by_uid = find_game_set(state, state.selected_uid);
+      if (by_uid) {
+        selected = *by_uid;
+      } else if (!state.sets.isEmpty()) {
+        selected = state.sets.first();
+      }
+    }
   }
-  const auto selected = game_set_dialog.selected_game_set();
   if (!selected.has_value()) {
     return 0;
   }
 
-  MainWindow window(*selected, initial_pak, false);
+  MainWindow window(*selected, QString(), false);
+  main_window = &window;
+  if (!initial_archives.isEmpty()) {
+    window.open_archives(initial_archives);
+  }
 
   QPointer<SplashScreen> splash = show_splash(app);
   if (splash) {
     // Prevent the app from exiting when the splash is the only visible window.
     app.setQuitOnLastWindowClosed(false);
   }
-  bool main_shown = false;
   bool update_finished = false;
   QPointer<UpdateService> updater;
 
@@ -286,6 +479,18 @@ int main(int argc, char** argv) {
     window.show();
     window.raise();
     window.activateWindow();
+    if (!pending_paths.isEmpty()) {
+      window.open_archives(pending_paths);
+      pending_paths.clear();
+    }
+    if (pending_focus) {
+      if (window.isMinimized()) {
+        window.showNormal();
+      }
+      window.raise();
+      window.activateWindow();
+      pending_focus = false;
+    }
     if (splash) {
       splash->close();
       splash->deleteLater();

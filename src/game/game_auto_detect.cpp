@@ -472,3 +472,70 @@ GameAutoDetectResult auto_detect_supported_games() {
 
   return out;
 }
+
+std::optional<GameId> detect_game_id_for_path(const QString& file_or_dir_path) {
+  const QString cleaned = clean_path(file_or_dir_path);
+  if (cleaned.isEmpty()) {
+    return std::nullopt;
+  }
+
+  QFileInfo info(cleaned);
+  QString dir = info.isDir() ? info.absoluteFilePath() : info.absolutePath();
+  dir = clean_path(dir);
+  if (dir.isEmpty()) {
+    return std::nullopt;
+  }
+
+  // Prefer rereleases when multiple markers exist in the same install folder.
+  const QVector<GameSupportInfo> support = supported_game_support();
+  QVector<GameSupportInfo> priority;
+  priority.reserve(support.size());
+
+  const auto push_if = [&](GameId id) {
+    for (const GameSupportInfo& s : support) {
+      if (s.game == id) {
+        priority.push_back(s);
+        return;
+      }
+    }
+  };
+
+  push_if(GameId::QuakeRerelease);
+  push_if(GameId::Quake);
+  push_if(GameId::Quake2Rerelease);
+  push_if(GameId::Quake2);
+  push_if(GameId::Quake3Arena);
+  push_if(GameId::QuakeLive);
+  push_if(GameId::Quake4);
+
+  auto match_dir = [&](const QString& root) -> std::optional<GameId> {
+    for (const GameSupportInfo& s : priority) {
+      if (any_marker_exists(root, s.marker_any)) {
+        return s.game;
+      }
+      if (!first_existing_file(root, s.executable_candidates).isEmpty()) {
+        return s.game;
+      }
+    }
+    return std::nullopt;
+  };
+
+  QString cur = dir;
+  for (int depth = 0; depth < 10; ++depth) {
+    if (cur.isEmpty()) {
+      break;
+    }
+    if (const auto id = match_dir(cur)) {
+      return id;
+    }
+
+    const QDir d(cur);
+    const QString parent = clean_path(d.absoluteFilePath(".."));
+    if (parent.isEmpty() || paths_equal(parent, cur)) {
+      break;
+    }
+    cur = parent;
+  }
+
+  return std::nullopt;
+}

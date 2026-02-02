@@ -33,7 +33,10 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QPainter>
+#include <QProgressDialog>
 #include <QPushButton>
+#include <QRunnable>
 #include <QShortcut>
 #include <QSet>
 #include <QSize>
@@ -45,6 +48,7 @@
 #include <QSplitter>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
+#include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -53,6 +57,8 @@
 #include <QVBoxLayout>
 
 #include "archive/path_safety.h"
+#include "formats/cinematic.h"
+#include "formats/lmp_image.h"
 #include "formats/pcx_image.h"
 #include "third_party/miniz/miniz.h"
 #include "pak/pak_archive.h"
@@ -352,9 +358,46 @@ bool is_image_file_name(const QString& name) {
   }
   const QString ext = lower.mid(dot + 1);
   static const QSet<QString> kImageExts = {
-    "png", "jpg", "jpeg", "bmp", "gif", "tga", "pcx", "wal", "tif", "tiff"
+    "png", "jpg", "jpeg", "bmp", "gif", "tga", "pcx", "wal", "dds", "lmp", "tif", "tiff"
   };
   return kImageExts.contains(ext);
+}
+
+QIcon make_badged_icon(const QIcon& base, const QSize& icon_size, const QString& badge, const QPalette& pal) {
+  if (!icon_size.isValid()) {
+    return base;
+  }
+  if (badge.isEmpty() || icon_size.width() < 24 || icon_size.height() < 24) {
+    return base;
+  }
+
+  QPixmap pm = base.pixmap(icon_size);
+  if (pm.isNull()) {
+    pm = QPixmap(icon_size);
+    pm.fill(Qt::transparent);
+  }
+
+  QPainter p(&pm);
+  p.setRenderHint(QPainter::Antialiasing, true);
+  p.setRenderHint(QPainter::TextAntialiasing, true);
+
+  QFont f = p.font();
+  f.setBold(true);
+  f.setPixelSize(qMax(9, icon_size.height() / 3));
+  p.setFont(f);
+
+  QColor c = pal.color(QPalette::Highlight);
+  if (!c.isValid()) {
+    c = pal.color(QPalette::Text);
+  }
+  c.setAlpha(230);
+  p.setPen(c);
+
+  QRect r = pm.rect();
+  r.adjust(0, icon_size.height() / 3, 0, 0);
+  p.drawText(r, Qt::AlignHCenter | Qt::AlignBottom, badge);
+
+  return QIcon(pm);
 }
 
 QString pak_leaf_name(QString pak_path) {
@@ -384,10 +427,15 @@ bool is_supported_audio_file(const QString& name) {
 	return (ext == "wav" || ext == "ogg" || ext == "mp3");
 }
 
+bool is_video_file_name(const QString& name) {
+	const QString ext = file_ext_lower(name);
+	return (ext == "cin" || ext == "roq" || ext == "mp4" || ext == "mkv" || ext == "avi" || ext == "ogv" || ext == "webm");
+}
+
 bool is_text_file_name(const QString& name) {
   const QString ext = file_ext_lower(name);
   static const QSet<QString> kTextExts = {
-    "cfg", "txt", "log", "md", "ini", "json", "xml", "shader", "script"
+    "cfg", "txt", "log", "md", "ini", "json", "xml", "shader", "menu", "script"
   };
   return kTextExts.contains(ext);
 }
@@ -632,6 +680,7 @@ private:
 
 PakTab::PakTab(Mode mode, const QString& pak_path, QWidget* parent)
     : QWidget(parent), mode_(mode), pak_path_(pak_path) {
+  thumbnail_pool_.setMaxThreadCount(1);
   build_ui();
   if (mode_ == Mode::ExistingPak) {
     load_archive();
@@ -640,6 +689,11 @@ PakTab::PakTab(Mode mode, const QString& pak_path, QWidget* parent)
     set_dirty(false);
     refresh_listing();
   }
+}
+
+PakTab::~PakTab() {
+  stop_thumbnail_generation();
+  thumbnail_pool_.waitForDone();
 }
 
 QUndoStack* PakTab::undo_stack() const {
@@ -850,6 +904,8 @@ void PakTab::build_ui() {
   splitter_->setStretchFactor(1, 2);
 	connect(preview_, &PreviewPane::request_previous_audio, this, [this]() { select_adjacent_audio(-1); });
 	connect(preview_, &PreviewPane::request_next_audio, this, [this]() { select_adjacent_audio(1); });
+	connect(preview_, &PreviewPane::request_previous_video, this, [this]() { select_adjacent_video(-1); });
+	connect(preview_, &PreviewPane::request_next_video, this, [this]() { select_adjacent_video(1); });
 
   details_view_ = new PakTabDetailsView(this, view_stack_);
   details_view_->setHeaderLabels({"Name", "Size", "Modified"});
@@ -893,7 +949,10 @@ void PakTab::build_ui() {
       enter_directory(item->text(0));
       return;
     }
-    // Placeholder: later this will open a preview panel for the selected file.
+    update_preview();
+    if (preview_) {
+      preview_->start_playback_from_beginning();
+    }
   });
 
   connect(icon_view_, &QListWidget::itemActivated, this, [this](QListWidgetItem* item) {
@@ -905,7 +964,10 @@ void PakTab::build_ui() {
       enter_directory(item->text());
       return;
     }
-    // Placeholder: later this will open a preview panel for the selected file.
+    update_preview();
+    if (preview_) {
+      preview_->start_playback_from_beginning();
+    }
   });
 
   // Delete shortcuts: Del prompts, Shift+Del skips confirmation.
@@ -1082,11 +1144,11 @@ void PakTab::set_view_mode(ViewMode mode) {
   refresh_listing();
 }
 
-void PakTab::apply_auto_view(int file_count, int image_count) {
-  // Auto: prefer large icons when the folder is predominantly images.
-  const bool mostly_images =
-    (file_count > 0) && (image_count * 100 >= file_count * 60);
-  effective_view_ = mostly_images ? ViewMode::LargeIcons : ViewMode::Details;
+void PakTab::apply_auto_view(int file_count, int image_count, int video_count) {
+  // Auto: prefer large icons when the folder is predominantly visual media.
+  const int media_count = image_count + video_count;
+  const bool mostly_media = (file_count > 0) && (media_count * 100 >= file_count * 60);
+  effective_view_ = mostly_media ? ViewMode::LargeIcons : ViewMode::Details;
 }
 
 void PakTab::update_view_controls() {
@@ -1191,6 +1253,132 @@ void PakTab::configure_icon_view() {
   icon_view_->setFlow(flow);
   icon_view_->setSpacing(10);
   icon_view_->setGridSize(grid);
+}
+
+void PakTab::stop_thumbnail_generation() {
+  ++thumbnail_generation_;
+  icon_items_by_path_.clear();
+  thumbnail_pool_.clear();
+}
+
+void PakTab::queue_thumbnail(const QString& pak_path,
+                             const QString& leaf,
+                             const QString& source_path,
+                             qint64 size,
+                             const QSize& icon_size) {
+  if (!icon_view_) {
+    return;
+  }
+  if (pak_path.isEmpty() || leaf.isEmpty() || !icon_size.isValid()) {
+    return;
+  }
+
+  const QString ext = file_ext_lower(leaf);
+  const bool is_image = is_image_file_name(leaf);
+  const bool is_cinematic = (ext == "cin" || ext == "roq");
+  if (!is_image && !is_cinematic) {
+    return;
+  }
+
+  if (ext == "lmp" && !quake1_palette_loaded_) {
+    ensure_quake1_palette(nullptr);
+  }
+
+  // Capture state for this thumbnail generation.
+  const quint64 gen = thumbnail_generation_;
+  PakTab* self = this;
+  const QVector<QRgb> quake1_palette = quake1_palette_;
+  const QVector<QRgb> quake2_palette = quake2_palette_;
+
+  auto* task = QRunnable::create([self, gen, pak_path, leaf, source_path, size, icon_size, quake1_palette, quake2_palette]() {
+    QImage image;
+
+    const QString ext = file_ext_lower(leaf);
+    if (is_image_file_name(leaf)) {
+      ImageDecodeOptions options;
+      if (ext == "lmp" && quake1_palette.size() == 256) {
+        options.palette = &quake1_palette;
+      }
+      if (ext == "wal" && quake2_palette.size() == 256) {
+        options.palette = &quake2_palette;
+      }
+
+      ImageDecodeResult decoded;
+      if (!source_path.isEmpty()) {
+        decoded = decode_image_file(source_path, options);
+      } else {
+        constexpr qint64 kMaxThumbBytes = 32LL * 1024 * 1024;
+        QByteArray bytes;
+        QString err;
+        if (self->archive_.read_entry_bytes(pak_path, &bytes, &err, kMaxThumbBytes)) {
+          decoded = decode_image_bytes(bytes, leaf, options);
+        }
+      }
+
+      if (decoded.ok()) {
+        image = decoded.image;
+      }
+    } else if (ext == "cin" || ext == "roq") {
+      std::unique_ptr<CinematicDecoder> dec;
+      QString err;
+
+      if (!source_path.isEmpty()) {
+        dec = open_cinematic_file(source_path, &err);
+      } else {
+        // Avoid trying to thumbnail extremely large cinematics.
+        constexpr qint64 kMaxCinematicBytes = 256LL * 1024 * 1024;
+        const qint64 max_bytes = (size > 0) ? std::min(size, kMaxCinematicBytes) : kMaxCinematicBytes;
+
+        QByteArray bytes;
+        if (self->archive_.read_entry_bytes(pak_path, &bytes, &err, max_bytes)) {
+          QTemporaryFile tmp(QDir(QDir::tempPath()).filePath(QString("pakfu-thumb-XXXXXX.%1").arg(ext)));
+          tmp.setAutoRemove(true);
+          if (tmp.open()) {
+            tmp.write(bytes);
+            tmp.flush();
+            tmp.close();
+            dec = open_cinematic_file(tmp.fileName(), &err);
+          }
+        }
+      }
+
+      if (dec) {
+        CinematicFrame frame;
+        if (dec->decode_frame(0, &frame, &err) && !frame.image.isNull()) {
+          image = frame.image;
+        }
+      }
+    }
+
+    if (image.isNull()) {
+      return;
+    }
+
+    const QImage scaled = image.scaled(icon_size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    QImage square(icon_size, QImage::Format_ARGB32_Premultiplied);
+    square.fill(Qt::transparent);
+    {
+      QPainter p(&square);
+      p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+      const int ox = (icon_size.width() - scaled.width()) / 2;
+      const int oy = (icon_size.height() - scaled.height()) / 2;
+      p.drawImage(QPoint(ox, oy), scaled);
+    }
+    image = std::move(square);
+    QMetaObject::invokeMethod(self, [self, gen, pak_path, image = std::move(image)]() mutable {
+      if (!self || self->thumbnail_generation_ != gen) {
+        return;
+      }
+      QListWidgetItem* item = self->icon_items_by_path_.value(pak_path, nullptr);
+      if (!item) {
+        return;
+      }
+      QPixmap pm = QPixmap::fromImage(image);
+      item->setIcon(QIcon(pm));
+    }, Qt::QueuedConnection);
+  });
+  task->setAutoDelete(true);
+  thumbnail_pool_.start(task);
 }
 
 QString PakTab::selected_pak_path(bool* is_dir) const {
@@ -1827,9 +2015,24 @@ void PakTab::delete_selected(bool skip_confirmation) {
   refresh_listing();
 }
 
-bool PakTab::import_urls(const QList<QUrl>& urls, const QString& dest_prefix, QStringList* failures) {
+bool PakTab::import_urls(const QList<QUrl>& urls,
+                         const QString& dest_prefix,
+                         QStringList* failures,
+                         QProgressDialog* progress) {
   bool changed = false;
+
+  if (progress) {
+    progress->setWindowModality(Qt::WindowModal);
+    progress->setMinimumDuration(250);
+    progress->setRange(0, 0);
+    progress->setValue(0);
+  }
+
+  int processed = 0;
   for (const QUrl& url : urls) {
+    if (progress && progress->wasCanceled()) {
+      break;
+    }
     if (!url.isLocalFile()) {
       continue;
     }
@@ -1838,9 +2041,17 @@ bool PakTab::import_urls(const QList<QUrl>& urls, const QString& dest_prefix, QS
     if (!info.exists()) {
       continue;
     }
+    if (progress) {
+      progress->setLabelText(QString("Importing %1…").arg(info.fileName().isEmpty() ? local : info.fileName()));
+      if ((processed++ % 8) == 0) {
+        QCoreApplication::processEvents();
+      }
+    }
+
     if (info.isDir()) {
       QStringList folder_failures;
-      const bool did = add_folder_from_path(info.absoluteFilePath(), dest_prefix, QString(), &folder_failures);
+      const bool did =
+        add_folder_from_path(info.absoluteFilePath(), dest_prefix, QString(), &folder_failures, progress);
       changed = changed || did;
       if (failures) {
         failures->append(folder_failures);
@@ -1874,7 +2085,18 @@ void PakTab::import_urls_with_undo(const QList<QUrl>& urls, const QString& dest_
   const QSet<QString> before_deleted_dirs = deleted_dir_prefixes_;
 
   QStringList failures;
-  const bool changed = import_urls(urls, dest_prefix, &failures);
+  QProgressDialog progress(label, "Cancel", 0, 0, this);
+  const bool changed = import_urls(urls, dest_prefix, &failures, &progress);
+
+  if (progress.wasCanceled()) {
+    added_files_ = before_added;
+    virtual_dirs_ = before_virtual;
+    deleted_files_ = before_deleted_files;
+    deleted_dir_prefixes_ = before_deleted_dirs;
+    rebuild_added_index();
+    refresh_listing();
+    return;
+  }
 
   if (!failures.isEmpty()) {
     QMessageBox::warning(this, label, failures.mid(0, 12).join("\n"));
@@ -1902,11 +2124,35 @@ void PakTab::import_urls_with_undo(const QList<QUrl>& urls, const QString& dest_
   refresh_listing();
 }
 
-QMimeData* PakTab::make_mime_data_for_items(const QVector<QPair<QString, bool>>& items, bool cut, QStringList* failures) {
+QMimeData* PakTab::make_mime_data_for_items(const QVector<QPair<QString, bool>>& items,
+                                            bool cut,
+                                            QStringList* failures,
+                                            QProgressDialog* progress) {
   QList<QUrl> urls;
   QJsonArray json_items;
 
+  if (progress) {
+    progress->setWindowModality(Qt::WindowModal);
+    progress->setMinimumDuration(250);
+    progress->setRange(0, items.size());
+    progress->setValue(0);
+  }
+
+  int idx = 0;
   for (const auto& it : items) {
+    if (progress) {
+      progress->setValue(idx);
+      progress->setLabelText(QString("%1 %2…")
+                               .arg(cut ? "Preparing move for" : "Preparing copy of")
+                               .arg(pak_leaf_name(it.first).isEmpty() ? it.first : pak_leaf_name(it.first)));
+      if ((idx % 2) == 0) {
+        QCoreApplication::processEvents();
+      }
+      if (progress->wasCanceled()) {
+        return nullptr;
+      }
+    }
+
     const QString pak_path = it.first;
     const bool is_dir = it.second;
 
@@ -1925,6 +2171,8 @@ QMimeData* PakTab::make_mime_data_for_items(const QVector<QPair<QString, bool>>&
     obj.insert("pak_path", pak_path);
     obj.insert("is_dir", is_dir);
     json_items.push_back(obj);
+
+    ++idx;
   }
 
   if (urls.isEmpty()) {
@@ -1951,8 +2199,12 @@ void PakTab::copy_selected(bool cut) {
     return;
   }
 
+  QProgressDialog progress(cut ? "Cut" : "Copy", "Cancel", 0, items.size(), this);
   QStringList failures;
-  QMimeData* mime = make_mime_data_for_items(items, cut, &failures);
+  QMimeData* mime = make_mime_data_for_items(items, cut, &failures, &progress);
+  if (progress.wasCanceled()) {
+    return;
+  }
 
   if (!failures.isEmpty()) {
     QMessageBox::warning(this, cut ? "Cut" : "Copy", failures.mid(0, 12).join("\n"));
@@ -2014,7 +2266,19 @@ void PakTab::paste_from_clipboard() {
   QStringList failures;
   bool changed = false;
   const QString dest_prefix = current_prefix();
-  changed = import_urls(urls, dest_prefix, &failures);
+
+  QProgressDialog progress(is_cut ? "Moving items…" : "Copying items…", "Cancel", 0, 0, this);
+  changed = import_urls(urls, dest_prefix, &failures, &progress);
+
+  if (progress.wasCanceled()) {
+    added_files_ = before_added;
+    virtual_dirs_ = before_virtual;
+    deleted_files_ = before_deleted_files;
+    deleted_dir_prefixes_ = before_deleted_dirs;
+    rebuild_added_index();
+    refresh_listing();
+    return;
+  }
 
   // If this was a cut from (potentially) this tab, delete the original items after a successful paste.
   if (changed && is_cut && !cut_items.isEmpty()) {
@@ -2249,7 +2513,22 @@ void PakTab::add_files() {
 
   QStringList failures;
   bool changed = false;
+  QProgressDialog progress("Adding files…", "Cancel", 0, selected.size(), this);
+  progress.setWindowModality(Qt::WindowModal);
+  progress.setMinimumDuration(250);
+  progress.setValue(0);
+
+  int idx = 0;
   for (const QString& path : selected) {
+    if (progress.wasCanceled()) {
+      break;
+    }
+    progress.setValue(idx++);
+    progress.setLabelText(QString("Adding %1…").arg(QFileInfo(path).fileName()));
+    if ((idx % 4) == 0) {
+      QCoreApplication::processEvents();
+    }
+
     const QString pak_name = current_prefix() + QFileInfo(path).fileName();
     QString err;
     if (!add_file_mapping(pak_name, path, &err)) {
@@ -2258,6 +2537,17 @@ void PakTab::add_files() {
       changed = true;
     }
   }
+
+  if (progress.wasCanceled()) {
+    added_files_ = before_added;
+    virtual_dirs_ = before_virtual;
+    deleted_files_ = before_deleted_files;
+    deleted_dir_prefixes_ = before_deleted_dirs;
+    rebuild_added_index();
+    refresh_listing();
+    return;
+  }
+  progress.setValue(selected.size());
 
   if (!failures.isEmpty()) {
     QMessageBox::warning(this, "Add Files", failures.join("\n"));
@@ -2285,7 +2575,8 @@ void PakTab::add_files() {
 bool PakTab::add_folder_from_path(const QString& folder_path_in,
                                   const QString& dest_prefix_in,
                                   const QString& forced_folder_name,
-                                  QStringList* failures) {
+                                  QStringList* failures,
+                                  QProgressDialog* progress) {
   const QFileInfo folder_info(folder_path_in);
   if (!folder_info.exists() || !folder_info.isDir()) {
     if (failures) {
@@ -2314,8 +2605,21 @@ bool PakTab::add_folder_from_path(const QString& folder_path_in,
   QDir base(folder_path);
   bool changed = false;
 
+  const QString label = QString("Adding folder %1…").arg(folder_name);
+  int processed = 0;
+  if (progress) {
+    progress->setWindowModality(Qt::WindowModal);
+    progress->setMinimumDuration(250);
+    progress->setRange(0, 0);
+    progress->setValue(0);
+    progress->setLabelText(label);
+  }
+
   QDirIterator it(folder_path, QDir::Files, QDirIterator::Subdirectories);
   while (it.hasNext()) {
+    if (progress && progress->wasCanceled()) {
+      break;
+    }
     const QString file_path = it.next();
     const QString rel = normalize_pak_path(base.relativeFilePath(file_path));
     const QString pak_name = pak_root + rel;
@@ -2326,6 +2630,11 @@ bool PakTab::add_folder_from_path(const QString& folder_path_in,
       }
     } else {
       changed = true;
+    }
+
+    if (progress && (++processed % 64) == 0) {
+      progress->setLabelText(QString("%1 (%2 files)…").arg(label).arg(processed));
+      QCoreApplication::processEvents();
     }
   }
 
@@ -2363,7 +2672,17 @@ void PakTab::add_folder() {
   default_directory_ = QFileInfo(selected.first()).absoluteFilePath();
 
   QStringList failures;
-  const bool changed = add_folder_from_path(selected.first(), current_prefix(), QString(), &failures);
+  QProgressDialog progress("Adding folder…", "Cancel", 0, 0, this);
+  const bool changed = add_folder_from_path(selected.first(), current_prefix(), QString(), &failures, &progress);
+  if (progress.wasCanceled()) {
+    added_files_ = before_added;
+    virtual_dirs_ = before_virtual;
+    deleted_files_ = before_deleted_files;
+    deleted_dir_prefixes_ = before_deleted_dirs;
+    rebuild_added_index();
+    refresh_listing();
+    return;
+  }
 
   if (!failures.isEmpty()) {
     QMessageBox::warning(this, "Add Folder", failures.mid(0, 12).join("\n"));
@@ -3083,6 +3402,7 @@ void PakTab::set_current_dir(const QStringList& parts) {
 }
 
 void PakTab::refresh_listing() {
+  stop_thumbnail_generation();
   if (details_view_) {
     details_view_->clear();
   }
@@ -3165,6 +3485,7 @@ void PakTab::refresh_listing() {
 
   int file_count = 0;
   int image_count = 0;
+  int video_count = 0;
   for (const ChildListing& child : children) {
     if (child.is_dir) {
       continue;
@@ -3173,10 +3494,13 @@ void PakTab::refresh_listing() {
     if (is_image_file_name(child.name)) {
       ++image_count;
     }
+    if (is_video_file_name(child.name)) {
+      ++video_count;
+    }
   }
 
   if (view_mode_ == ViewMode::Auto) {
-    apply_auto_view(file_count, image_count);
+    apply_auto_view(file_count, image_count, video_count);
   } else {
     effective_view_ = view_mode_;
   }
@@ -3185,8 +3509,18 @@ void PakTab::refresh_listing() {
 
   const QIcon dir_icon = style()->standardIcon(QStyle::SP_DirIcon);
   const QIcon file_icon = style()->standardIcon(QStyle::SP_FileIcon);
+  const QIcon audio_icon = style()->standardIcon(QStyle::SP_MediaVolume);
+  const QIcon cfg_icon = make_badged_icon(file_icon, QSize(32, 32), "{}", palette());
 
   const bool show_details = (effective_view_ == ViewMode::Details);
+  const bool want_thumbs = (effective_view_ == ViewMode::LargeIcons || effective_view_ == ViewMode::Gallery);
+  const bool want_wal_palette = want_thumbs && std::any_of(children.begin(), children.end(), [](const ChildListing& c) {
+    return !c.is_dir && file_ext_lower(c.name) == "wal";
+  });
+  if (want_wal_palette) {
+    QString pal_err;
+    (void)ensure_quake2_palette(&pal_err);
+  }
 
   if (show_details && details_view_) {
     const bool sorting = details_view_->isSortingEnabled();
@@ -3202,7 +3536,19 @@ void PakTab::refresh_listing() {
       item->setData(0, kRolePakPath, full_path);
       item->setData(0, kRoleIsAdded, child.is_added);
       item->setData(0, kRoleIsOverridden, child.is_overridden);
-      item->setIcon(0, child.is_dir ? dir_icon : file_icon);
+      if (child.is_dir) {
+        item->setIcon(0, dir_icon);
+      } else {
+        const QString leaf = child.name;
+        const QString ext = file_ext_lower(leaf);
+        if (is_supported_audio_file(leaf)) {
+          item->setIcon(0, audio_icon);
+        } else if (ext == "cfg") {
+          item->setIcon(0, cfg_icon);
+        } else {
+          item->setIcon(0, file_icon);
+        }
+      }
 
       item->setData(1, kRoleSize, child.is_dir ? static_cast<qint64>(-1) : static_cast<qint64>(child.size));
       item->setText(1, child.is_dir ? "" : format_size(child.size));
@@ -3246,6 +3592,7 @@ void PakTab::refresh_listing() {
     icon_view_->setSortingEnabled(false);
 
     const QSize icon_size = icon_view_->iconSize().isValid() ? icon_view_->iconSize() : QSize(64, 64);
+    const QIcon cfg_icon = make_badged_icon(file_icon, icon_size, "{}", palette());
 
     for (const ChildListing& child : children) {
       const QString full_path =
@@ -3260,11 +3607,19 @@ void PakTab::refresh_listing() {
       item->setData(kRoleIsAdded, child.is_added);
       item->setData(kRoleIsOverridden, child.is_overridden);
 
+      icon_items_by_path_.insert(full_path, item);
+
       QIcon icon = child.is_dir ? dir_icon : file_icon;
-      if (!child.is_dir && is_image_file_name(child.name) && !child.source_path.isEmpty()) {
-        QPixmap pm(child.source_path);
-        if (!pm.isNull()) {
-          icon = QIcon(pm.scaled(icon_size, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+      if (!child.is_dir) {
+        const QString leaf = child.name;
+        const QString ext = file_ext_lower(leaf);
+        if (is_supported_audio_file(leaf)) {
+          icon = audio_icon;
+        } else if (ext == "cfg") {
+          icon = cfg_icon;
+        } else if (want_thumbs && (is_image_file_name(leaf) || ext == "cin" || ext == "roq")) {
+          // Thumbnail will be set asynchronously.
+          queue_thumbnail(full_path, leaf, child.source_path, static_cast<qint64>(child.size), icon_size);
         }
       }
       item->setIcon(icon);
@@ -3336,6 +3691,13 @@ void PakTab::select_adjacent_audio(int delta) {
 			candidate->setSelected(true);
 			details_view_->setCurrentItem(candidate);
 			details_view_->scrollToItem(candidate);
+			if (preview_) {
+				QTimer::singleShot(0, preview_, [preview = preview_]() {
+					if (preview) {
+						preview->start_playback_from_beginning();
+					}
+				});
+			}
 			return;
 		}
 		return;
@@ -3368,6 +3730,101 @@ void PakTab::select_adjacent_audio(int delta) {
 		candidate->setSelected(true);
 		icon_view_->setCurrentItem(candidate);
 		icon_view_->scrollToItem(candidate);
+		if (preview_) {
+			QTimer::singleShot(0, preview_, [preview = preview_]() {
+				if (preview) {
+					preview->start_playback_from_beginning();
+				}
+			});
+		}
+		return;
+	}
+}
+
+/*
+=============
+PakTab::select_adjacent_video
+
+Select the previous or next video/cinematic entry in the active view.
+=============
+*/
+void PakTab::select_adjacent_video(int delta) {
+	if (delta == 0) {
+		return;
+	}
+	if (view_stack_ && view_stack_->currentWidget() == details_view_ && details_view_) {
+		const QList<QTreeWidgetItem*> items = details_view_->selectedItems();
+		if (items.size() != 1) {
+			return;
+		}
+		QTreeWidgetItem* current = items.first();
+		QTreeWidgetItem* parent = current->parent();
+		const int count = parent ? parent->childCount() : details_view_->topLevelItemCount();
+		const int start = parent ? parent->indexOfChild(current) : details_view_->indexOfTopLevelItem(current);
+		for (int i = start + delta; i >= 0 && i < count; i += delta) {
+			QTreeWidgetItem* candidate = parent ? parent->child(i) : details_view_->topLevelItem(i);
+			if (!candidate) {
+				continue;
+			}
+			const bool is_dir = candidate->data(0, kRoleIsDir).toBool();
+			if (is_dir) {
+				continue;
+			}
+			const QString pak_path = candidate->data(0, kRolePakPath).toString();
+			const QString leaf = pak_leaf_name(pak_path);
+			if (!is_video_file_name(leaf)) {
+				continue;
+			}
+			details_view_->clearSelection();
+			candidate->setSelected(true);
+			details_view_->setCurrentItem(candidate);
+			details_view_->scrollToItem(candidate);
+			if (preview_) {
+				QTimer::singleShot(0, preview_, [preview = preview_]() {
+					if (preview) {
+						preview->start_playback_from_beginning();
+					}
+				});
+			}
+			return;
+		}
+		return;
+	}
+	if (!icon_view_) {
+		return;
+	}
+	const QList<QListWidgetItem*> items = icon_view_->selectedItems();
+	if (items.size() != 1) {
+		return;
+	}
+	QListWidgetItem* current = items.first();
+	const int count = icon_view_->count();
+	const int start = icon_view_->row(current);
+	for (int i = start + delta; i >= 0 && i < count; i += delta) {
+		QListWidgetItem* candidate = icon_view_->item(i);
+		if (!candidate) {
+			continue;
+		}
+		const bool is_dir = candidate->data(kRoleIsDir).toBool();
+		if (is_dir) {
+			continue;
+		}
+		const QString pak_path = candidate->data(kRolePakPath).toString();
+		const QString leaf = pak_leaf_name(pak_path);
+		if (!is_video_file_name(leaf)) {
+			continue;
+		}
+		icon_view_->clearSelection();
+		candidate->setSelected(true);
+		icon_view_->setCurrentItem(candidate);
+		icon_view_->scrollToItem(candidate);
+		if (preview_) {
+			QTimer::singleShot(0, preview_, [preview = preview_]() {
+				if (preview) {
+					preview->start_playback_from_beginning();
+				}
+			});
+		}
 		return;
 	}
 }
@@ -3492,6 +3949,138 @@ bool PakTab::ensure_quake2_palette(QString* error) {
   return false;
 }
 
+bool PakTab::ensure_quake1_palette(QString* error) {
+  if (error) {
+    error->clear();
+  }
+  if (quake1_palette_loaded_) {
+    if (quake1_palette_.size() == 256) {
+      return true;
+    }
+    if (error) {
+      *error = quake1_palette_error_.isEmpty() ? "Quake palette is not available." : quake1_palette_error_;
+    }
+    return false;
+  }
+
+  quake1_palette_loaded_ = true;
+  quake1_palette_.clear();
+  quake1_palette_error_.clear();
+
+  QStringList attempts;
+
+  const auto try_lmp_bytes = [&](const QByteArray& lmp_bytes, const QString& where) -> bool {
+    QVector<QRgb> palette;
+    QString pal_err;
+    if (!extract_lmp_palette_256(lmp_bytes, &palette, &pal_err) || palette.size() != 256) {
+      attempts.push_back(QString("%1: %2").arg(where, pal_err.isEmpty() ? "invalid palette" : pal_err));
+      return false;
+    }
+    quake1_palette_ = std::move(palette);
+    return true;
+  };
+
+  const auto try_pak = [&](const QString& pak_path, const QString& where) -> bool {
+    if (pak_path.isEmpty()) {
+      return false;
+    }
+    if (!QFileInfo::exists(pak_path)) {
+      attempts.push_back(QString("%1: pak not found (%2)").arg(where, pak_path));
+      return false;
+    }
+    PakArchive pak;
+    QString pak_err;
+    if (!pak.load(pak_path, &pak_err)) {
+      attempts.push_back(QString("%1: %2").arg(where, pak_err.isEmpty() ? "unable to load pak" : pak_err));
+      return false;
+    }
+    QByteArray lmp_bytes;
+    QString read_err;
+    constexpr qint64 kMaxLmpBytes = 1024 * 1024;
+    if (!pak.read_entry_bytes("gfx/palette.lmp", &lmp_bytes, &read_err, kMaxLmpBytes)) {
+      attempts.push_back(QString("%1: %2").arg(where, read_err.isEmpty() ? "gfx/palette.lmp not found" : read_err));
+      return false;
+    }
+    return try_lmp_bytes(lmp_bytes, where + ": gfx/palette.lmp");
+  };
+
+  // 1) Current archive (most common when viewing pak0.pak).
+  if (archive_.is_loaded()) {
+    QByteArray lmp_bytes;
+    QString read_err;
+    constexpr qint64 kMaxLmpBytes = 1024 * 1024;
+    if (archive_.read_entry_bytes("gfx/palette.lmp", &lmp_bytes, &read_err, kMaxLmpBytes)) {
+      if (try_lmp_bytes(lmp_bytes, "Current PAK")) {
+        return true;
+      }
+    } else {
+      attempts.push_back(QString("Current PAK: %1").arg(read_err.isEmpty() ? "gfx/palette.lmp not found" : read_err));
+    }
+  }
+
+  // 2) pak0.pak next to the currently-open PAK (covers mods where LMPs are in pak1/pak2).
+  if (!pak_path_.isEmpty()) {
+    const QFileInfo info(pak_path_);
+    const QString dir = info.absolutePath();
+    if (!dir.isEmpty()) {
+      const QString candidate = QDir(dir).filePath("pak0.pak");
+      if (try_pak(candidate, "Sibling pak0.pak")) {
+        return true;
+      }
+    }
+  }
+
+  // 3) Game-set default directory (or fallback directory).
+  if (!default_directory_.isEmpty()) {
+    const QDir base(default_directory_);
+    const QString pak0 = base.filePath("pak0.pak");
+    if (try_pak(pak0, "Default Dir pak0.pak")) {
+      return true;
+    }
+    const QString id1_pak0 = base.filePath("id1/pak0.pak");
+    if (try_pak(id1_pak0, "Default Dir id1/pak0.pak")) {
+      return true;
+    }
+    const QString rerelease_id1_pak0 = base.filePath("rerelease/id1/pak0.pak");
+    if (try_pak(rerelease_id1_pak0, "Default Dir rerelease/id1/pak0.pak")) {
+      return true;
+    }
+
+    // If the LMP is unpacked on disk, use it directly.
+    const QString palette_path = base.filePath("gfx/palette.lmp");
+    if (QFileInfo::exists(palette_path)) {
+      QFile f(palette_path);
+      if (f.open(QIODevice::ReadOnly)) {
+        if (try_lmp_bytes(f.readAll(), "Default Dir gfx/palette.lmp")) {
+          return true;
+        }
+      } else {
+        attempts.push_back("Default Dir gfx/palette.lmp: unable to open file");
+      }
+    }
+
+    const QString id1_palette_path = base.filePath("id1/gfx/palette.lmp");
+    if (QFileInfo::exists(id1_palette_path)) {
+      QFile f(id1_palette_path);
+      if (f.open(QIODevice::ReadOnly)) {
+        if (try_lmp_bytes(f.readAll(), "Default Dir id1/gfx/palette.lmp")) {
+          return true;
+        }
+      } else {
+        attempts.push_back("Default Dir id1/gfx/palette.lmp: unable to open file");
+      }
+    }
+  }
+
+  quake1_palette_error_ = attempts.isEmpty()
+                            ? "Unable to locate Quake palette (gfx/palette.lmp)."
+                            : QString("Unable to locate Quake palette (gfx/palette.lmp).\nTried:\n- %1").arg(attempts.join("\n- "));
+  if (error) {
+    *error = quake1_palette_error_;
+  }
+  return false;
+}
+
 /*
 =============
 PakTab::update_preview
@@ -3571,7 +4160,9 @@ void PakTab::update_preview() {
 
   const QString ext = file_ext_lower(leaf);
   const bool is_audio = is_supported_audio_file(leaf);
-  const bool is_video = (ext == "roq" || ext == "cin" || ext == "mp4" || ext == "mkv");
+  const bool is_cinematic = (ext == "roq" || ext == "cin");
+  const bool is_video = (is_cinematic || ext == "mp4" || ext == "mkv");
+  const bool is_model = (ext == "mdl" || ext == "md2" || ext == "md3");
 
   QString source_path;
   const int added_idx = added_index_by_name_.value(normalize_pak_path(pak_path), -1);
@@ -3588,6 +4179,20 @@ void PakTab::update_preview() {
         return;
       }
       decode_options.palette = &quake2_palette_;
+    }
+    if (ext == "lmp") {
+      const QString lower = leaf.toLower();
+      const bool is_palette_lmp = lower.endsWith("palette.lmp");
+
+      QString pal_err;
+      if (!ensure_quake1_palette(&pal_err)) {
+        if (!is_palette_lmp) {
+          preview_->show_message(leaf, pal_err.isEmpty() ? "Unable to locate Quake palette required for LMP preview." : pal_err);
+          return;
+        }
+      } else {
+        decode_options.palette = &quake1_palette_;
+      }
     }
     if (!source_path.isEmpty()) {
       preview_->show_image_from_file(leaf, subtitle, source_path, decode_options);
@@ -3622,7 +4227,42 @@ void PakTab::update_preview() {
 	}
 
   if (is_video) {
-    preview_->show_message(leaf, "Video preview is not implemented yet.");
+    if (!is_cinematic) {
+      preview_->show_message(leaf, "Video preview is not implemented yet.");
+      return;
+    }
+
+    QString video_path = source_path;
+    if (video_path.isEmpty()) {
+      QString err;
+      if (!export_path_to_temp(pak_path, false, &video_path, &err)) {
+        preview_->show_message(leaf, err.isEmpty() ? "Unable to export cinematic for preview." : err);
+        return;
+      }
+    }
+    if (video_path.isEmpty()) {
+      preview_->show_message(leaf, "Unable to export cinematic for preview.");
+      return;
+    }
+
+    preview_->show_cinematic_from_file(leaf, subtitle, video_path);
+    return;
+  }
+
+  if (is_model) {
+    QString model_path = source_path;
+    if (model_path.isEmpty()) {
+      QString err;
+      if (!export_path_to_temp(pak_path, false, &model_path, &err)) {
+        preview_->show_message(leaf, err.isEmpty() ? "Unable to export model for preview." : err);
+        return;
+      }
+    }
+    if (model_path.isEmpty()) {
+      preview_->show_message(leaf, "Unable to export model for preview.");
+      return;
+    }
+    preview_->show_model_from_file(leaf, subtitle, model_path);
     return;
   }
 
@@ -3654,10 +4294,17 @@ void PakTab::update_preview() {
       preview_->show_binary(leaf, subtitle, bytes.left(4096), truncated);
       return;
     }
+    const QString sub = truncated ? (subtitle + "  (Preview truncated)") : subtitle;
     if (ext == "cfg") {
-      preview_->show_cfg(leaf, truncated ? (subtitle + "  (Preview truncated)") : subtitle, text);
+      preview_->show_cfg(leaf, sub, text);
+    } else if (ext == "json") {
+      preview_->show_json(leaf, sub, text);
+    } else if (ext == "menu") {
+      preview_->show_menu(leaf, sub, text);
+    } else if (ext == "shader") {
+      preview_->show_shader(leaf, sub, text);
     } else {
-      preview_->show_text(leaf, truncated ? (subtitle + "  (Preview truncated)") : subtitle, text);
+      preview_->show_text(leaf, sub, text);
     }
     return;
   }

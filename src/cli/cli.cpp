@@ -163,7 +163,7 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   const QCommandLineOption list_game_sets_option("list-game-sets", "List configured Game Sets.");
   const QCommandLineOption auto_detect_game_sets_option(
     "auto-detect-game-sets",
-    "Auto-detect supported games (Steam, GOG.com, EOS) and create/update Game Sets.");
+    "Auto-detect supported games (Steam → GOG.com → EOS) and create/update Game Sets.");
   const QCommandLineOption select_game_set_option(
     "select-game-set",
     "Select the active Game Set (by UID, game key, or name).",

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QMutex>
 #include <QString>
 #include <QVector>
 
@@ -31,6 +32,7 @@ public:
   bool extract_entry_to_file(const QString& name, const QString& dest_path, QString* error) const;
 
 private:
+  mutable QMutex mutex_;
   Format format_ = Format::Unknown;
   bool loaded_ = false;
   bool quakelive_encrypted_pk3_ = false;

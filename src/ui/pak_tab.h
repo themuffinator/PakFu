@@ -7,6 +7,7 @@
 #include <QSet>
 #include <QVector>
 #include <QPair>
+#include <QThreadPool>
 #include <QWidget>
 #include <QTemporaryDir>
 #include <QUrl>
@@ -17,6 +18,7 @@ class BreadcrumbBar;
 class QAction;
 class QActionGroup;
 class QListWidget;
+class QListWidgetItem;
 class PreviewPane;
 class QStackedWidget;
 class QSplitter;
@@ -25,6 +27,7 @@ class QToolButton;
 class QTreeWidget;
 class QUndoStack;
 class QMimeData;
+class QProgressDialog;
 
 class PakTabDetailsView;
 class PakTabIconView;
@@ -52,6 +55,7 @@ public:
   };
 
   explicit PakTab(Mode mode, const QString& pak_path, QWidget* parent = nullptr);
+  ~PakTab() override;
 
   void set_default_directory(const QString& path) { default_directory_ = path; }
   QString default_directory() const { return default_directory_; }
@@ -96,6 +100,8 @@ private:
   void refresh_listing();
   void update_preview();
 	void select_adjacent_audio(int delta);
+	void select_adjacent_video(int delta);
+  bool ensure_quake1_palette(QString* error);
   bool ensure_quake2_palette(QString* error);
   SaveOptions default_save_options_for_current_path() const;
   bool write_archive_file(const QString& dest_path, const SaveOptions& options, QString* error);
@@ -112,10 +118,17 @@ private:
   bool add_folder_from_path(const QString& folder_path,
                             const QString& dest_prefix,
                             const QString& forced_folder_name,
-                            QStringList* failures);
-  bool import_urls(const QList<QUrl>& urls, const QString& dest_prefix, QStringList* failures);
+                            QStringList* failures,
+                            QProgressDialog* progress = nullptr);
+  bool import_urls(const QList<QUrl>& urls,
+                   const QString& dest_prefix,
+                   QStringList* failures,
+                   QProgressDialog* progress = nullptr);
   void import_urls_with_undo(const QList<QUrl>& urls, const QString& dest_prefix, const QString& label);
-  QMimeData* make_mime_data_for_items(const QVector<QPair<QString, bool>>& items, bool cut, QStringList* failures);
+  QMimeData* make_mime_data_for_items(const QVector<QPair<QString, bool>>& items,
+                                      bool cut,
+                                      QStringList* failures,
+                                      QProgressDialog* progress = nullptr);
   bool add_file_mapping(const QString& pak_name, const QString& source_path, QString* error);
   bool write_pak_file(const QString& dest_path, QString* error);
   bool write_zip_file(const QString& dest_path, bool quakelive_encrypt_pk3, QString* error);
@@ -123,9 +136,11 @@ private:
   void set_dirty(bool dirty);
 
   void set_view_mode(ViewMode mode);
-  void apply_auto_view(int file_count, int image_count);
+  void apply_auto_view(int file_count, int image_count, int video_count);
   void update_view_controls();
   void configure_icon_view();
+  void stop_thumbnail_generation();
+  void queue_thumbnail(const QString& pak_path, const QString& leaf, const QString& source_path, qint64 size, const QSize& icon_size);
 
   QString selected_pak_path(bool* is_dir) const;
   QVector<QPair<QString, bool>> selected_items() const;
@@ -167,6 +182,9 @@ private:
   QTreeWidget* details_view_ = nullptr;
   QListWidget* icon_view_ = nullptr;
   PreviewPane* preview_ = nullptr;
+  QHash<QString, QListWidgetItem*> icon_items_by_path_;
+  QThreadPool thumbnail_pool_;
+  quint64 thumbnail_generation_ = 0;
   QUndoStack* undo_stack_ = nullptr;
   QScopedPointer<QTemporaryDir> export_temp_dir_;
   int export_seq_ = 1;
@@ -180,6 +198,9 @@ private:
   ViewMode view_mode_ = ViewMode::Auto;
   ViewMode effective_view_ = ViewMode::Details;
   bool dirty_ = false;
+  bool quake1_palette_loaded_ = false;
+  QVector<QRgb> quake1_palette_;
+  QString quake1_palette_error_;
   bool quake2_palette_loaded_ = false;
   QVector<QRgb> quake2_palette_;
   QString quake2_palette_error_;

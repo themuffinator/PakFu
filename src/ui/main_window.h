@@ -1,10 +1,12 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QStringList>
 
 #include "game/game_set.h"
 
 class QAction;
+class QComboBox;
 class QMenu;
 class QTabWidget;
 class QWidget;
@@ -20,12 +22,19 @@ public:
                       const QString& initial_pak_path = QString(),
                       bool schedule_updates = true);
 
+  void open_archives(const QStringList& paths);
+
 protected:
   void closeEvent(QCloseEvent* event) override;
 
 private:
   void setup_menus();
   void setup_central();
+  void load_game_sets();
+  void rebuild_game_combo();
+  void apply_game_set(const QString& uid, bool persist_selection);
+  void open_game_set_manager();
+  void auto_select_game_for_archive_path(const QString& path);
   void schedule_update_check();
   void check_for_updates();
   void create_new_pak();
@@ -53,7 +62,10 @@ private:
   void rebuild_recent_files_menu();
   QString default_directory_for_dialogs() const;
 
+  GameSetState game_sets_;
   GameSet game_set_;
+  QComboBox* game_combo_ = nullptr;
+  bool updating_game_combo_ = false;
   UpdateService* updater_ = nullptr;
   QTabWidget* tabs_ = nullptr;
   QWidget* welcome_tab_ = nullptr;

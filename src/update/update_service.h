@@ -68,8 +68,8 @@ private:
   QString normalize_version(const QString& version) const;
   bool is_newer_version(const QString& latest, const QString& current) const;
   bool is_installable_asset(const QString& name) const;
-  void show_no_update_message(QWidget* parent);
-  void show_error_message(QWidget* parent, const QString& message);
+  void show_no_update_message(QWidget* parent) const;
+  void show_error_message(QWidget* parent, const QString& message) const;
   void prompt_update_error(const QString& message);
   void prompt_update(const UpdateInfo& info, QWidget* parent, bool user_initiated);
   void begin_download(const UpdateInfo& info, QWidget* parent);

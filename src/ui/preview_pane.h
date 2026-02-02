@@ -15,15 +15,25 @@ class QScrollArea;
 class QStackedWidget;
 class QAudioOutput;
 class QMediaPlayer;
-class QPushButton;
 class QSlider;
+class QScrollBar;
 class QToolButton;
-class CfgSyntaxHighlighter;
+class CinematicPlayerWidget;
+class QSyntaxHighlighter;
+class ModelViewerWidget;
 
 class PreviewPane : public QWidget {
 	Q_OBJECT
 
 public:
+	enum class TextSyntax {
+		None,
+		Cfg,
+		Json,
+		Quake3Menu,
+		Quake3Shader,
+	};
+
 	explicit PreviewPane(QWidget* parent = nullptr);
 	~PreviewPane() override;
 
@@ -31,14 +41,22 @@ public:
 	void show_message(const QString& title, const QString& body);
 	void show_text(const QString& title, const QString& subtitle, const QString& text);
 	void show_cfg(const QString& title, const QString& subtitle, const QString& text);
+	void show_json(const QString& title, const QString& subtitle, const QString& text);
+	void show_menu(const QString& title, const QString& subtitle, const QString& text);
+	void show_shader(const QString& title, const QString& subtitle, const QString& text);
 	void show_binary(const QString& title, const QString& subtitle, const QByteArray& bytes, bool truncated);
 	void show_image_from_bytes(const QString& title, const QString& subtitle, const QByteArray& bytes, const ImageDecodeOptions& options = {});
 	void show_image_from_file(const QString& title, const QString& subtitle, const QString& file_path, const ImageDecodeOptions& options = {});
 	void show_audio_from_file(const QString& title, const QString& subtitle, const QString& file_path);
+	void show_cinematic_from_file(const QString& title, const QString& subtitle, const QString& file_path);
+	void show_model_from_file(const QString& title, const QString& subtitle, const QString& file_path);
+	void start_playback_from_beginning();
 
 signals:
 	void request_previous_audio();
 	void request_next_audio();
+	void request_previous_video();
+	void request_next_video();
 
 protected:
 	void resizeEvent(QResizeEvent* event) override;
@@ -50,9 +68,10 @@ private:
 	void set_image_qimage(const QImage& image);
 	void apply_image_background();
 	void update_image_bg_button();
-	void clear_text_highlighter();
-	void ensure_cfg_highlighter();
+	void set_text_highlighter(TextSyntax syntax);
 	void stop_audio_playback();
+	void stop_cinematic_playback();
+	void stop_model_preview();
 	void set_audio_source(const QString& file_path);
 	void sync_audio_controls();
 	void update_audio_tooltip();
@@ -79,17 +98,24 @@ private:
 
 	QWidget* text_page_ = nullptr;
 	QPlainTextEdit* text_view_ = nullptr;
-	std::unique_ptr<CfgSyntaxHighlighter> cfg_highlighter_;
+	std::unique_ptr<QSyntaxHighlighter> text_highlighter_;
+	TextSyntax current_text_syntax_ = TextSyntax::None;
 
 	QWidget* audio_page_ = nullptr;
 	QMediaPlayer* audio_player_ = nullptr;
 	QAudioOutput* audio_output_ = nullptr;
-	QPushButton* audio_prev_button_ = nullptr;
-	QPushButton* audio_play_button_ = nullptr;
-	QPushButton* audio_next_button_ = nullptr;
+	QToolButton* audio_prev_button_ = nullptr;
+	QToolButton* audio_play_button_ = nullptr;
+	QToolButton* audio_next_button_ = nullptr;
 	QSlider* audio_position_slider_ = nullptr;
-	QSlider* audio_volume_slider_ = nullptr;
+	QScrollBar* audio_volume_scroll_ = nullptr;
 	QToolButton* audio_info_button_ = nullptr;
 	QString audio_file_path_;
 	bool audio_user_scrubbing_ = false;
+
+	QWidget* cinematic_page_ = nullptr;
+	CinematicPlayerWidget* cinematic_widget_ = nullptr;
+
+	QWidget* model_page_ = nullptr;
+	ModelViewerWidget* model_widget_ = nullptr;
 };
