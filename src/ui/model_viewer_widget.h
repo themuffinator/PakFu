@@ -5,6 +5,7 @@
 #include <QtOpenGL/QOpenGLShaderProgram>
 #include <QtOpenGL/QOpenGLVertexArrayObject>
 #include <QtOpenGLWidgets/QOpenGLWidget>
+#include <QImage>
 #include <QPoint>
 #include <QVector3D>
 
@@ -22,6 +23,7 @@ public:
   [[nodiscard]] ModelMesh mesh() const { return model_ ? model_->mesh : ModelMesh{}; }
 
   [[nodiscard]] bool load_file(const QString& file_path, QString* error = nullptr);
+  [[nodiscard]] bool load_file(const QString& file_path, const QString& skin_path, QString* error);
   void unload();
 
 protected:
@@ -37,10 +39,12 @@ private:
   struct GpuVertex {
     float px, py, pz;
     float nx, ny, nz;
+    float u, v;
   };
 
   void reset_camera_from_mesh();
   void upload_mesh_if_possible();
+  void upload_texture_if_possible();
   void destroy_gl_resources();
   void ensure_program();
 
@@ -54,6 +58,10 @@ private:
   bool gl_ready_ = false;
   int index_count_ = 0;
   GLenum index_type_ = GL_UNSIGNED_INT;
+  GLuint texture_id_ = 0;
+  bool has_texture_ = false;
+  bool pending_texture_upload_ = false;
+  QImage skin_image_;
 
   QVector3D center_ = QVector3D(0, 0, 0);
   float radius_ = 1.0f;

@@ -6,6 +6,7 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 
 namespace {
 struct Cursor {
@@ -545,32 +546,55 @@ std::optional<LoadedModel> load_md2(const QString& file_path, QString* error) {
     }
     return std::nullopt;
   }
-  (void)skinwidth;
-  (void)skinheight;
   (void)num_skins;
-  (void)num_st;
   (void)num_glcmds;
   (void)ofs_skins;
-  (void)ofs_st;
   (void)ofs_glcmds;
 
   const int file_size = bytes.size();
-  if (ofs_end <= 0 || ofs_end > file_size || ofs_tris < 0 || ofs_frames < 0 || ofs_tris >= file_size || ofs_frames >= file_size) {
+  if (ofs_end <= 0 || ofs_end > file_size || ofs_tris < 0 || ofs_st < 0 || ofs_frames < 0 || ofs_tris >= file_size || ofs_st >= file_size ||
+      ofs_frames >= file_size) {
     if (error) {
       *error = "MD2 header offsets are invalid.";
     }
     return std::nullopt;
   }
-  if (num_xyz <= 0 || num_xyz > 100000 || num_tris < 0 || num_tris > 200000 || num_frames <= 0 || num_frames > 10000 ||
-      framesize <= 0 || framesize > 16 * 1024 * 1024) {
+  if (skinwidth <= 0 || skinheight <= 0 || skinwidth > 8192 || skinheight > 8192 || num_st <= 0 || num_st > 200000 || num_xyz <= 0 ||
+      num_xyz > 100000 || num_tris < 0 || num_tris > 200000 || num_frames <= 0 || num_frames > 10000 || framesize <= 0 ||
+      framesize > 16 * 1024 * 1024) {
     if (error) {
       *error = "MD2 header values are invalid.";
     }
     return std::nullopt;
   }
 
-  QVector<std::uint32_t> indices;
-  indices.reserve(num_tris * 3);
+  struct Md2St {
+    qint16 s = 0;
+    qint16 t = 0;
+  };
+  QVector<Md2St> st;
+  st.resize(num_st);
+  if (!cur.seek(ofs_st)) {
+    if (error) {
+      *error = "MD2 texture coordinate offset is invalid.";
+    }
+    return std::nullopt;
+  }
+  for (int i = 0; i < num_st; ++i) {
+    if (!cur.read_i16(&st[i].s) || !cur.read_i16(&st[i].t)) {
+      if (error) {
+        *error = "MD2 texture coordinates are incomplete.";
+      }
+      return std::nullopt;
+    }
+  }
+
+  struct Md2Tri {
+    qint16 vi[3]{};
+    qint16 ti[3]{};
+  };
+  QVector<Md2Tri> tris;
+  tris.reserve(num_tris);
   if (!cur.seek(ofs_tris)) {
     if (error) {
       *error = "MD2 triangles offset is invalid.";
@@ -578,10 +602,9 @@ std::optional<LoadedModel> load_md2(const QString& file_path, QString* error) {
     return std::nullopt;
   }
   for (int t = 0; t < num_tris; ++t) {
-    qint16 vi[3]{};
-    qint16 ti[3]{};
+    Md2Tri tri;
     for (int i = 0; i < 3; ++i) {
-      if (!cur.read_i16(&vi[i])) {
+      if (!cur.read_i16(&tri.vi[i])) {
         if (error) {
           *error = "MD2 triangles are incomplete.";
         }
@@ -589,21 +612,24 @@ std::optional<LoadedModel> load_md2(const QString& file_path, QString* error) {
       }
     }
     for (int i = 0; i < 3; ++i) {
-      if (!cur.read_i16(&ti[i])) {
+      if (!cur.read_i16(&tri.ti[i])) {
         if (error) {
           *error = "MD2 triangles are incomplete.";
         }
         return std::nullopt;
       }
     }
-    (void)ti;
+    bool ok = true;
     for (int i = 0; i < 3; ++i) {
-      const int idx = vi[i];
-      if (idx < 0 || idx >= num_xyz) {
-        continue;
+      if (tri.vi[i] < 0 || tri.vi[i] >= num_xyz || tri.ti[i] < 0 || tri.ti[i] >= num_st) {
+        ok = false;
+        break;
       }
-      indices.push_back(static_cast<std::uint32_t>(idx));
     }
+    if (!ok) {
+      continue;
+    }
+    tris.push_back(tri);
   }
 
   if (!cur.seek(ofs_frames)) {
@@ -638,8 +664,8 @@ std::optional<LoadedModel> load_md2(const QString& file_path, QString* error) {
     return std::nullopt;
   }
 
-  QVector<ModelVertex> verts;
-  verts.resize(num_xyz);
+  QVector<ModelVertex> base_verts;
+  base_verts.resize(num_xyz);
   for (int i = 0; i < num_xyz; ++i) {
     quint8 vx = 0, vy = 0, vz = 0, ni = 0;
     if (!cur.read_u8(&vx) || !cur.read_u8(&vy) || !cur.read_u8(&vz) || !cur.read_u8(&ni)) {
@@ -649,9 +675,53 @@ std::optional<LoadedModel> load_md2(const QString& file_path, QString* error) {
       return std::nullopt;
     }
     (void)ni;
-    verts[i].px = static_cast<float>(vx) * scale[0] + translate[0];
-    verts[i].py = static_cast<float>(vy) * scale[1] + translate[1];
-    verts[i].pz = static_cast<float>(vz) * scale[2] + translate[2];
+    base_verts[i].px = static_cast<float>(vx) * scale[0] + translate[0];
+    base_verts[i].py = static_cast<float>(vy) * scale[1] + translate[1];
+    base_verts[i].pz = static_cast<float>(vz) * scale[2] + translate[2];
+  }
+
+  if (tris.isEmpty()) {
+    if (error) {
+      *error = "MD2 contains no drawable geometry.";
+    }
+    return std::nullopt;
+  }
+
+  QVector<ModelVertex> verts;
+  QVector<std::uint32_t> indices;
+  verts.reserve(tris.size() * 3);
+  indices.reserve(tris.size() * 3);
+
+  QHash<quint64, std::uint32_t> remap;
+  remap.reserve(tris.size() * 3);
+
+  const float inv_skinw = 1.0f / static_cast<float>(skinwidth);
+  const float inv_skinh = 1.0f / static_cast<float>(skinheight);
+
+  auto make_key = [](quint32 vi, quint32 ti) -> quint64 {
+    return (static_cast<quint64>(vi) << 32) | static_cast<quint64>(ti);
+  };
+
+  for (const Md2Tri& tri : tris) {
+    for (int i = 0; i < 3; ++i) {
+      const quint32 vi = static_cast<quint32>(tri.vi[i]);
+      const quint32 ti = static_cast<quint32>(tri.ti[i]);
+      const quint64 key = make_key(vi, ti);
+
+      auto it = remap.constFind(key);
+      if (it == remap.constEnd()) {
+        const std::uint32_t new_index = static_cast<std::uint32_t>(verts.size());
+        remap.insert(key, new_index);
+
+        ModelVertex v = base_verts[static_cast<int>(vi)];
+        v.u = static_cast<float>(st[static_cast<int>(ti)].s) * inv_skinw;
+        v.v = 1.0f - (static_cast<float>(st[static_cast<int>(ti)].t) * inv_skinh);
+        verts.push_back(v);
+        indices.push_back(new_index);
+      } else {
+        indices.push_back(*it);
+      }
+    }
   }
 
   LoadedModel out;
@@ -792,7 +862,6 @@ std::optional<LoadedModel> load_md3(const QString& file_path, QString* error) {
     (void)surf_flags;
     (void)surf_num_shaders;
     (void)ofs_shaders;
-    (void)ofs_st;
 
     if (surf_num_verts <= 0 || surf_num_verts > 200000 || surf_num_tris < 0 || surf_num_tris > 200000 || ofs_surf_end <= 0) {
       if (error) {
@@ -827,6 +896,27 @@ std::optional<LoadedModel> load_md3(const QString& file_path, QString* error) {
       mv.py = static_cast<float>(y) / 64.0f;
       mv.pz = static_cast<float>(z) / 64.0f;
       vertices[base_vertex + v] = mv;
+    }
+
+    // Texture coordinates.
+    const int st_off = surf_off + ofs_st;
+    if (!cur.seek(st_off)) {
+      if (error) {
+        *error = "MD3 surface texture coordinate offset is invalid.";
+      }
+      return std::nullopt;
+    }
+    for (int v = 0; v < surf_num_verts; ++v) {
+      float s0 = 0.0f;
+      float t0 = 0.0f;
+      if (!cur.read_f32(&s0) || !cur.read_f32(&t0)) {
+        if (error) {
+          *error = "MD3 texture coordinates are incomplete.";
+        }
+        return std::nullopt;
+      }
+      vertices[base_vertex + v].u = s0;
+      vertices[base_vertex + v].v = 1.0f - t0;
     }
 
     // Triangles.

@@ -542,8 +542,9 @@ void MainWindow::open_pak_dialog() {
   dialog.setWindowTitle("Open Archive");
   dialog.setFileMode(QFileDialog::ExistingFile);
   dialog.setNameFilters({
-    "Archives (*.pak *.pk3 *.pk4 *.pkz *.zip)",
+    "Archives (*.pak *.pk3 *.pk4 *.pkz *.zip *.wad)",
     "Quake PAK (*.pak)",
+    "Quake WAD (*.wad)",
     "ZIP-based (PK3/PK4/PKZ/ZIP) (*.pk3 *.pk4 *.pkz *.zip)",
     "All files (*.*)",
   });

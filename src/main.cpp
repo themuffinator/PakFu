@@ -109,7 +109,7 @@ bool is_archive_path(const QString& path) {
   const QString lower = path.toLower();
   const int dot = lower.lastIndexOf('.');
   const QString ext = dot >= 0 ? lower.mid(dot + 1) : QString();
-  static const QSet<QString> kExts = {"pak", "pk3", "pk4", "pkz", "zip"};
+  static const QSet<QString> kExts = {"pak", "pk3", "pk4", "pkz", "zip", "wad"};
   return kExts.contains(ext);
 }
 

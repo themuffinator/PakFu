@@ -24,11 +24,13 @@
   - TGA: built-in decoder (uncompressed + RLE; true-color, grayscale, color-mapped)
   - PCX: built-in decoder (RLE; 8bpp paletted, 24-bit, 16-color)
   - LMP: built-in decoder (Quake QPIC + conchars.lmp; palette.lmp preview; most LMPs require `gfx/palette.lmp`)
+  - MIP: built-in decoder (Quake/GoldSrc MIPTEX; requires a 256-color Quake palette via `gfx/palette.lmp` or a WAD `palette` lump)
   - WAL: built-in decoder (Quake II; requires `pics/colormap.pcx` palette; previews all mip levels)
   - DDS: built-in decoder (uncompressed masks + BC1/BC2/BC3/BC4/BC5, including DX10 headers)
 
 - Archive support:
   - PAK: built-in reader/writer (Quake/Quake II)
+  - WAD: built-in reader/extractor (WAD2/WAD3)
   - PK3/PK4/PKZ/ZIP: built-in reader/writer via vendored miniz
   - Quake Live Beta encrypted PK3: built-in decrypt/encrypt (XOR) loader/writer
 

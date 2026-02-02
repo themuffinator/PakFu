@@ -13,6 +13,7 @@
 #include <QDebug>
 #include <QtGui/QOpenGLContext>
 
+#include "formats/image_loader.h"
 #include "formats/model.h"
 
 namespace {
@@ -32,12 +33,15 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
     return R"GLSL(
       attribute highp vec3 aPos;
       attribute highp vec3 aNormal;
+      attribute highp vec2 aUV;
       uniform highp mat4 uMvp;
       uniform highp mat4 uModel;
       varying highp vec3 vNormal;
+      varying highp vec2 vUV;
       void main() {
         gl_Position = uMvp * vec4(aPos, 1.0);
         vNormal = (uModel * vec4(aNormal, 0.0)).xyz;
+        vUV = aUV;
       }
     )GLSL";
   }
@@ -52,12 +56,15 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
       #version 330 core
       layout(location = 0) in vec3 aPos;
       layout(location = 1) in vec3 aNormal;
+      layout(location = 2) in vec2 aUV;
       uniform mat4 uMvp;
       uniform mat4 uModel;
       out vec3 vNormal;
+      out vec2 vUV;
       void main() {
         gl_Position = uMvp * vec4(aPos, 1.0);
         vNormal = (uModel * vec4(aNormal, 0.0)).xyz;
+        vUV = aUV;
       }
     )GLSL";
   }
@@ -67,12 +74,15 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
       #version 130
       in vec3 aPos;
       in vec3 aNormal;
+      in vec2 aUV;
       uniform mat4 uMvp;
       uniform mat4 uModel;
       out vec3 vNormal;
+      out vec2 vUV;
       void main() {
         gl_Position = uMvp * vec4(aPos, 1.0);
         vNormal = (uModel * vec4(aNormal, 0.0)).xyz;
+        vUV = aUV;
       }
     )GLSL";
   }
@@ -81,12 +91,15 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
     #version 120
     attribute vec3 aPos;
     attribute vec3 aNormal;
+    attribute vec2 aUV;
     uniform mat4 uMvp;
     uniform mat4 uModel;
     varying vec3 vNormal;
+    varying vec2 vUV;
     void main() {
       gl_Position = uMvp * vec4(aPos, 1.0);
       vNormal = (uModel * vec4(aNormal, 0.0)).xyz;
+      vUV = aUV;
     }
   )GLSL";
 }
@@ -96,13 +109,18 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
     return R"GLSL(
       precision mediump float;
       varying mediump vec3 vNormal;
+      varying mediump vec2 vUV;
       uniform mediump vec3 uLightDir;
       uniform mediump vec3 uBaseColor;
+      uniform sampler2D uTex;
+      uniform int uHasTex;
       void main() {
         vec3 n = normalize(vNormal);
         float ndl = max(dot(n, normalize(uLightDir)), 0.0);
-        vec3 c = uBaseColor * (0.22 + 0.78 * ndl);
-        gl_FragColor = vec4(c, 1.0);
+        vec4 tex = (uHasTex != 0) ? texture2D(uTex, vUV) : vec4(uBaseColor, 1.0);
+        vec3 base = (uHasTex != 0) ? tex.rgb : uBaseColor;
+        vec3 c = base * (0.22 + 0.78 * ndl);
+        gl_FragColor = vec4(c, tex.a);
       }
     )GLSL";
   }
@@ -116,14 +134,19 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
     return R"GLSL(
       #version 330 core
       in vec3 vNormal;
+      in vec2 vUV;
       uniform vec3 uLightDir;
       uniform vec3 uBaseColor;
+      uniform sampler2D uTex;
+      uniform int uHasTex;
       out vec4 FragColor;
       void main() {
         vec3 n = normalize(vNormal);
         float ndl = max(dot(n, normalize(uLightDir)), 0.0);
-        vec3 c = uBaseColor * (0.22 + 0.78 * ndl);
-        FragColor = vec4(c, 1.0);
+        vec4 tex = (uHasTex != 0) ? texture(uTex, vUV) : vec4(uBaseColor, 1.0);
+        vec3 base = (uHasTex != 0) ? tex.rgb : uBaseColor;
+        vec3 c = base * (0.22 + 0.78 * ndl);
+        FragColor = vec4(c, tex.a);
       }
     )GLSL";
   }
@@ -132,14 +155,19 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
     return R"GLSL(
       #version 130
       in vec3 vNormal;
+      in vec2 vUV;
       uniform vec3 uLightDir;
       uniform vec3 uBaseColor;
+      uniform sampler2D uTex;
+      uniform int uHasTex;
       out vec4 FragColor;
       void main() {
         vec3 n = normalize(vNormal);
         float ndl = max(dot(n, normalize(uLightDir)), 0.0);
-        vec3 c = uBaseColor * (0.22 + 0.78 * ndl);
-        FragColor = vec4(c, 1.0);
+        vec4 tex = (uHasTex != 0) ? texture2D(uTex, vUV) : vec4(uBaseColor, 1.0);
+        vec3 base = (uHasTex != 0) ? tex.rgb : uBaseColor;
+        vec3 c = base * (0.22 + 0.78 * ndl);
+        FragColor = vec4(c, tex.a);
       }
     )GLSL";
   }
@@ -147,13 +175,18 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
   return R"GLSL(
     #version 120
     varying vec3 vNormal;
+    varying vec2 vUV;
     uniform vec3 uLightDir;
     uniform vec3 uBaseColor;
+    uniform sampler2D uTex;
+    uniform int uHasTex;
     void main() {
       vec3 n = normalize(vNormal);
       float ndl = max(dot(n, normalize(uLightDir)), 0.0);
-      vec3 c = uBaseColor * (0.22 + 0.78 * ndl);
-      gl_FragColor = vec4(c, 1.0);
+      vec4 tex = (uHasTex != 0) ? texture2D(uTex, vUV) : vec4(uBaseColor, 1.0);
+      vec3 base = (uHasTex != 0) ? tex.rgb : uBaseColor;
+      vec3 c = base * (0.22 + 0.78 * ndl);
+      gl_FragColor = vec4(c, tex.a);
     }
   )GLSL";
 }
@@ -169,6 +202,10 @@ ModelViewerWidget::~ModelViewerWidget() {
 }
 
 bool ModelViewerWidget::load_file(const QString& file_path, QString* error) {
+  return load_file(file_path, QString(), error);
+}
+
+bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_path, QString* error) {
   if (error) {
     error->clear();
   }
@@ -183,6 +220,17 @@ bool ModelViewerWidget::load_file(const QString& file_path, QString* error) {
     return false;
   }
 
+  skin_image_ = {};
+  has_texture_ = false;
+  pending_texture_upload_ = false;
+  if (!skin_path.isEmpty()) {
+    const ImageDecodeResult decoded = decode_image_file(skin_path, ImageDecodeOptions{});
+    if (decoded.ok()) {
+      skin_image_ = decoded.image;
+      pending_texture_upload_ = true;
+    }
+  }
+
   reset_camera_from_mesh();
   pending_upload_ = true;
   upload_mesh_if_possible();
@@ -195,6 +243,9 @@ void ModelViewerWidget::unload() {
   index_count_ = 0;
   index_type_ = GL_UNSIGNED_INT;
   pending_upload_ = false;
+  pending_texture_upload_ = false;
+  skin_image_ = {};
+  has_texture_ = false;
   if (gl_ready_ && context()) {
     makeCurrent();
     destroy_gl_resources();
@@ -244,6 +295,18 @@ void ModelViewerWidget::paintGL() {
   program_.setUniformValue("uModel", model_m);
   program_.setUniformValue("uLightDir", QVector3D(0.4f, 0.25f, 1.0f));
   program_.setUniformValue("uBaseColor", QVector3D(0.75f, 0.78f, 0.82f));
+  program_.setUniformValue("uHasTex", has_texture_ ? 1 : 0);
+  program_.setUniformValue("uTex", 0);
+
+  if (has_texture_ && texture_id_ != 0) {
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texture_id_);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  } else {
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDisable(GL_BLEND);
+  }
 
   if (vao_.isCreated()) {
     vao_.bind();
@@ -252,13 +315,20 @@ void ModelViewerWidget::paintGL() {
     ibo_.bind();
     const int pos_loc = program_.attributeLocation("aPos");
     const int nrm_loc = program_.attributeLocation("aNormal");
+    const int uv_loc = program_.attributeLocation("aUV");
     program_.enableAttributeArray(pos_loc);
     program_.enableAttributeArray(nrm_loc);
+    program_.enableAttributeArray(uv_loc);
     program_.setAttributeBuffer(pos_loc, GL_FLOAT, offsetof(GpuVertex, px), 3, sizeof(GpuVertex));
     program_.setAttributeBuffer(nrm_loc, GL_FLOAT, offsetof(GpuVertex, nx), 3, sizeof(GpuVertex));
+    program_.setAttributeBuffer(uv_loc, GL_FLOAT, offsetof(GpuVertex, u), 2, sizeof(GpuVertex));
   }
 
   glDrawElements(GL_TRIANGLES, index_count_, index_type_, nullptr);
+
+  if (has_texture_ && texture_id_ != 0) {
+    glBindTexture(GL_TEXTURE_2D, 0);
+  }
 
   if (vao_.isCreated()) {
     vao_.release();
@@ -344,6 +414,7 @@ void ModelViewerWidget::ensure_program() {
 
   program_.bindAttributeLocation("aPos", 0);
   program_.bindAttributeLocation("aNormal", 1);
+  program_.bindAttributeLocation("aUV", 2);
 
   if (!vs_ok || !fs_ok || !program_.link()) {
     qWarning() << "ModelViewerWidget shader compile/link failed:" << program_.log();
@@ -360,6 +431,11 @@ void ModelViewerWidget::destroy_gl_resources() {
   if (ibo_.isCreated()) {
     ibo_.destroy();
   }
+  if (texture_id_ != 0) {
+    glDeleteTextures(1, &texture_id_);
+    texture_id_ = 0;
+  }
+  has_texture_ = false;
   program_.removeAllShaders();
   program_.release();
 }
@@ -397,7 +473,7 @@ void ModelViewerWidget::upload_mesh_if_possible() {
   gpu.resize(model_->mesh.vertices.size());
   for (int i = 0; i < model_->mesh.vertices.size(); ++i) {
     const ModelVertex& v = model_->mesh.vertices[i];
-    gpu[i] = GpuVertex{v.px, v.py, v.pz, v.nx, v.ny, v.nz};
+    gpu[i] = GpuVertex{v.px, v.py, v.pz, v.nx, v.ny, v.nz, v.u, v.v};
   }
 
   if (!vbo_.isCreated()) {
@@ -434,10 +510,13 @@ void ModelViewerWidget::upload_mesh_if_possible() {
   program_.bind();
   const int pos_loc = program_.attributeLocation("aPos");
   const int nrm_loc = program_.attributeLocation("aNormal");
+  const int uv_loc = program_.attributeLocation("aUV");
   program_.enableAttributeArray(pos_loc);
   program_.enableAttributeArray(nrm_loc);
+  program_.enableAttributeArray(uv_loc);
   program_.setAttributeBuffer(pos_loc, GL_FLOAT, offsetof(GpuVertex, px), 3, sizeof(GpuVertex));
   program_.setAttributeBuffer(nrm_loc, GL_FLOAT, offsetof(GpuVertex, nx), 3, sizeof(GpuVertex));
+  program_.setAttributeBuffer(uv_loc, GL_FLOAT, offsetof(GpuVertex, u), 2, sizeof(GpuVertex));
   program_.release();
 
   vao_.release();
@@ -446,5 +525,50 @@ void ModelViewerWidget::upload_mesh_if_possible() {
 
   index_count_ = model_->mesh.indices.size();
   pending_upload_ = false;
+  upload_texture_if_possible();
   doneCurrent();
+}
+
+void ModelViewerWidget::upload_texture_if_possible() {
+  if (!pending_texture_upload_ || !gl_ready_ || !context()) {
+    return;
+  }
+
+  if (texture_id_ != 0) {
+    glDeleteTextures(1, &texture_id_);
+    texture_id_ = 0;
+  }
+  has_texture_ = false;
+
+  if (skin_image_.isNull()) {
+    pending_texture_upload_ = false;
+    return;
+  }
+
+  QImage img = skin_image_.convertToFormat(QImage::Format_RGBA8888).flipped(Qt::Vertical);
+  if (img.isNull()) {
+    pending_texture_upload_ = false;
+    return;
+  }
+
+  glGenTextures(1, &texture_id_);
+  glBindTexture(GL_TEXTURE_2D, texture_id_);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glTexImage2D(GL_TEXTURE_2D,
+               0,
+               GL_RGBA,
+               img.width(),
+               img.height(),
+               0,
+               GL_RGBA,
+               GL_UNSIGNED_BYTE,
+               img.constBits());
+  glBindTexture(GL_TEXTURE_2D, 0);
+
+  has_texture_ = (texture_id_ != 0);
+  pending_texture_upload_ = false;
 }

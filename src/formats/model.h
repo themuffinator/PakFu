@@ -14,6 +14,8 @@ struct ModelVertex {
   float nx = 0.0f;
   float ny = 0.0f;
   float nz = 1.0f;
+  float u = 0.0f;
+  float v = 0.0f;
 };
 
 struct ModelMesh {
@@ -31,4 +33,3 @@ struct LoadedModel {
 };
 
 [[nodiscard]] std::optional<LoadedModel> load_model_file(const QString& file_path, QString* error = nullptr);
-

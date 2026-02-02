@@ -170,7 +170,7 @@ QVector<ChildListing> list_children(const QVector<ArchiveEntry>& entries,
     item.name = rest;
     item.is_dir = false;
     item.size = e.size;
-    item.mtime_utc_secs = -1;
+    item.mtime_utc_secs = e.mtime_utc_secs;
     files.insert(rest, item);
   }
 
@@ -358,7 +358,7 @@ bool is_image_file_name(const QString& name) {
   }
   const QString ext = lower.mid(dot + 1);
   static const QSet<QString> kImageExts = {
-    "png", "jpg", "jpeg", "bmp", "gif", "tga", "pcx", "wal", "dds", "lmp", "tif", "tiff"
+    "png", "jpg", "jpeg", "bmp", "gif", "tga", "pcx", "wal", "dds", "lmp", "mip", "tif", "tiff"
   };
   return kImageExts.contains(ext);
 }
@@ -1280,7 +1280,7 @@ void PakTab::queue_thumbnail(const QString& pak_path,
     return;
   }
 
-  if (ext == "lmp" && !quake1_palette_loaded_) {
+  if ((ext == "lmp" || ext == "mip") && !quake1_palette_loaded_) {
     ensure_quake1_palette(nullptr);
   }
 
@@ -1295,13 +1295,16 @@ void PakTab::queue_thumbnail(const QString& pak_path,
 
     const QString ext = file_ext_lower(leaf);
     if (is_image_file_name(leaf)) {
-      ImageDecodeOptions options;
-      if (ext == "lmp" && quake1_palette.size() == 256) {
-        options.palette = &quake1_palette;
-      }
-      if (ext == "wal" && quake2_palette.size() == 256) {
-        options.palette = &quake2_palette;
-      }
+       ImageDecodeOptions options;
+       if (ext == "lmp" && quake1_palette.size() == 256) {
+         options.palette = &quake1_palette;
+       }
+       if (ext == "mip" && quake1_palette.size() == 256) {
+         options.palette = &quake1_palette;
+       }
+       if (ext == "wal" && quake2_palette.size() == 256) {
+         options.palette = &quake2_palette;
+       }
 
       ImageDecodeResult decoded;
       if (!source_path.isEmpty()) {
@@ -4004,17 +4007,38 @@ bool PakTab::ensure_quake1_palette(QString* error) {
     return try_lmp_bytes(lmp_bytes, where + ": gfx/palette.lmp");
   };
 
-  // 1) Current archive (most common when viewing pak0.pak).
+  // 1) Current archive (most common when viewing pak0.pak, but also supports WADs that contain a raw palette lump).
   if (archive_.is_loaded()) {
     QByteArray lmp_bytes;
     QString read_err;
     constexpr qint64 kMaxLmpBytes = 1024 * 1024;
     if (archive_.read_entry_bytes("gfx/palette.lmp", &lmp_bytes, &read_err, kMaxLmpBytes)) {
-      if (try_lmp_bytes(lmp_bytes, "Current PAK")) {
+      if (try_lmp_bytes(lmp_bytes, "Current Archive: gfx/palette.lmp")) {
         return true;
       }
     } else {
-      attempts.push_back(QString("Current PAK: %1").arg(read_err.isEmpty() ? "gfx/palette.lmp not found" : read_err));
+      attempts.push_back(QString("Current Archive: %1").arg(read_err.isEmpty() ? "gfx/palette.lmp not found" : read_err));
+    }
+
+    // Some WAD2 texture packs include a raw 256*RGB palette lump named "palette" or "palette.lmp".
+    lmp_bytes.clear();
+    read_err.clear();
+    if (archive_.read_entry_bytes("palette.lmp", &lmp_bytes, &read_err, kMaxLmpBytes)) {
+      if (try_lmp_bytes(lmp_bytes, "Current Archive: palette.lmp")) {
+        return true;
+      }
+    } else {
+      attempts.push_back(QString("Current Archive: %1").arg(read_err.isEmpty() ? "palette.lmp not found" : read_err));
+    }
+
+    lmp_bytes.clear();
+    read_err.clear();
+    if (archive_.read_entry_bytes("palette", &lmp_bytes, &read_err, kMaxLmpBytes)) {
+      if (try_lmp_bytes(lmp_bytes, "Current Archive: palette")) {
+        return true;
+      }
+    } else {
+      attempts.push_back(QString("Current Archive: %1").arg(read_err.isEmpty() ? "palette not found" : read_err));
     }
   }
 
@@ -4194,6 +4218,12 @@ void PakTab::update_preview() {
         decode_options.palette = &quake1_palette_;
       }
     }
+    if (ext == "mip") {
+      QString pal_err;
+      if (ensure_quake1_palette(&pal_err)) {
+        decode_options.palette = &quake1_palette_;
+      }
+    }
     if (!source_path.isEmpty()) {
       preview_->show_image_from_file(leaf, subtitle, source_path, decode_options);
       return;
@@ -4251,18 +4281,160 @@ void PakTab::update_preview() {
 
   if (is_model) {
     QString model_path = source_path;
+    QString skin_path;
+
+    const auto file_base_name = [](const QString& name) -> QString {
+      const int dot = name.lastIndexOf('.');
+      return dot >= 0 ? name.left(dot) : name;
+    };
+
+    const QString model_base = file_base_name(leaf);
+
+    const auto score_skin = [&](const QString& skin_leaf) -> int {
+      const QString ext = file_ext_lower(skin_leaf);
+      const QString base = file_base_name(skin_leaf);
+
+      int score = 0;
+      if (!model_base.isEmpty()) {
+        if (base.compare(model_base, Qt::CaseInsensitive) == 0) {
+          score += 100;
+        } else if (base.startsWith(model_base, Qt::CaseInsensitive)) {
+          score += 70;
+        }
+      }
+      if (base.compare("skin", Qt::CaseInsensitive) == 0) {
+        score += 80;
+      }
+
+      if (ext == "png") {
+        score += 20;
+      } else if (ext == "tga") {
+        score += 18;
+      } else if (ext == "jpg" || ext == "jpeg") {
+        score += 16;
+      } else if (ext == "pcx") {
+        score += 14;
+      } else if (ext == "wal") {
+        score += 12;
+      } else if (ext == "dds") {
+        score += 10;
+      }
+
+      return score;
+    };
+
+    const auto find_skin_on_disk = [&](const QString& model_fs_path) -> QString {
+      const QFileInfo mi(model_fs_path);
+      const QDir d(mi.absolutePath());
+      if (!d.exists()) {
+        return {};
+      }
+
+      const QStringList filters = {
+        "*.png", "*.tga", "*.jpg", "*.jpeg", "*.pcx", "*.wal", "*.dds"
+      };
+      const QStringList files = d.entryList(filters, QDir::Files, QDir::Name);
+      if (files.isEmpty()) {
+        return {};
+      }
+
+      QString best;
+      int best_score = -1;
+      for (const QString& f : files) {
+        const int s = score_skin(f);
+        if (s > best_score) {
+          best_score = s;
+          best = f;
+        }
+      }
+      return best.isEmpty() ? QString() : d.filePath(best);
+    };
+
+    const auto find_skin_in_archive = [&](const QString& model_pak_path) -> QString {
+      const QString normalized = normalize_pak_path(model_pak_path);
+      const int slash = normalized.lastIndexOf('/');
+      const QString dir_prefix = (slash >= 0) ? normalized.left(slash + 1) : QString();
+
+      struct Candidate {
+        QString pak_path;
+        QString leaf;
+        int score = 0;
+      };
+
+      QVector<Candidate> candidates;
+      candidates.reserve(64);
+
+      const auto consider = [&](const QString& pak_name) {
+        const QString p = normalize_pak_path(pak_name);
+        if (!dir_prefix.isEmpty() && !p.startsWith(dir_prefix)) {
+          return;
+        }
+        const QString rest = dir_prefix.isEmpty() ? p : p.mid(dir_prefix.size());
+        if (rest.isEmpty() || rest.contains('/')) {
+          return;
+        }
+        const QString leaf_name = pak_leaf_name(p);
+        if (!is_image_file_name(leaf_name)) {
+          return;
+        }
+        candidates.push_back(Candidate{p, leaf_name, score_skin(leaf_name)});
+      };
+
+      for (const ArchiveEntry& e : archive_.entries()) {
+        consider(e.name);
+      }
+      for (const AddedFile& f : added_files_) {
+        consider(f.pak_name);
+      }
+
+      if (candidates.isEmpty()) {
+        return {};
+      }
+
+      std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
+        if (a.score != b.score) {
+          return a.score > b.score;
+        }
+        return a.leaf.compare(b.leaf, Qt::CaseInsensitive) < 0;
+      });
+
+      return candidates.first().pak_path;
+    };
+
     if (model_path.isEmpty()) {
       QString err;
       if (!export_path_to_temp(pak_path, false, &model_path, &err)) {
         preview_->show_message(leaf, err.isEmpty() ? "Unable to export model for preview." : err);
         return;
       }
+
+      // Try to find and export a skin from the same folder in the archive.
+      const QString skin_pak = find_skin_in_archive(pak_path);
+      if (!skin_pak.isEmpty()) {
+        const QString op_dir = QFileInfo(model_path).absolutePath();
+        const QString dest_skin = QDir(op_dir).filePath(pak_leaf_name(skin_pak));
+
+        QString skin_err;
+        const int skin_added_idx = added_index_by_name_.value(normalize_pak_path(skin_pak), -1);
+        if (skin_added_idx >= 0 && skin_added_idx < added_files_.size()) {
+          if (copy_file_stream(added_files_[skin_added_idx].source_path, dest_skin, &skin_err)) {
+            skin_path = dest_skin;
+          }
+        } else {
+          if (archive_.extract_entry_to_file(skin_pak, dest_skin, &skin_err)) {
+            skin_path = dest_skin;
+          }
+        }
+      }
     }
     if (model_path.isEmpty()) {
       preview_->show_message(leaf, "Unable to export model for preview.");
       return;
     }
-    preview_->show_model_from_file(leaf, subtitle, model_path);
+    if (!source_path.isEmpty()) {
+      skin_path = find_skin_on_disk(model_path);
+    }
+    preview_->show_model_from_file(leaf, subtitle, model_path, skin_path);
     return;
   }
 

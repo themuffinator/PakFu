@@ -18,6 +18,7 @@ sources = files(
   'formats/dds_image.cpp',
   'formats/image_loader.cpp',
   'formats/lmp_image.cpp',
+  'formats/miptex_image.cpp',
   'formats/cinematic.cpp',
   'formats/cin_cinematic.cpp',
   'formats/roq_cinematic.cpp',
@@ -46,6 +47,7 @@ sources = files(
   'ui/pak_tab.cpp',
   'platform/file_associations.cpp',
   'pak/pak_archive.cpp',
+  'wad/wad_archive.cpp',
   'update/update_service.cpp',
 )
 
@@ -88,4 +90,17 @@ pakfu = executable(
   link_args: pakfu_link_args,
   win_subsystem: pakfu_win_subsystem,
   install: true,
+)
+
+roq_probe = executable(
+  'roq_probe',
+  [
+    'tools/roq_probe.cpp',
+    'formats/cinematic.cpp',
+    'formats/cin_cinematic.cpp',
+    'formats/roq_cinematic.cpp',
+  ],
+  include_directories: include_directories('.'),
+  dependencies: [qt6_dep],
+  install: false,
 )

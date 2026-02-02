@@ -49,7 +49,7 @@ public:
 	void show_image_from_file(const QString& title, const QString& subtitle, const QString& file_path, const ImageDecodeOptions& options = {});
 	void show_audio_from_file(const QString& title, const QString& subtitle, const QString& file_path);
 	void show_cinematic_from_file(const QString& title, const QString& subtitle, const QString& file_path);
-	void show_model_from_file(const QString& title, const QString& subtitle, const QString& file_path);
+	void show_model_from_file(const QString& title, const QString& subtitle, const QString& file_path, const QString& skin_path = {});
 	void start_playback_from_beginning();
 
 signals:

@@ -1,7 +1,7 @@
 # PakFu 🥋📦🔥
 
 Bow to your Sensei! 🙇‍♂️🙇‍♀️🧎‍➡️🧎‍➡️🧎‍➡️  
-PakFu is a modern, cross-platform PAK file manager forged in the dojo of **C++20** ⚔️ and the ancient arts of **Qt6** 🐉 (Widgets or QML). It exists to bring balance to chaotic archives: browse 🧭, preview 👀, extract 🧤, rebuild 🛠️, and automate 🧙‍♂️ via CLI.
+PakFu is a modern, cross-platform PAK/WAD file manager forged in the dojo of **C++20** ⚔️ and the ancient arts of **Qt6** 🐉 (Widgets or QML). It exists to bring balance to chaotic archives: browse 🧭, preview 👀, extract 🧤, rebuild 🛠️, and automate 🧙‍♂️ via CLI.
 
 This project is still training under the waterfall 💦🥋 (early development). Expect rapid evolution, occasional shin bruises, and increasingly disciplined PAKs.
 
@@ -16,7 +16,7 @@ This project is still training under the waterfall 💦🥋 (early development).
 - Provide a first-class CLI for automation, pipelines, and batch wizardry 🪄🧰
 - Run consistently on Windows/macOS/Linux 🧘‍♂️🌍
 - Understand and preview common PAK-adjacent file types 👁️‍🗨️📁
-  - Images: `pcx`, `wal`, `dds`, `lmp`, `png`, `tga`, `jpg` 🖼️🎨
+  - Images: `pcx`, `wal`, `mip`, `dds`, `lmp`, `png`, `tga`, `jpg` 🖼️🎨
   - Audio: `wav`, `ogg`, `mp3` 🔊🎶
   - Video: `cin`, `roq` 🎞️🍿
   - Models: `mdl`, `md2`, `md3` 🧊🧩

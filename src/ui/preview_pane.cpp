@@ -770,7 +770,10 @@ void PreviewPane::show_cinematic_from_file(const QString& title, const QString& 
 	}
 }
 
-void PreviewPane::show_model_from_file(const QString& title, const QString& subtitle, const QString& file_path) {
+void PreviewPane::show_model_from_file(const QString& title,
+                                       const QString& subtitle,
+                                       const QString& file_path,
+                                       const QString& skin_path) {
 	stop_audio_playback();
 	stop_cinematic_playback();
 	stop_model_preview();
@@ -786,7 +789,9 @@ void PreviewPane::show_model_from_file(const QString& title, const QString& subt
 	}
 
 	QString err;
-	if (!model_widget_->load_file(file_path, &err)) {
+	const bool ok = skin_path.isEmpty() ? model_widget_->load_file(file_path, &err)
+	                                    : model_widget_->load_file(file_path, skin_path, &err);
+	if (!ok) {
 		show_message(title, err.isEmpty() ? "Unable to load model." : err);
 		return;
 	}

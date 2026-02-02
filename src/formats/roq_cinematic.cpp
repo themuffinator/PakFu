@@ -183,17 +183,12 @@ bool RoqCinematicDecoder::open_file(const QString& file_path, QString* error) {
     return false;
   }
 
-  if (frame_rate == 0) {
-    if (error) {
-      *error = "Invalid ROQ frame rate (0).";
-    }
-    close();
-    return false;
-  }
+  // Some ROQ files store 0 and expect a default of 30fps (Quake 3 behavior).
+  const quint16 fps = (frame_rate == 0) ? static_cast<quint16>(30) : frame_rate;
 
   info_ = CinematicInfo{};
   info_.format = "roq";
-  info_.fps = static_cast<double>(frame_rate);
+  info_.fps = static_cast<double>(fps);
   info_.audio_sample_rate = kRoqAudioSampleRate;
   info_.audio_bytes_per_sample = 2;
   info_.audio_signed = true;
@@ -296,7 +291,7 @@ bool RoqCinematicDecoder::decode_next(CinematicFrame* out, QString* error) {
     return want_samples * block_align;
   };
 
-  while (!file_.atEnd()) {
+  while (packet_chunks_left_ != 0 || !file_.atEnd()) {
     quint16 chunk_type = 0;
     quint32 chunk_size = 0;
     quint16 chunk_arg = 0;
@@ -311,7 +306,18 @@ bool RoqCinematicDecoder::decode_next(CinematicFrame* out, QString* error) {
       continue;
     }
 
-    if (chunk_type == kRoqPacket || chunk_type == kRoqQuadHang || chunk_type == kRoqQuadJpeg) {
+    if (chunk_type == kRoqPacket) {
+      QByteArray bytes;
+      if (!read_bytes(static_cast<qint64>(chunk_size), &bytes, error)) {
+        return false;
+      }
+      packet_bytes_ = std::move(bytes);
+      packet_pos_ = 0;
+      packet_chunks_left_ = (chunk_arg == 0) ? -1 : static_cast<int>(chunk_arg);
+      continue;
+    }
+
+    if (chunk_type == kRoqQuadHang || chunk_type == kRoqQuadJpeg) {
       if (!skip_bytes(chunk_size, error)) {
         return false;
       }
@@ -368,8 +374,14 @@ bool RoqCinematicDecoder::decode_next(CinematicFrame* out, QString* error) {
         // Determine how much audio to attach to this frame, and read ahead (without consuming the next VQ frame)
         // to fill it. RoQ audio chunks can be interleaved before or after the VQ chunk.
         const int want_audio_bytes = want_audio_bytes_for_next_frame();
-        while (has_audio && want_audio_bytes > 0 && audio_pending_.size() < want_audio_bytes && !file_.atEnd()) {
-          const qint64 next_pos = file_.pos();
+        while (has_audio && want_audio_bytes > 0 && audio_pending_.size() < want_audio_bytes && (packet_chunks_left_ != 0 || !file_.atEnd())) {
+          struct StreamMark {
+            qint64 file_pos = 0;
+            QByteArray packet_bytes;
+            int packet_pos = 0;
+            int packet_chunks_left = 0;
+          };
+          const StreamMark mark{file_.pos(), packet_bytes_, packet_pos_, packet_chunks_left_};
           quint16 next_type = 0;
           quint32 next_size = 0;
           quint16 next_arg = 0;
@@ -383,12 +395,15 @@ bool RoqCinematicDecoder::decode_next(CinematicFrame* out, QString* error) {
 
           if (next_type == kRoqQuadVq) {
             // Leave the next frame for the next decode_next() call.
-            if (!file_.seek(next_pos)) {
+            if (!file_.seek(mark.file_pos)) {
               if (error) {
                 *error = "Unable to seek in ROQ.";
               }
               return false;
             }
+            packet_bytes_ = mark.packet_bytes;
+            packet_pos_ = mark.packet_pos;
+            packet_chunks_left_ = mark.packet_chunks_left;
             break;
           }
 
@@ -399,7 +414,18 @@ bool RoqCinematicDecoder::decode_next(CinematicFrame* out, QString* error) {
             continue;
           }
 
-          if (next_type == kRoqPacket || next_type == kRoqQuadHang || next_type == kRoqQuadJpeg) {
+          if (next_type == kRoqPacket) {
+            QByteArray bytes;
+            if (!read_bytes(static_cast<qint64>(next_size), &bytes, error)) {
+              return false;
+            }
+            packet_bytes_ = std::move(bytes);
+            packet_pos_ = 0;
+            packet_chunks_left_ = (next_arg == 0) ? -1 : static_cast<int>(next_arg);
+            continue;
+          }
+
+          if (next_type == kRoqQuadHang || next_type == kRoqQuadJpeg) {
             if (!skip_bytes(next_size, error)) {
               return false;
             }
@@ -445,10 +471,11 @@ bool RoqCinematicDecoder::decode_next(CinematicFrame* out, QString* error) {
             continue;
           }
 
-          if (error) {
-            *error = QString("Unknown ROQ chunk type: 0x%1").arg(next_type, 4, 16, QLatin1Char('0'));
+          // Unknown chunk type in lookahead: best-effort skip.
+          if (!skip_bytes(next_size, error)) {
+            return false;
           }
-          return false;
+          continue;
         }
 
         QByteArray audio_out;
@@ -472,10 +499,11 @@ bool RoqCinematicDecoder::decode_next(CinematicFrame* out, QString* error) {
       continue;
     }
 
-    if (error) {
-      *error = QString("Unknown ROQ chunk type: 0x%1").arg(chunk_type, 4, 16, QLatin1Char('0'));
+    // Unknown chunk type: best-effort skip.
+    if (!skip_bytes(chunk_size, error)) {
+      return false;
     }
-    return false;
+    continue;
   }
 
   return false;
@@ -545,12 +573,16 @@ bool RoqCinematicDecoder::scan_file_for_info(QString* error) {
     return false;
   }
 
+  packet_bytes_.clear();
+  packet_pos_ = 0;
+  packet_chunks_left_ = 0;
+
   int width = 0;
   int height = 0;
   int frames = 0;
   int audio_channels = 0;
 
-  while (!file_.atEnd()) {
+  while (packet_chunks_left_ != 0 || !file_.atEnd()) {
     quint16 type = 0;
     quint32 size = 0;
     quint16 arg = 0;
@@ -600,17 +632,29 @@ bool RoqCinematicDecoder::scan_file_for_info(QString* error) {
       continue;
     }
 
-    if (type == kRoqPacket || type == kRoqQuadHang || type == kRoqQuadJpeg) {
+    if (type == kRoqPacket) {
+      QByteArray bytes;
+      if (!read_bytes(static_cast<qint64>(size), &bytes, error)) {
+        return false;
+      }
+      packet_bytes_ = std::move(bytes);
+      packet_pos_ = 0;
+      packet_chunks_left_ = (arg == 0) ? -1 : static_cast<int>(arg);
+      continue;
+    }
+
+    if (type == kRoqQuadHang || type == kRoqQuadJpeg) {
       if (!skip_bytes(size, error)) {
         return false;
       }
       continue;
     }
 
-    if (error) {
-      *error = QString("Unknown ROQ chunk type: 0x%1").arg(type, 4, 16, QLatin1Char('0'));
+    // Unknown chunk type: best-effort skip.
+    if (!skip_bytes(size, error)) {
+      return false;
     }
-    return false;
+    continue;
   }
 
   if (width <= 0 || height <= 0) {
@@ -647,6 +691,10 @@ bool RoqCinematicDecoder::scan_file_for_info(QString* error) {
     return false;
   }
 
+  packet_bytes_.clear();
+  packet_pos_ = 0;
+  packet_chunks_left_ = 0;
+
   return true;
 }
 
@@ -660,36 +708,86 @@ bool RoqCinematicDecoder::read_next_chunk(quint16* type, quint32* size, quint16*
   if (arg) {
     *arg = 0;
   }
-  QByteArray pre;
-  if (!read_exact(file_, kRoqPreambleSize, &pre) || pre.size() != kRoqPreambleSize) {
-    if (error && error->isEmpty()) {
-      *error = "Unexpected end of ROQ.";
+
+  while (true) {
+    // ROQ_PACKET: a chunk that contains multiple "in-memory" subchunks. When active, read from packet_bytes_.
+    if (packet_chunks_left_ != 0) {
+      if (packet_pos_ < 0 || packet_pos_ > packet_bytes_.size()) {
+        packet_bytes_.clear();
+        packet_pos_ = 0;
+        packet_chunks_left_ = 0;
+        continue;
+      }
+      if (packet_pos_ + kRoqPreambleSize > packet_bytes_.size()) {
+        // Best-effort: abandon packet parsing and fall back to file stream.
+        packet_bytes_.clear();
+        packet_pos_ = 0;
+        packet_chunks_left_ = 0;
+        continue;
+      }
+
+      const char* pre = packet_bytes_.constData() + packet_pos_;
+      packet_pos_ += kRoqPreambleSize;
+
+      const quint16 t = read_u16_le_from(pre);
+      const quint32 s = read_u32_le_from(pre + 2);
+      const quint16 a = read_u16_le_from(pre + 6);
+
+      const qint64 remaining = static_cast<qint64>(packet_bytes_.size()) - packet_pos_;
+      if (remaining < 0 || s > static_cast<quint64>(remaining) || s > static_cast<quint32>(std::numeric_limits<int>::max())) {
+        if (error && error->isEmpty()) {
+          *error = QString("Invalid ROQ packet chunk size: %1").arg(s);
+        }
+        return false;
+      }
+
+      if (packet_chunks_left_ > 0) {
+        --packet_chunks_left_;
+      }
+
+      if (type) {
+        *type = t;
+      }
+      if (size) {
+        *size = s;
+      }
+      if (arg) {
+        *arg = a;
+      }
+      return true;
     }
-    return false;
-  }
 
-  const quint16 t = read_u16_le_from(pre.constData());
-  const quint32 s = read_u32_le_from(pre.constData() + 2);
-  const quint16 a = read_u16_le_from(pre.constData() + 6);
-
-  const qint64 remaining = file_.size() - file_.pos();
-  if (remaining < 0 || s > static_cast<quint64>(remaining) || s > static_cast<quint32>(std::numeric_limits<int>::max())) {
-    if (error && error->isEmpty()) {
-      *error = QString("Invalid ROQ chunk size: %1").arg(s);
+    QByteArray pre;
+    if (!read_exact(file_, kRoqPreambleSize, &pre) || pre.size() != kRoqPreambleSize) {
+      if (error && error->isEmpty()) {
+        *error = "Unexpected end of ROQ.";
+      }
+      return false;
     }
-    return false;
-  }
 
-  if (type) {
-    *type = t;
+    const quint16 t = read_u16_le_from(pre.constData());
+    const quint32 s = read_u32_le_from(pre.constData() + 2);
+    const quint16 a = read_u16_le_from(pre.constData() + 6);
+
+    const qint64 remaining = file_.size() - file_.pos();
+    if (remaining < 0 || s > static_cast<quint64>(remaining) || s > static_cast<quint32>(std::numeric_limits<int>::max())) {
+      if (error && error->isEmpty()) {
+        *error = QString("Invalid ROQ chunk size: %1").arg(s);
+      }
+      return false;
+    }
+
+    if (type) {
+      *type = t;
+    }
+    if (size) {
+      *size = s;
+    }
+    if (arg) {
+      *arg = a;
+    }
+    return true;
   }
-  if (size) {
-    *size = s;
-  }
-  if (arg) {
-    *arg = a;
-  }
-  return true;
 }
 
 bool RoqCinematicDecoder::skip_bytes(qint64 count, QString* error) {
@@ -702,6 +800,24 @@ bool RoqCinematicDecoder::skip_bytes(qint64 count, QString* error) {
   if (count == 0) {
     return true;
   }
+
+  if (packet_chunks_left_ != 0) {
+    const qint64 remaining = static_cast<qint64>(packet_bytes_.size()) - packet_pos_;
+    if (remaining < 0 || count > remaining) {
+      if (error && error->isEmpty()) {
+        *error = "ROQ packet chunk is out of bounds.";
+      }
+      return false;
+    }
+    packet_pos_ += static_cast<int>(count);
+    if (packet_chunks_left_ == 0 || packet_pos_ >= packet_bytes_.size()) {
+      packet_bytes_.clear();
+      packet_pos_ = 0;
+      packet_chunks_left_ = 0;
+    }
+    return true;
+  }
+
   if (!file_.seek(file_.pos() + count)) {
     if (error && error->isEmpty()) {
       *error = "Unable to seek in ROQ.";
@@ -724,6 +840,36 @@ bool RoqCinematicDecoder::read_bytes(qint64 count, QByteArray* out, QString* err
     }
     return false;
   }
+
+  if (packet_chunks_left_ != 0) {
+    if (out) {
+      out->clear();
+    }
+    const qint64 remaining = static_cast<qint64>(packet_bytes_.size()) - packet_pos_;
+    if (remaining < 0 || count > remaining) {
+      if (error && error->isEmpty()) {
+        *error = "ROQ packet chunk is out of bounds.";
+      }
+      return false;
+    }
+    if (count > std::numeric_limits<int>::max()) {
+      if (error) {
+        *error = "ROQ packet chunk is too large.";
+      }
+      return false;
+    }
+    if (out) {
+      *out = packet_bytes_.mid(packet_pos_, static_cast<int>(count));
+    }
+    packet_pos_ += static_cast<int>(count);
+    if (packet_chunks_left_ == 0 || packet_pos_ >= packet_bytes_.size()) {
+      packet_bytes_.clear();
+      packet_pos_ = 0;
+      packet_chunks_left_ = 0;
+    }
+    return true;
+  }
+
   if (!read_exact(file_, count, out)) {
     if (error && error->isEmpty()) {
       *error = "Unable to read ROQ.";
@@ -748,6 +894,10 @@ void RoqCinematicDecoder::reset_decoder_state() {
   audio_pending_.clear();
   audio_sample_accum_ = 0.0;
   audio_samples_emitted_ = 0;
+
+  packet_bytes_.clear();
+  packet_pos_ = 0;
+  packet_chunks_left_ = 0;
 }
 
 bool RoqCinematicDecoder::decode_video_chunk(quint16 chunk_type,
@@ -777,13 +927,20 @@ bool RoqCinematicDecoder::decode_codebook_chunk(const QByteArray& data, quint16 
     error->clear();
   }
 
+  const int nv2_flag = (chunk_arg)&0xFF;
   int nv1 = (chunk_arg >> 8) & 0xFF;
-  int nv2 = (chunk_arg)&0xFF;
   if (nv1 == 0) {
     nv1 = 256;
   }
-  if (nv2 == 0 && (nv1 * 6) < data.size()) {
-    nv2 = 256;
+  int nv2 = nv2_flag;
+  if (nv2_flag == 0) {
+    // Some files may include an implicit vq4 section even when the low byte is 0. Infer the vq4 count from size.
+    const int remaining = data.size() - (nv1 * 6);
+    if (remaining > 0 && (remaining % 4) == 0) {
+      nv2 = qMin(256, remaining / 4);
+    } else {
+      nv2 = 0;
+    }
   }
 
   const int want = nv1 * 6 + nv2 * 4;

@@ -7,6 +7,7 @@
 
 #include "archive/archive_entry.h"
 #include "pak/pak_archive.h"
+#include "wad/wad_archive.h"
 #include "zip/zip_archive.h"
 
 class Archive {
@@ -14,6 +15,7 @@ public:
   enum class Format {
     Unknown = 0,
     Pak,
+    Wad,
     Zip,
   };
 
@@ -39,5 +41,6 @@ private:
   QString path_;
   QString readable_path_;
   PakArchive pak_;
+  WadArchive wad_;
   ZipArchive zip_;
 };

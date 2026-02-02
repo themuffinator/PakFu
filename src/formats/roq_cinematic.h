@@ -65,4 +65,9 @@ private:
   QByteArray audio_pending_;
   double audio_sample_accum_ = 0.0;
   int audio_samples_emitted_ = 0;
+
+  // ROQ_PACKET state (a chunk that contains multiple in-memory chunks).
+  QByteArray packet_bytes_;
+  int packet_pos_ = 0;
+  int packet_chunks_left_ = 0;  // 0 when not in a packet, -1 to decode until end of packet_bytes_.
 };

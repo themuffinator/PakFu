@@ -19,6 +19,8 @@ const QVector<ArchiveEntry>& Archive::entries() const {
 	switch (format_) {
 		case Format::Pak:
 			return pak_.entries();
+		case Format::Wad:
+			return wad_.entries();
 		case Format::Zip:
 			return zip_.entries();
 		case Format::Unknown:
@@ -49,8 +51,16 @@ bool Archive::load(const QString& path, QString* error) {
 	const QString ext = file_ext_lower(abs);
 	const bool looks_zip = (ext == "zip" || ext == "pk3" || ext == "pk4" || ext == "pkz");
 	const bool looks_pak = (ext == "pak");
+	const bool looks_wad = (ext == "wad");
 
 	QString err;
+	if (looks_wad && wad_.load(abs, &err)) {
+		loaded_ = true;
+		format_ = Format::Wad;
+		path_ = abs;
+		readable_path_ = abs;
+		return true;
+	}
 	if (looks_zip && zip_.load(abs, &err)) {
 		loaded_ = true;
 		format_ = Format::Zip;
@@ -71,6 +81,13 @@ bool Archive::load(const QString& path, QString* error) {
 	if (!looks_pak && pak_.load(abs, &err)) {
 		loaded_ = true;
 		format_ = Format::Pak;
+		path_ = abs;
+		readable_path_ = abs;
+		return true;
+	}
+	if (!looks_wad && wad_.load(abs, &err)) {
+		loaded_ = true;
+		format_ = Format::Wad;
 		path_ = abs;
 		readable_path_ = abs;
 		return true;
@@ -107,6 +124,8 @@ bool Archive::read_entry_bytes(const QString& name, QByteArray* out, QString* er
 	switch (format_) {
 		case Format::Pak:
 			return pak_.read_entry_bytes(name, out, error, max_bytes);
+		case Format::Wad:
+			return wad_.read_entry_bytes(name, out, error, max_bytes);
 		case Format::Zip:
 			return zip_.read_entry_bytes(name, out, error, max_bytes);
 		case Format::Unknown:
@@ -132,6 +151,8 @@ bool Archive::extract_entry_to_file(const QString& name, const QString& dest_pat
 	switch (format_) {
 		case Format::Pak:
 			return pak_.extract_entry_to_file(name, dest_path, error);
+		case Format::Wad:
+			return wad_.extract_entry_to_file(name, dest_path, error);
 		case Format::Zip:
 			return zip_.extract_entry_to_file(name, dest_path, error);
 		case Format::Unknown:
