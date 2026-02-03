@@ -1401,20 +1401,26 @@ std::optional<LoadedModel> load_md5mesh(const QString& file_path, QString* error
       }
     }
 
-    [[nodiscard]] QString next(QString* err) {
+    [[nodiscard]] bool next(QString* out, QString* err) {
       if (err) {
         err->clear();
       }
+      if (out) {
+        out->clear();
+      }
       skip_ws_and_comments();
       if (at_end()) {
-        return {};
+        return false;
       }
 
       const char c = (*data)[pos];
       // Single-character tokens.
       if (c == '{' || c == '}' || c == '(' || c == ')') {
         ++pos;
-        return QString(QChar::fromLatin1(c));
+        if (out) {
+          *out = QString(QChar::fromLatin1(c));
+        }
+        return true;
       }
 
       // Quoted string.
@@ -1428,7 +1434,10 @@ std::optional<LoadedModel> load_md5mesh(const QString& file_path, QString* error
         if (pos < data->size() && (*data)[pos] == '"') {
           ++pos;
         }
-        return QString::fromLatin1(data->constData() + start, end - start);
+        if (out) {
+          *out = QString::fromLatin1(data->constData() + start, end - start);
+        }
+        return true;
       }
 
       const int start = pos;
@@ -1442,7 +1451,10 @@ std::optional<LoadedModel> load_md5mesh(const QString& file_path, QString* error
         }
         ++pos;
       }
-      return QString::fromLatin1(data->constData() + start, pos - start);
+      if (out) {
+        *out = QString::fromLatin1(data->constData() + start, pos - start);
+      }
+      return true;
     }
   };
 
@@ -1496,7 +1508,13 @@ std::optional<LoadedModel> load_md5mesh(const QString& file_path, QString* error
   QVector<Mesh> meshes;
 
   auto expect = [&](const QString& want, QString* err) -> bool {
-    const QString got = tok.next(err);
+    QString got;
+    if (!tok.next(&got, err)) {
+      if (err) {
+        *err = QString("MD5 parse error: expected '%1', got end-of-file.").arg(want);
+      }
+      return false;
+    }
     if (got != want) {
       if (err) {
         *err = QString("MD5 parse error: expected '%1', got '%2'.").arg(want, got);
@@ -1514,9 +1532,16 @@ std::optional<LoadedModel> load_md5mesh(const QString& file_path, QString* error
       return false;
     }
     bool okx = false, oky = false, okz = false;
-    const float x = parse_float(tok.next(err), &okx);
-    const float y = parse_float(tok.next(err), &oky);
-    const float z = parse_float(tok.next(err), &okz);
+    QString sx, sy, sz;
+    if (!tok.next(&sx, err) || !tok.next(&sy, err) || !tok.next(&sz, err)) {
+      if (err) {
+        *err = "MD5 parse error: unexpected end of vec3.";
+      }
+      return false;
+    }
+    const float x = parse_float(sx, &okx);
+    const float y = parse_float(sy, &oky);
+    const float z = parse_float(sz, &okz);
     if (!(okx && oky && okz)) {
       if (err) {
         *err = "MD5 parse error: invalid vec3.";
@@ -1537,28 +1562,38 @@ std::optional<LoadedModel> load_md5mesh(const QString& file_path, QString* error
   };
 
   QString err;
-  while (!tok.at_end()) {
-    const QString t = tok.next(&err);
-    if (t.isEmpty()) {
+  while (true) {
+    QString t;
+    if (!tok.next(&t, &err)) {
       break;
     }
+    const QString tl = t.toLower();
 
-    if (t == "joints") {
+    if (tl == "joints") {
       if (!expect("{", &err)) {
         break;
       }
       while (true) {
-        const QString name = tok.next(&err);
-        if (name.isEmpty()) {
+        QString name;
+        if (!tok.next(&name, &err)) {
           err = "MD5 parse error: unexpected end of joints.";
           break;
         }
         if (name == "}") {
           break;
         }
+        if (name.isEmpty()) {
+          err = "MD5 parse error: invalid joint name.";
+          break;
+        }
 
         bool ok_parent = false;
-        const int parent = parse_int(tok.next(&err), &ok_parent);
+        QString parent_s;
+        if (!tok.next(&parent_s, &err)) {
+          err = "MD5 parse error: unexpected end of joints.";
+          break;
+        }
+        const int parent = parse_int(parent_s, &ok_parent);
         if (!ok_parent) {
           err = "MD5 parse error: invalid joint parent.";
           break;
@@ -1587,29 +1622,40 @@ std::optional<LoadedModel> load_md5mesh(const QString& file_path, QString* error
       continue;
     }
 
-    if (t == "mesh") {
+    if (tl == "mesh") {
       if (!expect("{", &err)) {
         break;
       }
       Mesh m;
       while (true) {
-        const QString key = tok.next(&err);
-        if (key.isEmpty()) {
+        QString key;
+        if (!tok.next(&key, &err)) {
           err = "MD5 parse error: unexpected end of mesh.";
           break;
         }
         if (key == "}") {
           break;
         }
+        const QString kl = key.toLower();
 
-        if (key == "shader") {
-          m.shader = tok.next(&err);
+        if (kl == "shader") {
+          QString shader;
+          if (!tok.next(&shader, &err)) {
+            err = "MD5 parse error: unexpected end of shader.";
+            break;
+          }
+          m.shader = shader;
           continue;
         }
 
-        if (key == "numverts") {
+        if (kl == "numverts") {
           bool ok = false;
-          const int n = parse_int(tok.next(&err), &ok);
+          QString n_s;
+          if (!tok.next(&n_s, &err)) {
+            err = "MD5 parse error: invalid numverts.";
+            break;
+          }
+          const int n = parse_int(n_s, &ok);
           if (!ok || n < 0 || n > 2'000'000) {
             err = "MD5 parse error: invalid numverts.";
             break;
@@ -1619,9 +1665,14 @@ std::optional<LoadedModel> load_md5mesh(const QString& file_path, QString* error
           continue;
         }
 
-        if (key == "vert") {
+        if (kl == "vert") {
           bool ok_idx = false;
-          const int idx = parse_int(tok.next(&err), &ok_idx);
+          QString idx_s;
+          if (!tok.next(&idx_s, &err)) {
+            err = "MD5 parse error: invalid vert index.";
+            break;
+          }
+          const int idx = parse_int(idx_s, &ok_idx);
           if (!ok_idx || idx < 0 || idx >= m.verts.size()) {
             err = "MD5 parse error: invalid vert index.";
             break;
@@ -1630,8 +1681,13 @@ std::optional<LoadedModel> load_md5mesh(const QString& file_path, QString* error
             break;
           }
           bool oku = false, okv = false;
-          const float u = parse_float(tok.next(&err), &oku);
-          const float v = parse_float(tok.next(&err), &okv);
+          QString su, sv;
+          if (!tok.next(&su, &err) || !tok.next(&sv, &err)) {
+            err = "MD5 parse error: invalid vert uv.";
+            break;
+          }
+          const float u = parse_float(su, &oku);
+          const float v = parse_float(sv, &okv);
           if (!(oku && okv)) {
             err = "MD5 parse error: invalid vert uv.";
             break;
@@ -1640,8 +1696,13 @@ std::optional<LoadedModel> load_md5mesh(const QString& file_path, QString* error
             break;
           }
           bool ok_sw = false, ok_cw = false;
-          const int start_w = parse_int(tok.next(&err), &ok_sw);
-          const int count_w = parse_int(tok.next(&err), &ok_cw);
+          QString sw_s, cw_s;
+          if (!tok.next(&sw_s, &err) || !tok.next(&cw_s, &err)) {
+            err = "MD5 parse error: invalid vert weights.";
+            break;
+          }
+          const int start_w = parse_int(sw_s, &ok_sw);
+          const int count_w = parse_int(cw_s, &ok_cw);
           if (!(ok_sw && ok_cw) || start_w < 0 || count_w < 0) {
             err = "MD5 parse error: invalid vert weights.";
             break;
@@ -1653,9 +1714,14 @@ std::optional<LoadedModel> load_md5mesh(const QString& file_path, QString* error
           continue;
         }
 
-        if (key == "numtris") {
+        if (kl == "numtris") {
           bool ok = false;
-          const int n = parse_int(tok.next(&err), &ok);
+          QString n_s;
+          if (!tok.next(&n_s, &err)) {
+            err = "MD5 parse error: invalid numtris.";
+            break;
+          }
+          const int n = parse_int(n_s, &ok);
           if (!ok || n < 0 || n > 4'000'000) {
             err = "MD5 parse error: invalid numtris.";
             break;
@@ -1665,12 +1731,18 @@ std::optional<LoadedModel> load_md5mesh(const QString& file_path, QString* error
           continue;
         }
 
-        if (key == "tri") {
+        if (kl == "tri") {
           bool ok0 = false, ok1 = false, ok2 = false, ok3 = false;
-          (void)parse_int(tok.next(&err), &ok0);  // tri index (unused)
-          const int i0 = parse_int(tok.next(&err), &ok1);
-          const int i1 = parse_int(tok.next(&err), &ok2);
-          const int i2 = parse_int(tok.next(&err), &ok3);
+          QString tri_idx_s;
+          QString i0_s, i1_s, i2_s;
+          if (!tok.next(&tri_idx_s, &err) || !tok.next(&i0_s, &err) || !tok.next(&i1_s, &err) || !tok.next(&i2_s, &err)) {
+            err = "MD5 parse error: invalid tri.";
+            break;
+          }
+          (void)parse_int(tri_idx_s, &ok0);  // tri index (unused)
+          const int i0 = parse_int(i0_s, &ok1);
+          const int i1 = parse_int(i1_s, &ok2);
+          const int i2 = parse_int(i2_s, &ok3);
           if (!(ok0 && ok1 && ok2 && ok3) || i0 < 0 || i1 < 0 || i2 < 0) {
             err = "MD5 parse error: invalid tri.";
             break;
@@ -1681,9 +1753,14 @@ std::optional<LoadedModel> load_md5mesh(const QString& file_path, QString* error
           continue;
         }
 
-        if (key == "numweights") {
+        if (kl == "numweights") {
           bool ok = false;
-          const int n = parse_int(tok.next(&err), &ok);
+          QString n_s;
+          if (!tok.next(&n_s, &err)) {
+            err = "MD5 parse error: invalid numweights.";
+            break;
+          }
+          const int n = parse_int(n_s, &ok);
           if (!ok || n < 0 || n > 8'000'000) {
             err = "MD5 parse error: invalid numweights.";
             break;
@@ -1693,16 +1770,27 @@ std::optional<LoadedModel> load_md5mesh(const QString& file_path, QString* error
           continue;
         }
 
-        if (key == "weight") {
+        if (kl == "weight") {
           bool ok_idx = false;
-          const int idx = parse_int(tok.next(&err), &ok_idx);
+          QString idx_s;
+          if (!tok.next(&idx_s, &err)) {
+            err = "MD5 parse error: invalid weight index.";
+            break;
+          }
+          const int idx = parse_int(idx_s, &ok_idx);
           if (!ok_idx || idx < 0 || idx >= m.weights.size()) {
             err = "MD5 parse error: invalid weight index.";
             break;
           }
           bool okj = false, okb = false;
-          const int joint = parse_int(tok.next(&err), &okj);
-          const float bias = parse_float(tok.next(&err), &okb);
+          QString joint_s;
+          QString bias_s;
+          if (!tok.next(&joint_s, &err) || !tok.next(&bias_s, &err)) {
+            err = "MD5 parse error: invalid weight.";
+            break;
+          }
+          const int joint = parse_int(joint_s, &okj);
+          const float bias = parse_float(bias_s, &okb);
           if (!(okj && okb) || joint < 0) {
             err = "MD5 parse error: invalid weight.";
             break;
@@ -1718,7 +1806,8 @@ std::optional<LoadedModel> load_md5mesh(const QString& file_path, QString* error
         }
 
         // Unknown key; skip one token best-effort.
-        (void)tok.next(&err);
+        QString unused;
+        (void)tok.next(&unused, &err);
       }
 
       if (!err.isEmpty()) {
@@ -1794,8 +1883,18 @@ std::optional<LoadedModel> load_md5mesh(const QString& file_path, QString* error
 
     const int first_index = indices.size();
     indices.reserve(indices.size() + m.tris.size());
-    for (const std::uint32_t idx : m.tris) {
-      indices.push_back(static_cast<std::uint32_t>(base_vertex) + idx);
+    const std::uint32_t base_u32 = static_cast<std::uint32_t>(base_vertex);
+    const std::uint32_t vcount_u32 = static_cast<std::uint32_t>(m.verts.size());
+    for (int ti = 0; ti + 2 < m.tris.size(); ti += 3) {
+      const std::uint32_t i0 = m.tris[ti + 0];
+      const std::uint32_t i1 = m.tris[ti + 1];
+      const std::uint32_t i2 = m.tris[ti + 2];
+      if (i0 >= vcount_u32 || i1 >= vcount_u32 || i2 >= vcount_u32) {
+        continue;
+      }
+      indices.push_back(base_u32 + i0);
+      indices.push_back(base_u32 + i1);
+      indices.push_back(base_u32 + i2);
     }
     const int index_count = indices.size() - first_index;
     if (index_count > 0) {

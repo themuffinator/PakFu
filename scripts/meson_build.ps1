@@ -71,12 +71,31 @@ function Find-WinDeployQt {
   return $null
 }
 
+$ensureQtScript = Join-Path $PSScriptRoot "ensure_qt6.ps1"
+
 $qmake = Find-QMake
 if ($qmake) {
   $env:QMAKE = $qmake
   Write-Host "Using qmake: $qmake"
 } else {
-  Write-Host "qmake6 not found. Install Qt6 or set QMAKE/QT_DIR/Qt6_DIR." -ForegroundColor Yellow
+  if (Test-Path $ensureQtScript) {
+    Write-Host "qmake6 not found. Attempting Qt6 auto-install..." -ForegroundColor Yellow
+    & $ensureQtScript
+    if ($LASTEXITCODE -ne 0) {
+      exit $LASTEXITCODE
+    }
+    $qmake = Find-QMake
+    if ($qmake) {
+      $env:QMAKE = $qmake
+      Write-Host "Using qmake: $qmake"
+    } else {
+      Write-Host "qmake6 still not found after auto-install. Set QMAKE/QT_DIR/Qt6_DIR." -ForegroundColor Red
+      exit 1
+    }
+  } else {
+    Write-Host "qmake6 not found. Install Qt6 or set QMAKE/QT_DIR/Qt6_DIR." -ForegroundColor Yellow
+    exit 1
+  }
 }
 
 $desiredCxx = $env:CXX

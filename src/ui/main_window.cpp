@@ -898,6 +898,16 @@ void MainWindow::open_preferences() {
   }
 
   preferences_tab_ = new PreferencesTab(this);
+  connect(preferences_tab_, &PreferencesTab::model_texture_smoothing_changed, this, [this](bool enabled) {
+    if (!tabs_) {
+      return;
+    }
+    for (int i = 0; i < tabs_->count(); ++i) {
+      if (auto* pak_tab = qobject_cast<PakTab*>(tabs_->widget(i))) {
+        pak_tab->set_model_texture_smoothing(enabled);
+      }
+    }
+  });
   const int idx = add_tab("Preferences", preferences_tab_);
   tabs_->setCurrentIndex(idx);
 }

@@ -1,12 +1,14 @@
 #include "preferences_tab.h"
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSettings>
 #include <QVBoxLayout>
 
 #include "platform/file_associations.h"
@@ -107,6 +109,29 @@ void PreferencesTab::build_ui() {
   card_layout->addStretch();
   layout->addWidget(card);
 
+  auto* model_card = new QFrame(this);
+  model_card->setFrameShape(QFrame::StyledPanel);
+  model_card->setFrameShadow(QFrame::Plain);
+  auto* model_layout = new QVBoxLayout(model_card);
+  model_layout->setContentsMargins(18, 18, 18, 18);
+  model_layout->setSpacing(10);
+
+  auto* model_label = new QLabel("Model Viewer", model_card);
+  model_label->setFont(label_font);
+  model_layout->addWidget(model_label);
+
+  auto* model_help = new QLabel(
+    "Configure how 3D model previews are rendered.",
+    model_card);
+  model_help->setWordWrap(true);
+  model_layout->addWidget(model_help);
+
+  model_texture_smoothing_ = new QCheckBox("Texture smoothing (bilinear filtering)", model_card);
+  model_layout->addWidget(model_texture_smoothing_);
+
+  model_layout->addStretch();
+  layout->addWidget(model_card);
+
   auto* assoc_card = new QFrame(this);
   assoc_card->setFrameShape(QFrame::StyledPanel);
   assoc_card->setFrameShadow(QFrame::Plain);
@@ -144,6 +169,13 @@ void PreferencesTab::build_ui() {
   connect(theme_combo_, &QComboBox::currentIndexChanged, this, [this](int) {
     apply_theme_from_combo();
   });
+  if (model_texture_smoothing_) {
+    connect(model_texture_smoothing_, &QCheckBox::toggled, this, [this](bool checked) {
+      QSettings s;
+      s.setValue("preview/model/textureSmoothing", checked);
+      emit model_texture_smoothing_changed(checked);
+    });
+  }
   connect(assoc_apply_, &QPushButton::clicked, this, &PreferencesTab::apply_association);
   connect(assoc_details_, &QPushButton::clicked, this, [this]() {
     QString details;
@@ -160,6 +192,14 @@ void PreferencesTab::load_settings() {
   theme_combo_->blockSignals(true);
   theme_combo_->setCurrentIndex(index_for_theme(theme));
   theme_combo_->blockSignals(false);
+
+  if (model_texture_smoothing_) {
+    QSettings s;
+    const bool smooth = s.value("preview/model/textureSmoothing", false).toBool();
+    model_texture_smoothing_->blockSignals(true);
+    model_texture_smoothing_->setChecked(smooth);
+    model_texture_smoothing_->blockSignals(false);
+  }
 
   refresh_association_status();
 }

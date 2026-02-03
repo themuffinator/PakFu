@@ -15,6 +15,7 @@ class QCloseEvent;
 class UpdateService;
 class PakTab;
 class QUndoStack;
+class PreferencesTab;
 
 class MainWindow : public QMainWindow {
 public:
@@ -69,7 +70,7 @@ private:
   UpdateService* updater_ = nullptr;
   QTabWidget* tabs_ = nullptr;
   QWidget* welcome_tab_ = nullptr;
-  QWidget* preferences_tab_ = nullptr;
+  PreferencesTab* preferences_tab_ = nullptr;
   QAction* new_action_ = nullptr;
   QAction* open_action_ = nullptr;
   QAction* save_action_ = nullptr;

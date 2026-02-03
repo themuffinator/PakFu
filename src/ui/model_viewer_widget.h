@@ -7,6 +7,7 @@
 #include <QtOpenGLWidgets/QOpenGLWidget>
 #include <QImage>
 #include <QPoint>
+#include <QVector>
 #include <QVector3D>
 
 #include <optional>
@@ -21,6 +22,9 @@ public:
   [[nodiscard]] bool has_model() const { return model_.has_value(); }
   [[nodiscard]] QString model_format() const { return model_ ? model_->format : QString(); }
   [[nodiscard]] ModelMesh mesh() const { return model_ ? model_->mesh : ModelMesh{}; }
+
+  void set_texture_smoothing(bool enabled);
+  void set_palettes(const QVector<QRgb>& quake1_palette, const QVector<QRgb>& quake2_palette);
 
   [[nodiscard]] bool load_file(const QString& file_path, QString* error = nullptr);
   [[nodiscard]] bool load_file(const QString& file_path, const QString& skin_path, QString* error);
@@ -45,6 +49,7 @@ private:
   struct DrawSurface {
     int first_index = 0;
     int index_count = 0;
+    QString name;
     QString shader_hint;
     QString shader_leaf;
     QImage image;
@@ -81,4 +86,8 @@ private:
   float distance_ = 3.0f;
 
   QPoint last_mouse_pos_;
+
+  bool texture_smoothing_ = false;
+  QVector<QRgb> quake1_palette_;
+  QVector<QRgb> quake2_palette_;
 };

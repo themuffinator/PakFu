@@ -10,6 +10,7 @@
 #include <QMouseEvent>
 #include <QDir>
 #include <QFileInfo>
+#include <QSettings>
 #include <QSurfaceFormat>
 #include <QWheelEvent>
 #include <QDebug>
@@ -17,6 +18,7 @@
 
 #include "formats/image_loader.h"
 #include "formats/model.h"
+#include "formats/quake3_skin.h"
 
 namespace {
 QVector3D spherical_dir(float yaw_deg, float pitch_deg) {
@@ -40,8 +42,10 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
       uniform highp mat4 uModel;
       varying highp vec3 vNormal;
       varying highp vec2 vUV;
+      varying highp vec3 vPos;
       void main() {
         gl_Position = uMvp * vec4(aPos, 1.0);
+        vPos = (uModel * vec4(aPos, 1.0)).xyz;
         vNormal = (uModel * vec4(aNormal, 0.0)).xyz;
         vUV = aUV;
       }
@@ -63,8 +67,10 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
       uniform mat4 uModel;
       out vec3 vNormal;
       out vec2 vUV;
+      out vec3 vPos;
       void main() {
         gl_Position = uMvp * vec4(aPos, 1.0);
+        vPos = (uModel * vec4(aPos, 1.0)).xyz;
         vNormal = (uModel * vec4(aNormal, 0.0)).xyz;
         vUV = aUV;
       }
@@ -81,8 +87,10 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
       uniform mat4 uModel;
       out vec3 vNormal;
       out vec2 vUV;
+      out vec3 vPos;
       void main() {
         gl_Position = uMvp * vec4(aPos, 1.0);
+        vPos = (uModel * vec4(aPos, 1.0)).xyz;
         vNormal = (uModel * vec4(aNormal, 0.0)).xyz;
         vUV = aUV;
       }
@@ -98,8 +106,10 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
     uniform mat4 uModel;
     varying vec3 vNormal;
     varying vec2 vUV;
+    varying vec3 vPos;
     void main() {
       gl_Position = uMvp * vec4(aPos, 1.0);
+      vPos = (uModel * vec4(aPos, 1.0)).xyz;
       vNormal = (uModel * vec4(aNormal, 0.0)).xyz;
       vUV = aUV;
     }
@@ -112,16 +122,31 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       precision mediump float;
       varying mediump vec3 vNormal;
       varying mediump vec2 vUV;
+      varying mediump vec3 vPos;
+      uniform mediump vec3 uCamPos;
       uniform mediump vec3 uLightDir;
+      uniform mediump vec3 uFillDir;
       uniform mediump vec3 uBaseColor;
       uniform sampler2D uTex;
       uniform int uHasTex;
       void main() {
         vec3 n = normalize(vNormal);
-        float ndl = max(dot(n, normalize(uLightDir)), 0.0);
         vec4 tex = (uHasTex != 0) ? texture2D(uTex, vUV) : vec4(uBaseColor, 1.0);
         vec3 base = (uHasTex != 0) ? tex.rgb : uBaseColor;
-        vec3 c = base * (0.22 + 0.78 * ndl);
+
+        vec3 viewDir = normalize(uCamPos - vPos);
+        vec3 l1 = normalize(uLightDir);
+        vec3 l2 = normalize(uFillDir);
+
+        float ndl1 = max(dot(n, l1), 0.0);
+        float ndl2 = max(dot(n, l2), 0.0);
+        float diffuse = ndl1 * 0.85 + ndl2 * 0.35;
+
+        vec3 h = normalize(l1 + viewDir);
+        float spec = pow(max(dot(n, h), 0.0), 48.0) * 0.22;
+        float rim = pow(1.0 - max(dot(n, viewDir), 0.0), 2.0) * 0.12;
+
+        vec3 c = base * (0.18 + diffuse) + vec3(1.0) * (spec + rim);
         gl_FragColor = vec4(c, tex.a);
       }
     )GLSL";
@@ -137,17 +162,32 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       #version 330 core
       in vec3 vNormal;
       in vec2 vUV;
+      in vec3 vPos;
+      uniform vec3 uCamPos;
       uniform vec3 uLightDir;
+      uniform vec3 uFillDir;
       uniform vec3 uBaseColor;
       uniform sampler2D uTex;
       uniform int uHasTex;
       out vec4 FragColor;
       void main() {
         vec3 n = normalize(vNormal);
-        float ndl = max(dot(n, normalize(uLightDir)), 0.0);
         vec4 tex = (uHasTex != 0) ? texture(uTex, vUV) : vec4(uBaseColor, 1.0);
         vec3 base = (uHasTex != 0) ? tex.rgb : uBaseColor;
-        vec3 c = base * (0.22 + 0.78 * ndl);
+
+        vec3 viewDir = normalize(uCamPos - vPos);
+        vec3 l1 = normalize(uLightDir);
+        vec3 l2 = normalize(uFillDir);
+
+        float ndl1 = max(dot(n, l1), 0.0);
+        float ndl2 = max(dot(n, l2), 0.0);
+        float diffuse = ndl1 * 0.85 + ndl2 * 0.35;
+
+        vec3 h = normalize(l1 + viewDir);
+        float spec = pow(max(dot(n, h), 0.0), 48.0) * 0.22;
+        float rim = pow(1.0 - max(dot(n, viewDir), 0.0), 2.0) * 0.12;
+
+        vec3 c = base * (0.18 + diffuse) + vec3(1.0) * (spec + rim);
         FragColor = vec4(c, tex.a);
       }
     )GLSL";
@@ -158,17 +198,32 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       #version 130
       in vec3 vNormal;
       in vec2 vUV;
+      in vec3 vPos;
+      uniform vec3 uCamPos;
       uniform vec3 uLightDir;
+      uniform vec3 uFillDir;
       uniform vec3 uBaseColor;
       uniform sampler2D uTex;
       uniform int uHasTex;
       out vec4 FragColor;
       void main() {
         vec3 n = normalize(vNormal);
-        float ndl = max(dot(n, normalize(uLightDir)), 0.0);
         vec4 tex = (uHasTex != 0) ? texture2D(uTex, vUV) : vec4(uBaseColor, 1.0);
         vec3 base = (uHasTex != 0) ? tex.rgb : uBaseColor;
-        vec3 c = base * (0.22 + 0.78 * ndl);
+
+        vec3 viewDir = normalize(uCamPos - vPos);
+        vec3 l1 = normalize(uLightDir);
+        vec3 l2 = normalize(uFillDir);
+
+        float ndl1 = max(dot(n, l1), 0.0);
+        float ndl2 = max(dot(n, l2), 0.0);
+        float diffuse = ndl1 * 0.85 + ndl2 * 0.35;
+
+        vec3 h = normalize(l1 + viewDir);
+        float spec = pow(max(dot(n, h), 0.0), 48.0) * 0.22;
+        float rim = pow(1.0 - max(dot(n, viewDir), 0.0), 2.0) * 0.12;
+
+        vec3 c = base * (0.18 + diffuse) + vec3(1.0) * (spec + rim);
         FragColor = vec4(c, tex.a);
       }
     )GLSL";
@@ -178,16 +233,31 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
     #version 120
     varying vec3 vNormal;
     varying vec2 vUV;
+    varying vec3 vPos;
+    uniform vec3 uCamPos;
     uniform vec3 uLightDir;
+    uniform vec3 uFillDir;
     uniform vec3 uBaseColor;
     uniform sampler2D uTex;
     uniform int uHasTex;
     void main() {
       vec3 n = normalize(vNormal);
-      float ndl = max(dot(n, normalize(uLightDir)), 0.0);
       vec4 tex = (uHasTex != 0) ? texture2D(uTex, vUV) : vec4(uBaseColor, 1.0);
       vec3 base = (uHasTex != 0) ? tex.rgb : uBaseColor;
-      vec3 c = base * (0.22 + 0.78 * ndl);
+
+      vec3 viewDir = normalize(uCamPos - vPos);
+      vec3 l1 = normalize(uLightDir);
+      vec3 l2 = normalize(uFillDir);
+
+      float ndl1 = max(dot(n, l1), 0.0);
+      float ndl2 = max(dot(n, l2), 0.0);
+      float diffuse = ndl1 * 0.85 + ndl2 * 0.35;
+
+      vec3 h = normalize(l1 + viewDir);
+      float spec = pow(max(dot(n, h), 0.0), 48.0) * 0.22;
+      float rim = pow(1.0 - max(dot(n, viewDir), 0.0), 2.0) * 0.12;
+
+      vec3 c = base * (0.18 + diffuse) + vec3(1.0) * (spec + rim);
       gl_FragColor = vec4(c, tex.a);
     }
   )GLSL";
@@ -197,10 +267,51 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
 ModelViewerWidget::ModelViewerWidget(QWidget* parent) : QOpenGLWidget(parent) {
   setMinimumHeight(240);
   setFocusPolicy(Qt::StrongFocus);
+
+  QSettings settings;
+  texture_smoothing_ = settings.value("preview/model/textureSmoothing", false).toBool();
 }
 
 ModelViewerWidget::~ModelViewerWidget() {
   unload();
+}
+
+void ModelViewerWidget::set_texture_smoothing(bool enabled) {
+  if (texture_smoothing_ == enabled) {
+    return;
+  }
+  texture_smoothing_ = enabled;
+
+  if (!gl_ready_ || !context()) {
+    return;
+  }
+
+  const GLint filter = texture_smoothing_ ? GL_LINEAR : GL_NEAREST;
+
+  makeCurrent();
+
+  auto apply = [&](GLuint id) {
+    if (id == 0) {
+      return;
+    }
+    glBindTexture(GL_TEXTURE_2D, id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+  };
+
+  apply(texture_id_);
+  for (const DrawSurface& s : surfaces_) {
+    apply(s.texture_id);
+  }
+  glBindTexture(GL_TEXTURE_2D, 0);
+
+  doneCurrent();
+  update();
+}
+
+void ModelViewerWidget::set_palettes(const QVector<QRgb>& quake1_palette, const QVector<QRgb>& quake2_palette) {
+  quake1_palette_ = quake1_palette;
+  quake2_palette_ = quake2_palette;
 }
 
 bool ModelViewerWidget::load_file(const QString& file_path, QString* error) {
@@ -211,6 +322,32 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
   if (error) {
     error->clear();
   }
+
+  const QFileInfo skin_info(skin_path);
+  const bool skin_is_q3_skin = (!skin_path.isEmpty() && skin_info.suffix().compare("skin", Qt::CaseInsensitive) == 0);
+  Quake3SkinMapping skin_mapping;
+  if (skin_is_q3_skin) {
+    QString skin_err;
+    if (!parse_quake3_skin_file(skin_path, &skin_mapping, &skin_err)) {
+      if (error) {
+        *error = skin_err.isEmpty() ? "Unable to load .skin file." : skin_err;
+      }
+      unload();
+      return false;
+    }
+  }
+
+  const auto decode_options_for = [&](const QString& path) -> ImageDecodeOptions {
+    ImageDecodeOptions opt;
+    const QString leaf = QFileInfo(path).fileName();
+    const QString ext = QFileInfo(leaf).suffix().toLower();
+    if ((ext == "lmp" || ext == "mip") && quake1_palette_.size() == 256) {
+      opt.palette = &quake1_palette_;
+    } else if (ext == "wal" && quake2_palette_.size() == 256) {
+      opt.palette = &quake2_palette_;
+    }
+    return opt;
+  };
 
   QString err;
   model_ = load_model_file(file_path, &err);
@@ -227,6 +364,7 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
     DrawSurface s;
     s.first_index = 0;
     s.index_count = model_->mesh.indices.size();
+    s.name = "model";
     surfaces_.push_back(std::move(s));
   } else {
     surfaces_.reserve(model_->surfaces.size());
@@ -237,6 +375,7 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
       DrawSurface s;
       s.first_index = ms.first_index;
       s.index_count = ms.index_count;
+      s.name = ms.name;
       s.shader_hint = ms.shader;
       s.shader_leaf = QFileInfo(ms.shader).fileName();
       surfaces_.push_back(std::move(s));
@@ -245,6 +384,7 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
       DrawSurface s;
       s.first_index = 0;
       s.index_count = model_->mesh.indices.size();
+      s.name = "model";
       surfaces_.push_back(std::move(s));
     }
   }
@@ -252,16 +392,29 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
   skin_image_ = {};
   has_texture_ = false;
   pending_texture_upload_ = false;
-  if (!skin_path.isEmpty()) {
-    const ImageDecodeResult decoded = decode_image_file(skin_path, ImageDecodeOptions{});
+  if (!skin_is_q3_skin && !skin_path.isEmpty()) {
+    const ImageDecodeResult decoded = decode_image_file(skin_path, decode_options_for(skin_path));
     if (decoded.ok()) {
       skin_image_ = decoded.image;
     }
   }
 
+  if (skin_is_q3_skin && !skin_mapping.surface_to_shader.isEmpty()) {
+    for (DrawSurface& s : surfaces_) {
+      const QString key = s.name.trimmed().toLower();
+      if (!skin_mapping.surface_to_shader.contains(key)) {
+        continue;
+      }
+      const QString shader = skin_mapping.surface_to_shader.value(key).trimmed();
+      s.shader_hint = shader;
+      s.shader_leaf = shader.isEmpty() ? QString() : QFileInfo(shader).fileName();
+      s.image = {};
+    }
+  }
+
   const QString model_dir = QFileInfo(file_path).absolutePath();
   if (!model_dir.isEmpty()) {
-    const QStringList exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "dds"};
+    const QStringList exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "dds", "lmp", "mip"};
 
     const auto try_find_in_dir = [&](const QString& base_or_file) -> QString {
       if (base_or_file.isEmpty()) {
@@ -283,7 +436,15 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
       }
       // Case-insensitive basename match (helps when extracted filenames differ in case).
       QDir d(model_dir);
-      const QStringList files = d.entryList(QStringList() << "*.png" << "*.tga" << "*.jpg" << "*.jpeg" << "*.pcx" << "*.wal" << "*.dds",
+      const QStringList files = d.entryList(QStringList() << "*.png"
+                                                          << "*.tga"
+                                                          << "*.jpg"
+                                                          << "*.jpeg"
+                                                          << "*.pcx"
+                                                          << "*.wal"
+                                                          << "*.dds"
+                                                          << "*.lmp"
+                                                          << "*.mip",
                                             QDir::Files,
                                             QDir::Name);
       for (const QString& f : files) {
@@ -303,7 +464,7 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
       if (found.isEmpty()) {
         continue;
       }
-      const ImageDecodeResult decoded = decode_image_file(found, ImageDecodeOptions{});
+      const ImageDecodeResult decoded = decode_image_file(found, decode_options_for(found));
       if (decoded.ok()) {
         s.image = decoded.image;
       }
@@ -381,7 +542,9 @@ void ModelViewerWidget::paintGL() {
 
   program_.setUniformValue("uMvp", mvp);
   program_.setUniformValue("uModel", model_m);
+  program_.setUniformValue("uCamPos", cam_pos);
   program_.setUniformValue("uLightDir", QVector3D(0.4f, 0.25f, 1.0f));
+  program_.setUniformValue("uFillDir", QVector3D(-0.65f, -0.15f, 0.8f));
   program_.setUniformValue("uBaseColor", QVector3D(0.75f, 0.78f, 0.82f));
   program_.setUniformValue("uTex", 0);
 
@@ -646,6 +809,8 @@ void ModelViewerWidget::upload_textures_if_possible() {
     return;
   }
 
+  const GLint filter = texture_smoothing_ ? GL_LINEAR : GL_NEAREST;
+
   auto delete_tex = [&](GLuint* id) {
     if (id && *id != 0) {
       glDeleteTextures(1, id);
@@ -678,8 +843,8 @@ void ModelViewerWidget::upload_textures_if_possible() {
       return false;
     }
     glBindTexture(GL_TEXTURE_2D, *out_id);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);

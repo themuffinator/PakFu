@@ -5,6 +5,7 @@
 #include "ui/theme_manager.h"
 
 class QComboBox;
+class QCheckBox;
 class QLabel;
 class QPushButton;
 
@@ -16,6 +17,7 @@ public:
 
 signals:
   void theme_changed(AppTheme theme);
+  void model_texture_smoothing_changed(bool enabled);
 
 private:
   void build_ui();
@@ -28,4 +30,5 @@ private:
   QLabel* assoc_status_ = nullptr;
   QPushButton* assoc_apply_ = nullptr;
   QPushButton* assoc_details_ = nullptr;
+  QCheckBox* model_texture_smoothing_ = nullptr;
 };

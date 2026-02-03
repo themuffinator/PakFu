@@ -1,6 +1,7 @@
 #include "pak_tab.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <limits>
 
@@ -63,6 +64,7 @@
 #include "formats/lmp_image.h"
 #include "formats/model.h"
 #include "formats/pcx_image.h"
+#include "formats/quake3_skin.h"
 #include "third_party/miniz/miniz.h"
 #include "pak/pak_archive.h"
 #include "ui/breadcrumb_bar.h"
@@ -135,6 +137,7 @@ QVector<ChildListing> list_children(const QVector<ArchiveEntry>& entries,
                                     const QSet<QString>& virtual_dirs,
                                     const QSet<QString>& deleted_files,
                                     const QSet<QString>& deleted_dirs,
+                                    qint64 fallback_mtime_utc_secs,
                                     const QStringList& dir) {
   const QString prefix = join_prefix(dir);
   QSet<QString> dirs;
@@ -173,7 +176,7 @@ QVector<ChildListing> list_children(const QVector<ArchiveEntry>& entries,
     item.name = rest;
     item.is_dir = false;
     item.size = e.size;
-    item.mtime_utc_secs = e.mtime_utc_secs;
+    item.mtime_utc_secs = (e.mtime_utc_secs >= 0) ? e.mtime_utc_secs : fallback_mtime_utc_secs;
     files.insert(rest, item);
   }
 
@@ -491,15 +494,15 @@ QIcon make_archive_icon(const QIcon& base, const QSize& icon_size, const QPalett
   if (!fill.isValid()) {
     fill = pal.color(QPalette::Text);
   }
-  fill.setAlpha(110);
+  fill.setAlpha(105);
 
   QColor stroke = fill;
   stroke.setAlpha(200);
 
   const int w = icon_size.width();
   const int h = icon_size.height();
-  const int box_h = qMax(6, h / 5);
-  QRect box(static_cast<int>(w * 0.18f), h - box_h - 2, static_cast<int>(w * 0.64f), box_h);
+  const int box_h = qMax(8, h / 4);
+  const QRectF box(w * 0.18f, h - box_h - 2.0, w * 0.64f, static_cast<qreal>(box_h));
 
   QPen pen(stroke);
   pen.setWidth(qMax(1, w / 32));
@@ -507,17 +510,32 @@ QIcon make_archive_icon(const QIcon& base, const QSize& icon_size, const QPalett
   p.setBrush(fill);
   p.drawRoundedRect(box, 2.0, 2.0);
 
-  // Simple "zipper" to hint that this is an archive.
-  QColor zip = pal.color(QPalette::Base);
-  if (!zip.isValid()) {
-    zip = Qt::white;
+  // Make WADs look distinct: a small "crate" with slats + tab (instead of a zipper).
+  QColor slat = pal.color(QPalette::Base);
+  if (!slat.isValid()) {
+    slat = Qt::white;
   }
-  zip.setAlpha(180);
-  p.setPen(QPen(zip, qMax(1, w / 64)));
-  const int zx = box.center().x();
-  for (int yy = box.top() + 2; yy < box.bottom() - 1; yy += qMax(3, box_h / 4)) {
-    p.drawPoint(zx, yy);
-  }
+  slat.setAlpha(175);
+
+  const QPen slat_pen(slat, qMax(1, w / 64));
+  p.setPen(slat_pen);
+  const qreal pad = qMax(2.0, box.width() * 0.08);
+  const qreal top = box.top() + 2.0;
+  const qreal bot = box.bottom() - 2.0;
+  p.drawLine(QPointF(box.left() + pad, top), QPointF(box.left() + pad, bot));
+  p.drawLine(QPointF(box.center().x(), top), QPointF(box.center().x(), bot));
+  p.drawLine(QPointF(box.right() - pad, top), QPointF(box.right() - pad, bot));
+
+  QRectF tab(box.left() + box.width() * 0.28f,
+             box.top() - box.height() * 0.28f,
+             box.width() * 0.44f,
+             box.height() * 0.28f);
+  tab = tab.intersected(QRectF(0, 0, w, h));
+  p.setPen(pen);
+  QColor tab_fill = fill.lighter(115);
+  tab_fill.setAlpha(fill.alpha());
+  p.setBrush(tab_fill);
+  p.drawRoundedRect(tab, 1.5, 1.5);
 
   return QIcon(pm);
 }
@@ -540,24 +558,35 @@ QIcon make_archive_icon(const QIcon& base, const QSize& icon_size, const QPalett
   const QVector3D maxs = model.mesh.maxs;
   const QVector3D center = (mins + maxs) * 0.5f;
   const QVector3D ext = (maxs - mins);
-  const float radius = qMax(0.001f, 0.5f * qMax(ext.x(), qMax(ext.y(), ext.z())));
+  const float radius = qMax(0.001f, 0.5f * ext.length());
 
   const float aspect = static_cast<float>(size.width()) / static_cast<float>(size.height());
-  const float dist = radius * 3.2f;
-
-  QMatrix4x4 m;
-  m.translate(-center);
-  m.rotate(35.0f, 1.0f, 0.0f, 0.0f);
-  m.rotate(45.0f, 0.0f, 1.0f, 0.0f);
+  constexpr float fovy_deg = 45.0f;
+  constexpr float kPi = 3.14159265358979323846f;
+  const float tan_half_fovy = std::tan((fovy_deg * 0.5f) * (kPi / 180.0f));
+  const float tan_half_fovx = tan_half_fovy * aspect;
+  const float tan_min = qMax(0.001f, qMin(tan_half_fovy, tan_half_fovx));
+  const float dist = qMax(1.0f, (radius / tan_min) * 1.10f);
 
   QMatrix4x4 v;
-  v.translate(0.0f, 0.0f, -dist);
+  {
+    // Match ModelViewerWidget defaults (yaw=45, pitch=20).
+    const float yaw = 45.0f * (kPi / 180.0f);
+    const float pitch = 20.0f * (kPi / 180.0f);
+    const float cy = std::cos(yaw);
+    const float sy = std::sin(yaw);
+    const float cp = std::cos(pitch);
+    const float sp = std::sin(pitch);
+    const QVector3D dir(cp * cy, cp * sy, sp);
+    const QVector3D cam_pos = center + dir.normalized() * dist;
+    v.lookAt(cam_pos, center, QVector3D(0, 0, 1));
+  }
 
   QMatrix4x4 pmat;
-  pmat.perspective(45.0f, aspect, qMax(0.001f, radius * 0.02f), qMax(10.0f, radius * 50.0f));
+  pmat.perspective(fovy_deg, aspect, qMax(0.001f, radius * 0.02f), qMax(10.0f, radius * 50.0f));
 
-  const QMatrix4x4 mvp = pmat * v * m;
-  const QVector3D light_dir = QVector3D(-0.3f, 0.5f, 1.0f).normalized();
+  const QMatrix4x4 mvp = pmat * v;
+  const QVector3D light_dir = QVector3D(0.4f, 0.25f, 1.0f).normalized();
 
   struct Tri {
     QPointF p0;
@@ -600,9 +629,9 @@ QIcon make_archive_icon(const QIcon& base, const QSize& icon_size, const QPalett
       continue;
     }
 
-    const QVector3D n0 = m.mapVector(QVector3D(v0.nx, v0.ny, v0.nz)).normalized();
-    const QVector3D n1 = m.mapVector(QVector3D(v1.nx, v1.ny, v1.nz)).normalized();
-    const QVector3D n2 = m.mapVector(QVector3D(v2.nx, v2.ny, v2.nz)).normalized();
+    const QVector3D n0 = QVector3D(v0.nx, v0.ny, v0.nz).normalized();
+    const QVector3D n1 = QVector3D(v1.nx, v1.ny, v1.nz).normalized();
+    const QVector3D n2 = QVector3D(v2.nx, v2.ny, v2.nz).normalized();
     const QVector3D nn = (n0 + n1 + n2).normalized();
 
     const float ndotl = qMax(0.0f, QVector3D::dotProduct(nn, light_dir));
@@ -975,6 +1004,12 @@ PakTab::~PakTab() {
 
 QUndoStack* PakTab::undo_stack() const {
   return undo_stack_;
+}
+
+void PakTab::set_model_texture_smoothing(bool enabled) {
+  if (preview_) {
+    preview_->set_model_texture_smoothing(enabled);
+  }
 }
 
 void PakTab::cut() {
@@ -1541,12 +1576,12 @@ void PakTab::configure_icon_view() {
     case ViewMode::Gallery:
       mode = QListView::IconMode;
       icon = QSize(128, 128);
-      spacing = 2;
+      spacing = 0;
       {
         const QFontMetrics fm(icon_view_->font());
         const int text_lines = 2;
         const int text_h = fm.lineSpacing() * text_lines;
-        grid = QSize(icon.width() + 20, icon.height() + text_h + 18);
+        grid = QSize(icon.width() + 2, icon.height() + text_h + 2);
       }
       break;
     case ViewMode::Details:
@@ -3837,6 +3872,17 @@ void PakTab::refresh_listing() {
     }
   }
 
+  qint64 fallback_mtime_utc_secs = -1;
+  {
+    const QString archive_path = view_archive().path();
+    if (!archive_path.isEmpty()) {
+      const QFileInfo info(archive_path);
+      if (info.exists()) {
+        fallback_mtime_utc_secs = info.lastModified().toUTC().toSecsSinceEpoch();
+      }
+    }
+  }
+
   const QVector<ArchiveEntry> empty_entries;
   const QVector<ChildListing> children =
     list_children(view_archive().is_loaded() ? view_archive().entries() : empty_entries,
@@ -3846,6 +3892,7 @@ void PakTab::refresh_listing() {
                   wad_mounted_ ? QSet<QString>{} : virtual_dirs_,
                   wad_mounted_ ? QSet<QString>{} : deleted_files_,
                   wad_mounted_ ? QSet<QString>{} : deleted_dir_prefixes_,
+                  fallback_mtime_utc_secs,
                   current_dir_);
   if (children.isEmpty()) {
     const QString msg = (mode_ == Mode::NewPak)
@@ -4707,6 +4754,11 @@ void PakTab::update_preview() {
   }
 
   const QString ext = file_ext_lower(leaf);
+  if (ext == "wad") {
+    preview_->show_message(leaf.isEmpty() ? "WAD" : leaf,
+                           "Quake WAD archive. Double-click to open.");
+    return;
+  }
   const bool is_audio = is_supported_audio_file(leaf);
   const bool is_cinematic = (ext == "roq" || ext == "cin");
   const bool is_video = (is_cinematic || ext == "mp4" || ext == "mkv");
@@ -4813,9 +4865,10 @@ void PakTab::update_preview() {
     };
 
     const QString model_base = file_base_name(leaf);
+    const QString model_ext = ext;
 
     const auto score_skin = [&](const QString& skin_leaf) -> int {
-      const QString ext = file_ext_lower(skin_leaf);
+      const QString skin_ext = file_ext_lower(skin_leaf);
       const QString base = file_base_name(skin_leaf);
 
       int score = 0;
@@ -4829,18 +4882,26 @@ void PakTab::update_preview() {
       if (base.compare("skin", Qt::CaseInsensitive) == 0) {
         score += 80;
       }
+      if (base.contains("default", Qt::CaseInsensitive)) {
+        score += 30;
+      }
 
-      if (ext == "png") {
+      // Prefer Quake III .skin files for MD3 models.
+      if (model_ext == "md3" && skin_ext == "skin") {
+        score += 160;
+      }
+
+      if (skin_ext == "png") {
         score += 20;
-      } else if (ext == "tga") {
+      } else if (skin_ext == "tga") {
         score += 18;
-      } else if (ext == "jpg" || ext == "jpeg") {
+      } else if (skin_ext == "jpg" || skin_ext == "jpeg") {
         score += 16;
-      } else if (ext == "pcx") {
+      } else if (skin_ext == "pcx") {
         score += 14;
-      } else if (ext == "wal") {
+      } else if (skin_ext == "wal") {
         score += 12;
-      } else if (ext == "dds") {
+      } else if (skin_ext == "dds") {
         score += 10;
       }
 
@@ -4854,9 +4915,10 @@ void PakTab::update_preview() {
         return {};
       }
 
-      const QStringList filters = {
-        "*.png", "*.tga", "*.jpg", "*.jpeg", "*.pcx", "*.wal", "*.dds"
-      };
+      QStringList filters = {"*.png", "*.tga", "*.jpg", "*.jpeg", "*.pcx", "*.wal", "*.dds"};
+      if (model_ext == "md3") {
+        filters.push_back("*.skin");
+      }
       const QStringList files = d.entryList(filters, QDir::Files, QDir::Name);
       if (files.isEmpty()) {
         return {};
@@ -4898,7 +4960,9 @@ void PakTab::update_preview() {
           return;
         }
         const QString leaf_name = pak_leaf_name(p);
-        if (!is_image_file_name(leaf_name)) {
+        const QString leaf_ext = file_ext_lower(leaf_name);
+        const bool is_md3_skin = (model_ext == "md3" && leaf_ext == "skin");
+        if (!is_image_file_name(leaf_name) && !is_md3_skin) {
           return;
         }
         candidates.push_back(Candidate{p, leaf_name, score_skin(leaf_name)});
@@ -4953,9 +5017,9 @@ void PakTab::update_preview() {
         }
       }
 
-      // For MD3 (and other multi-surface formats), try to extract per-surface textures referenced by the model so the
-      // model viewer can auto-load them from the exported temp directory.
-      if (ext == "md3") {
+      // For multi-surface formats, try to extract per-surface textures referenced by the model so the model viewer can
+      // auto-load them from the exported temp directory.
+      if (ext == "md3" || ext == "md5mesh" || ext == "iqm") {
         QString model_err;
         const std::optional<LoadedModel> loaded_model = load_model_file(model_path, &model_err);
         if (loaded_model && !loaded_model->surfaces.isEmpty()) {
@@ -4964,7 +5028,7 @@ void PakTab::update_preview() {
           const int slash = normalized_model.lastIndexOf('/');
           const QString model_dir_prefix = (slash >= 0) ? normalized_model.left(slash + 1) : QString();
 
-          const QStringList img_exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "dds"};
+          const QStringList img_exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "dds", "lmp", "mip"};
 
           // Build a quick case-insensitive lookup across the currently-viewed archive + added files.
           QHash<QString, QString> by_lower;
@@ -5025,6 +5089,7 @@ void PakTab::update_preview() {
             const QString leaf_name = sfi.fileName();
             const QString base_name = sfi.completeBaseName();
             const QString ext_name = sfi.suffix().toLower();
+            const QString dir_name = QDir::cleanPath(sfi.path()).replace('\\', '/');
 
             QVector<QString> candidates;
             candidates.reserve(32);
@@ -5042,6 +5107,23 @@ void PakTab::update_preview() {
               add_candidate(sh);
               if (!model_dir_prefix.isEmpty() && !sh.contains('/')) {
                 add_candidate(model_dir_prefix + sh);
+              }
+
+              // Some assets ship as .jpg/.png even when the shader reference uses .tga.
+              if (!base_name.isEmpty()) {
+                if (!dir_name.isEmpty() && dir_name != ".") {
+                  for (const QString& e : img_exts) {
+                    add_candidate(QString("%1/%2.%3").arg(dir_name, base_name, e));
+                  }
+                }
+                for (const QString& e : img_exts) {
+                  add_candidate(QString("%1.%2").arg(base_name, e));
+                }
+                if (!model_dir_prefix.isEmpty() && !sh.contains('/')) {
+                  for (const QString& e : img_exts) {
+                    add_candidate(QString("%1%2.%3").arg(model_dir_prefix, base_name, e));
+                  }
+                }
               }
             } else {
               for (const QString& e : img_exts) {
@@ -5088,6 +5170,24 @@ void PakTab::update_preview() {
               break;
             }
           }
+
+          // If we exported a Quake III .skin file, also extract textures referenced by it.
+          if (ext == "md3" && !skin_path.isEmpty() && file_ext_lower(QFileInfo(skin_path).fileName()) == "skin") {
+            Quake3SkinMapping mapping;
+            QString skin_err;
+            if (parse_quake3_skin_file(skin_path, &mapping, &skin_err) && !mapping.surface_to_shader.isEmpty()) {
+              for (auto it = mapping.surface_to_shader.cbegin(); it != mapping.surface_to_shader.cend(); ++it) {
+                const QString shader = it.value();
+                if (shader.isEmpty()) {
+                  continue;
+                }
+                consider_shader(shader);
+                if (extracted_lower.size() >= 32) {
+                  break;
+                }
+              }
+            }
+          }
         }
       }
     }
@@ -5098,6 +5198,9 @@ void PakTab::update_preview() {
     if (!source_path.isEmpty()) {
       skin_path = find_skin_on_disk(model_path);
     }
+    (void)ensure_quake1_palette(nullptr);
+    (void)ensure_quake2_palette(nullptr);
+    preview_->set_model_palettes(quake1_palette_, quake2_palette_);
     preview_->show_model_from_file(leaf, subtitle, model_path, skin_path);
     return;
   }

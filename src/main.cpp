@@ -242,7 +242,8 @@ SplashScreen* show_splash(QApplication& app) {
 }
 
 void run_tab_smoke_test(MainWindow& window) {
-  if (!qEnvironmentVariableIsSet("PAKFU_SMOKE_TABS")) {
+  const QString v = QString::fromLatin1(qgetenv("PAKFU_SMOKE_TABS")).trimmed().toLower();
+  if (v.isEmpty() || v == "0" || v == "false" || v == "no" || v == "off") {
     return;
   }
 

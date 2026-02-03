@@ -814,6 +814,18 @@ void PreviewPane::show_model_from_file(const QString& title,
 	}
 }
 
+void PreviewPane::set_model_texture_smoothing(bool enabled) {
+	if (model_widget_) {
+		model_widget_->set_texture_smoothing(enabled);
+	}
+}
+
+void PreviewPane::set_model_palettes(const QVector<QRgb>& quake1_palette, const QVector<QRgb>& quake2_palette) {
+	if (model_widget_) {
+		model_widget_->set_palettes(quake1_palette, quake2_palette);
+	}
+}
+
 void PreviewPane::start_playback_from_beginning() {
 	if (stack_ && audio_page_ && stack_->currentWidget() == audio_page_) {
 		if (!audio_player_ || audio_file_path_.isEmpty()) {

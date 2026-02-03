@@ -3,6 +3,7 @@
 #include <QByteArray>
 #include <QColor>
 #include <QImage>
+#include <QVector>
 #include <QWidget>
 
 #include <memory>
@@ -37,6 +38,9 @@ public:
 
 	explicit PreviewPane(QWidget* parent = nullptr);
 	~PreviewPane() override;
+
+	void set_model_texture_smoothing(bool enabled);
+	void set_model_palettes(const QVector<QRgb>& quake1_palette, const QVector<QRgb>& quake2_palette);
 
 	void show_placeholder();
 	void show_message(const QString& title, const QString& body);

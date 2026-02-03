@@ -23,6 +23,7 @@ sources = files(
   'formats/cin_cinematic.cpp',
   'formats/roq_cinematic.cpp',
   'formats/model.cpp',
+  'formats/quake3_skin.cpp',
   'formats/pcx_image.cpp',
   'formats/tga_image.cpp',
   'formats/wal_image.cpp',
@@ -99,6 +100,17 @@ roq_probe = executable(
     'formats/cinematic.cpp',
     'formats/cin_cinematic.cpp',
     'formats/roq_cinematic.cpp',
+  ],
+  include_directories: include_directories('.'),
+  dependencies: [qt6_dep],
+  install: false,
+)
+
+model_probe = executable(
+  'model_probe',
+  [
+    'tools/model_probe.cpp',
+    'formats/model.cpp',
   ],
   include_directories: include_directories('.'),
   dependencies: [qt6_dep],

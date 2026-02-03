@@ -29,6 +29,7 @@ private:
     QTextCharFormat number;
     QTextCharFormat keyword;
     QTextCharFormat punctuation;
+    QTextCharFormat header;
   };
   Formats formats_;
   QSet<QString> keywords_;

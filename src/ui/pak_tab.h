@@ -62,6 +62,8 @@ public:
   void set_default_directory(const QString& path) { default_directory_ = path; }
   QString default_directory() const { return default_directory_; }
 
+  void set_model_texture_smoothing(bool enabled);
+
   QString pak_path() const { return pak_path_; }
   bool is_loaded() const { return loaded_; }
   Archive::Format archive_format() const { return archive_.format(); }

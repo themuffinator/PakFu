@@ -128,12 +128,22 @@ void SimpleSyntaxHighlighter::refresh_theme() {
   const QColor kw = dark ? QColor(210, 170, 255) : QColor(120, 0, 120);
   const QColor punct = dark ? fg.lighter(120) : fg.darker(120);
 
+  QColor header_fg = pal.color(QPalette::Highlight);
+  if (!header_fg.isValid()) {
+    header_fg = key;
+  }
+  header_fg = dark ? header_fg.lighter(120) : header_fg.darker(120);
+  QColor header_bg = header_fg;
+  header_bg.setAlpha(dark ? 42 : 30);
+
   formats_.comment = make_format(comment, false, true);
   formats_.string = make_format(str);
   formats_.key = make_format(key, true);
   formats_.number = make_format(num);
   formats_.keyword = make_format(kw, true);
   formats_.punctuation = make_format(punct);
+  formats_.header = make_format(header_fg, true);
+  formats_.header.setBackground(header_bg);
 }
 
 void SimpleSyntaxHighlighter::highlightBlock(const QString& text) {
@@ -143,36 +153,111 @@ void SimpleSyntaxHighlighter::highlightBlock(const QString& text) {
   int i = 0;
 
   const bool allow_comments = (mode_ != Mode::Json);
-  int state = previousBlockState();
-  const bool quake_txt = (mode_ == Mode::QuakeTxtBlocks);
 
-  if (quake_txt) {
+  constexpr int kStateInComment = 1 << 12;
+  constexpr int kStateDepthMask = kStateInComment - 1;
+
+  int state = previousBlockState();
+  if (state < 0) {
+    state = 0;
+  }
+  const bool quake_txt = (mode_ == Mode::QuakeTxtBlocks);
+  bool in_block_comment = allow_comments && ((state & kStateInComment) != 0);
+  int brace_depth = quake_txt ? (state & kStateDepthMask) : 0;
+  brace_depth = qBound(0, brace_depth, kStateDepthMask);
+
+  auto should_header_line = [&]() -> bool {
+    if (!quake_txt || in_block_comment || brace_depth != 0) {
+      return false;
+    }
+
+    int j = 0;
+    while (j < n && text[j].isSpace()) {
+      ++j;
+    }
+    if (j >= n) {
+      return false;
+    }
+    if (text[j] == u'{' || text[j] == u'}') {
+      return false;
+    }
+    if (text[j] == u';' || text[j] == u'#') {
+      return false;
+    }
+
+    // Heuristic: "slot 0" / "section 12" style headers at brace depth 0.
+    if (!(text[j].isLetter() || text[j] == u'_' || text[j] == u'$')) {
+      return false;
+    }
+    ++j;
+    while (j < n) {
+      const QChar c = text[j];
+      if (!(c.isLetterOrNumber() || c == u'_' || c == u'$')) {
+        break;
+      }
+      ++j;
+    }
+    while (j < n && text[j].isSpace()) {
+      ++j;
+    }
+    if (j >= n) {
+      return false;
+    }
+    if (text[j] == u'+' || text[j] == u'-') {
+      ++j;
+    }
+    int digits = 0;
+    while (j < n && text[j].isDigit()) {
+      ++digits;
+      ++j;
+    }
+    if (digits <= 0) {
+      return false;
+    }
+    while (j < n && text[j].isSpace()) {
+      ++j;
+    }
+    return (j == n);
+  };
+
+  const bool header_line = should_header_line();
+  if (header_line && n > 0) {
+    setFormat(0, n, formats_.header);
+  }
+
+  auto with_header_bg = [&](QTextCharFormat fmt) -> QTextCharFormat {
+    if (header_line) {
+      fmt.setBackground(formats_.header.background());
+    }
+    return fmt;
+  };
+
+  if (quake_txt && !in_block_comment) {
     int j = 0;
     while (j < n && text[j].isSpace()) {
       ++j;
     }
     if (j < n && (text[j] == u';' || text[j] == u'#')) {
       setFormat(j, n - j, formats_.comment);
-      setCurrentBlockState(0);
+      setCurrentBlockState(quake_txt ? brace_depth : 0);
       return;
     }
   }
 
   // Block comment continuation.
-  if (allow_comments && state == 1) {
+  if (in_block_comment) {
     const int end = text.indexOf("*/");
     if (end < 0) {
       setFormat(0, n, formats_.comment);
-      setCurrentBlockState(1);
+      setCurrentBlockState(kStateInComment | (quake_txt ? brace_depth : 0));
       return;
     }
     setFormat(0, end + 2, formats_.comment);
     i = end + 2;
-    state = 0;
+    in_block_comment = false;
   }
 
-  setCurrentBlockState(0);
-  bool quake_txt_key_done = false;
+  bool quake_txt_key_done = header_line;
 
   auto is_punct = [](QChar c) -> bool {
     switch (c.unicode()) {
@@ -212,7 +297,7 @@ void SimpleSyntaxHighlighter::highlightBlock(const QString& text) {
         const int end = text.indexOf("*/", i + 2);
         if (end < 0) {
           setFormat(i, n - i, formats_.comment);
-          setCurrentBlockState(1);
+          setCurrentBlockState(kStateInComment | (quake_txt ? brace_depth : 0));
           return;
         }
         setFormat(i, end + 2 - i, formats_.comment);
@@ -254,7 +339,7 @@ void SimpleSyntaxHighlighter::highlightBlock(const QString& text) {
           fmt = formats_.key;
         }
       }
-      setFormat(start, len, fmt);
+      setFormat(start, len, with_header_bg(fmt));
       continue;
     }
 
@@ -290,7 +375,7 @@ void SimpleSyntaxHighlighter::highlightBlock(const QString& text) {
         }
       }
       if (digits) {
-        setFormat(start, i - start, formats_.number);
+        setFormat(start, i - start, with_header_bg(formats_.number));
       } else {
         i = start + 1;
       }
@@ -318,23 +403,32 @@ void SimpleSyntaxHighlighter::highlightBlock(const QString& text) {
           }
         }
         if (only_ws_or_braces) {
-          setFormat(start, i - start, formats_.key);
+          setFormat(start, i - start, with_header_bg(formats_.key));
           quake_txt_key_done = true;
           continue;
         }
       }
       if (keywords_.contains(token)) {
-        setFormat(start, i - start, formats_.keyword);
+        setFormat(start, i - start, with_header_bg(formats_.keyword));
       }
       continue;
     }
 
     if (is_punct(c)) {
-      setFormat(i, 1, formats_.punctuation);
+      setFormat(i, 1, with_header_bg(formats_.punctuation));
+      if (quake_txt) {
+        if (c == u'{') {
+          brace_depth = qMin(kStateDepthMask, brace_depth + 1);
+        } else if (c == u'}') {
+          brace_depth = qMax(0, brace_depth - 1);
+        }
+      }
       ++i;
       continue;
     }
 
     ++i;
   }
+
+  setCurrentBlockState((in_block_comment ? kStateInComment : 0) | (quake_txt ? brace_depth : 0));
 }
