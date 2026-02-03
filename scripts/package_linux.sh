@@ -6,6 +6,12 @@ out_dir="${2:-dist}"
 version="${3:-$(cat VERSION)}"
 root_dir="$(cd "$(dirname "$0")/.." && pwd)"
 
+if ! command -v qmake6 >/dev/null 2>&1; then
+  if [[ -f "${root_dir}/scripts/ensure_qt6.sh" ]]; then
+    "${root_dir}/scripts/ensure_qt6.sh"
+  fi
+fi
+
 binary="${build_dir}/src/pakfu"
 if [[ ! -f "${binary}" ]]; then
   echo "pakfu binary not found at ${binary}" >&2

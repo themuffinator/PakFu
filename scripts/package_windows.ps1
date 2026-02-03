@@ -25,7 +25,18 @@ New-Item -ItemType Directory -Force -Path $staging | Out-Null
 
 $windeploy = Get-Command windeployqt.exe -ErrorAction SilentlyContinue
 if (-not $windeploy) {
-  throw "windeployqt.exe not found on PATH."
+  $ensure = Join-Path $PSScriptRoot "ensure_qt6.ps1"
+  if (Test-Path $ensure) {
+    Write-Host "windeployqt.exe not found. Attempting Qt6 auto-install..." -ForegroundColor Yellow
+    & $ensure
+    if ($LASTEXITCODE -ne 0) {
+      exit $LASTEXITCODE
+    }
+    $windeploy = Get-Command windeployqt.exe -ErrorAction SilentlyContinue
+  }
+  if (-not $windeploy) {
+    throw "windeployqt.exe not found on PATH."
+  }
 }
 
 Copy-Item $exe $staging
