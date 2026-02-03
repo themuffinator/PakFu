@@ -19,7 +19,7 @@ This project is still training under the waterfall 💦🥋 (early development).
   - Images: `pcx`, `wal`, `mip`, `dds`, `lmp`, `png`, `tga`, `jpg` 🖼️🎨
   - Audio: `wav`, `ogg`, `mp3` 🔊🎶
   - Video: `cin`, `roq` 🎞️🍿
-  - Models: `mdl`, `md2`, `md3` 🧊🧩
+  - Models: `mdl`, `md2`, `md3`, `iqm`, `md5mesh` 🧊🧩
   - Text/config: `cfg` and similar plain-text formats 🧾🖋️
 - Stay responsive for large archives (no freezing in the middle of a roundhouse kick) 🥶➡️🥋
 - Keep C++ code clean, portable, and documented (minimal OS-specific sorcery) 🧠🧹🧾

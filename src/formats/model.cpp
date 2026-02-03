@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
+#include <QQuaternion>
 
 namespace {
 struct Cursor {
@@ -994,6 +995,841 @@ std::optional<LoadedModel> load_md3(const QString& file_path, QString* error) {
   compute_bounds(&out.mesh);
   return out;
 }
+
+std::optional<LoadedModel> load_iqm(const QString& file_path, QString* error) {
+  if (error) {
+    error->clear();
+  }
+
+  QFile f(file_path);
+  if (!f.open(QIODevice::ReadOnly)) {
+    if (error) {
+      *error = "Unable to open IQM.";
+    }
+    return std::nullopt;
+  }
+  const QByteArray bytes = f.readAll();
+  if (bytes.size() < 16 + 4 * 27) {
+    if (error) {
+      *error = "IQM header is incomplete.";
+    }
+    return std::nullopt;
+  }
+
+  Cursor cur;
+  cur.bytes = &bytes;
+
+  QByteArray magic;
+  if (!cur.read_bytes(16, &magic) || magic.size() != 16) {
+    if (error) {
+      *error = "IQM header is incomplete.";
+    }
+    return std::nullopt;
+  }
+  const QByteArray expected_magic("INTERQUAKEMODEL\0", 16);
+  if (magic != expected_magic) {
+    if (error) {
+      *error = "Not a supported IQM (missing INTERQUAKEMODEL magic).";
+    }
+    return std::nullopt;
+  }
+
+  quint32 version = 0;
+  quint32 filesize = 0;
+  quint32 flags = 0;
+  quint32 num_text = 0, ofs_text = 0;
+  quint32 num_meshes = 0, ofs_meshes = 0;
+  quint32 num_vertexarrays = 0, num_vertexes = 0, ofs_vertexarrays = 0;
+  quint32 num_triangles = 0, ofs_triangles = 0, ofs_adjacency = 0;
+  quint32 num_joints = 0, ofs_joints = 0;
+  quint32 num_poses = 0, ofs_poses = 0;
+  quint32 num_anims = 0, ofs_anims = 0;
+  quint32 num_frames = 0, num_framechannels = 0, ofs_frames = 0, ofs_bounds = 0;
+  quint32 num_comment = 0, ofs_comment = 0;
+  quint32 num_extensions = 0, ofs_extensions = 0;
+
+  if (!cur.read_u32(&version) || !cur.read_u32(&filesize) || !cur.read_u32(&flags) ||
+      !cur.read_u32(&num_text) || !cur.read_u32(&ofs_text) ||
+      !cur.read_u32(&num_meshes) || !cur.read_u32(&ofs_meshes) ||
+      !cur.read_u32(&num_vertexarrays) || !cur.read_u32(&num_vertexes) || !cur.read_u32(&ofs_vertexarrays) ||
+      !cur.read_u32(&num_triangles) || !cur.read_u32(&ofs_triangles) || !cur.read_u32(&ofs_adjacency) ||
+      !cur.read_u32(&num_joints) || !cur.read_u32(&ofs_joints) ||
+      !cur.read_u32(&num_poses) || !cur.read_u32(&ofs_poses) ||
+      !cur.read_u32(&num_anims) || !cur.read_u32(&ofs_anims) ||
+      !cur.read_u32(&num_frames) || !cur.read_u32(&num_framechannels) || !cur.read_u32(&ofs_frames) ||
+      !cur.read_u32(&ofs_bounds) || !cur.read_u32(&num_comment) || !cur.read_u32(&ofs_comment) ||
+      !cur.read_u32(&num_extensions) || !cur.read_u32(&ofs_extensions)) {
+    if (error) {
+      *error = "IQM header is incomplete.";
+    }
+    return std::nullopt;
+  }
+
+  Q_UNUSED(flags);
+  Q_UNUSED(ofs_adjacency);
+  Q_UNUSED(num_joints);
+  Q_UNUSED(ofs_joints);
+  Q_UNUSED(num_poses);
+  Q_UNUSED(ofs_poses);
+  Q_UNUSED(num_anims);
+  Q_UNUSED(ofs_anims);
+  Q_UNUSED(num_frames);
+  Q_UNUSED(num_framechannels);
+  Q_UNUSED(ofs_frames);
+  Q_UNUSED(ofs_bounds);
+  Q_UNUSED(num_comment);
+  Q_UNUSED(ofs_comment);
+  Q_UNUSED(num_extensions);
+  Q_UNUSED(ofs_extensions);
+
+  constexpr quint32 kIqmVersion = 2;
+  if (version != kIqmVersion) {
+    if (error) {
+      *error = QString("Unsupported IQM version: %1.").arg(version);
+    }
+    return std::nullopt;
+  }
+
+  if (filesize > static_cast<quint32>(bytes.size())) {
+    if (error) {
+      *error = "IQM file size field is out of bounds.";
+    }
+    return std::nullopt;
+  }
+
+  auto range_ok = [&](quint32 ofs, quint32 count, quint32 elem_bytes) -> bool {
+    const quint64 o = ofs;
+    const quint64 n = count;
+    const quint64 b = elem_bytes;
+    const quint64 end = o + n * b;
+    return end <= static_cast<quint64>(bytes.size());
+  };
+
+  if (!range_ok(ofs_text, num_text, 1) || !range_ok(ofs_meshes, num_meshes, 24) || !range_ok(ofs_vertexarrays, num_vertexarrays, 20) ||
+      !range_ok(ofs_triangles, num_triangles, 12)) {
+    if (error) {
+      *error = "IQM sections are out of bounds.";
+    }
+    return std::nullopt;
+  }
+
+  const QByteArray text = bytes.mid(static_cast<int>(ofs_text), static_cast<int>(num_text));
+  auto get_text = [&](quint32 ofs) -> QString {
+    if (ofs >= static_cast<quint32>(text.size())) {
+      return {};
+    }
+    const char* base = text.constData() + static_cast<int>(ofs);
+    const int max = text.size() - static_cast<int>(ofs);
+    const int nul = QByteArray(base, max).indexOf('\0');
+    const int len = (nul >= 0) ? nul : max;
+    return QString::fromLatin1(base, len);
+  };
+
+  struct IqmMesh {
+    quint32 name = 0;
+    quint32 material = 0;
+    quint32 first_vertex = 0;
+    quint32 num_vertexes = 0;
+    quint32 first_triangle = 0;
+    quint32 num_triangles = 0;
+  };
+
+  QVector<IqmMesh> meshes;
+  meshes.reserve(static_cast<int>(num_meshes));
+  for (quint32 i = 0; i < num_meshes; ++i) {
+    Cursor mc = cur;
+    if (!mc.seek(static_cast<int>(ofs_meshes + i * 24))) {
+      break;
+    }
+    IqmMesh m;
+    if (!mc.read_u32(&m.name) || !mc.read_u32(&m.material) || !mc.read_u32(&m.first_vertex) || !mc.read_u32(&m.num_vertexes) ||
+        !mc.read_u32(&m.first_triangle) || !mc.read_u32(&m.num_triangles)) {
+      break;
+    }
+    meshes.push_back(m);
+  }
+
+  struct IqmVa {
+    quint32 type = 0;
+    quint32 format = 0;
+    quint32 size = 0;
+    quint32 offset = 0;
+    bool valid = false;
+  };
+
+  constexpr quint32 IQM_POSITION = 0;
+  constexpr quint32 IQM_TEXCOORD = 1;
+  constexpr quint32 IQM_NORMAL = 2;
+  constexpr quint32 IQM_FLOAT = 7;
+
+  IqmVa pos_va;
+  IqmVa nrm_va;
+  IqmVa st_va;
+
+  for (quint32 i = 0; i < num_vertexarrays; ++i) {
+    Cursor vc = cur;
+    if (!vc.seek(static_cast<int>(ofs_vertexarrays + i * 20))) {
+      break;
+    }
+    quint32 type = 0, flags0 = 0, format = 0, size0 = 0, offset = 0;
+    if (!vc.read_u32(&type) || !vc.read_u32(&flags0) || !vc.read_u32(&format) || !vc.read_u32(&size0) || !vc.read_u32(&offset)) {
+      break;
+    }
+    Q_UNUSED(flags0);
+    if (format != IQM_FLOAT) {
+      continue;
+    }
+    const quint32 elem_bytes = size0 * 4;
+    if (!range_ok(offset, num_vertexes, elem_bytes)) {
+      continue;
+    }
+
+    if (type == IQM_POSITION && size0 == 3) {
+      pos_va = IqmVa{type, format, size0, offset, true};
+    } else if (type == IQM_NORMAL && size0 == 3) {
+      nrm_va = IqmVa{type, format, size0, offset, true};
+    } else if (type == IQM_TEXCOORD && size0 == 2) {
+      st_va = IqmVa{type, format, size0, offset, true};
+    }
+  }
+
+  if (!pos_va.valid) {
+    if (error) {
+      *error = "IQM is missing required position data.";
+    }
+    return std::nullopt;
+  }
+
+  auto read_f32_le = [&](quint32 byte_ofs) -> float {
+    if (byte_ofs + 4 > static_cast<quint32>(bytes.size())) {
+      return 0.0f;
+    }
+    const uchar* p = reinterpret_cast<const uchar*>(bytes.constData() + static_cast<int>(byte_ofs));
+    const quint32 u = static_cast<quint32>(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24));
+    float out = 0.0f;
+    memcpy(&out, &u, sizeof(float));
+    return out;
+  };
+
+  QVector<ModelVertex> vertices;
+  vertices.resize(static_cast<int>(num_vertexes));
+  for (quint32 i = 0; i < num_vertexes; ++i) {
+    const quint32 pofs = pos_va.offset + i * 12;
+    vertices[static_cast<int>(i)].px = read_f32_le(pofs + 0);
+    vertices[static_cast<int>(i)].py = read_f32_le(pofs + 4);
+    vertices[static_cast<int>(i)].pz = read_f32_le(pofs + 8);
+
+    if (nrm_va.valid) {
+      const quint32 nofs = nrm_va.offset + i * 12;
+      vertices[static_cast<int>(i)].nx = read_f32_le(nofs + 0);
+      vertices[static_cast<int>(i)].ny = read_f32_le(nofs + 4);
+      vertices[static_cast<int>(i)].nz = read_f32_le(nofs + 8);
+    }
+    if (st_va.valid) {
+      const quint32 tofs = st_va.offset + i * 8;
+      vertices[static_cast<int>(i)].u = read_f32_le(tofs + 0);
+      const float tv = read_f32_le(tofs + 4);
+      vertices[static_cast<int>(i)].v = 1.0f - tv;
+    }
+  }
+
+  struct TriU32 {
+    quint32 v0 = 0;
+    quint32 v1 = 0;
+    quint32 v2 = 0;
+  };
+
+  auto read_tri = [&](quint32 tri_index, TriU32* out) -> bool {
+    if (!out) {
+      return false;
+    }
+    const quint64 ofs = static_cast<quint64>(ofs_triangles) + static_cast<quint64>(tri_index) * 12ULL;
+    if (ofs + 12ULL > static_cast<quint64>(bytes.size())) {
+      return false;
+    }
+    const uchar* p = reinterpret_cast<const uchar*>(bytes.constData() + static_cast<int>(ofs));
+    auto ru32 = [&](int off) -> quint32 {
+      const uchar* b = p + off;
+      return static_cast<quint32>(b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24));
+    };
+    out->v0 = ru32(0);
+    out->v1 = ru32(4);
+    out->v2 = ru32(8);
+    return true;
+  };
+
+  QVector<std::uint32_t> indices;
+  QVector<ModelSurface> surfaces;
+  surfaces.reserve(meshes.isEmpty() ? 1 : meshes.size());
+
+  if (meshes.isEmpty()) {
+    // No mesh table: treat the whole triangle list as a single surface.
+    const int first_index = indices.size();
+    indices.reserve(static_cast<int>(num_triangles * 3));
+    for (quint32 t = 0; t < num_triangles; ++t) {
+      TriU32 tri;
+      if (!read_tri(t, &tri)) {
+        break;
+      }
+      if (tri.v0 >= num_vertexes || tri.v1 >= num_vertexes || tri.v2 >= num_vertexes) {
+        continue;
+      }
+      indices.push_back(static_cast<std::uint32_t>(tri.v0));
+      indices.push_back(static_cast<std::uint32_t>(tri.v1));
+      indices.push_back(static_cast<std::uint32_t>(tri.v2));
+    }
+    const int index_count = indices.size() - first_index;
+    surfaces = {ModelSurface{QString("model"), QString(), first_index, index_count}};
+  } else {
+    for (int mi = 0; mi < meshes.size(); ++mi) {
+      const IqmMesh& m = meshes[mi];
+      if (m.first_triangle >= num_triangles) {
+        continue;
+      }
+      const quint32 tri_end = qMin(num_triangles, m.first_triangle + m.num_triangles);
+      const int first_index = indices.size();
+      indices.reserve(indices.size() + static_cast<int>((tri_end - m.first_triangle) * 3));
+      for (quint32 t = m.first_triangle; t < tri_end; ++t) {
+        TriU32 tri;
+        if (!read_tri(t, &tri)) {
+          break;
+        }
+        if (tri.v0 >= num_vertexes || tri.v1 >= num_vertexes || tri.v2 >= num_vertexes) {
+          continue;
+        }
+        indices.push_back(static_cast<std::uint32_t>(tri.v0));
+        indices.push_back(static_cast<std::uint32_t>(tri.v1));
+        indices.push_back(static_cast<std::uint32_t>(tri.v2));
+      }
+      const int index_count = indices.size() - first_index;
+      if (index_count <= 0) {
+        continue;
+      }
+
+      ModelSurface surf;
+      surf.name = get_text(m.name);
+      surf.shader = get_text(m.material);
+      if (surf.name.isEmpty()) {
+        surf.name = QString("mesh%1").arg(mi);
+      }
+      surf.first_index = first_index;
+      surf.index_count = index_count;
+      surfaces.push_back(std::move(surf));
+    }
+    if (surfaces.isEmpty()) {
+      surfaces = {ModelSurface{QString("model"), QString(), 0, static_cast<int>(indices.size())}};
+    }
+  }
+
+  if (vertices.isEmpty() || indices.isEmpty()) {
+    if (error) {
+      *error = "IQM contains no drawable geometry.";
+    }
+    return std::nullopt;
+  }
+
+  LoadedModel out;
+  out.format = "iqm";
+  out.frame_count = 1;
+  out.surface_count = std::max(1, static_cast<int>(surfaces.size()));
+  out.mesh.vertices = std::move(vertices);
+  out.mesh.indices = std::move(indices);
+  out.surfaces = std::move(surfaces);
+
+  if (!nrm_va.valid) {
+    compute_smooth_normals(&out.mesh);
+  }
+  compute_bounds(&out.mesh);
+  return out;
+}
+
+std::optional<LoadedModel> load_md5mesh(const QString& file_path, QString* error) {
+  if (error) {
+    error->clear();
+  }
+
+  QFile f(file_path);
+  if (!f.open(QIODevice::ReadOnly)) {
+    if (error) {
+      *error = "Unable to open MD5 mesh.";
+    }
+    return std::nullopt;
+  }
+  const QByteArray bytes = f.readAll();
+  if (bytes.isEmpty()) {
+    if (error) {
+      *error = "Empty MD5 mesh.";
+    }
+    return std::nullopt;
+  }
+
+  struct Tok {
+    const QByteArray* data = nullptr;
+    int pos = 0;
+
+    [[nodiscard]] bool at_end() const { return !data || pos >= data->size(); }
+
+    void skip_ws_and_comments() {
+      if (!data) {
+        return;
+      }
+      while (pos < data->size()) {
+        const char c = (*data)[pos];
+        if (c == '/' && pos + 1 < data->size() && (*data)[pos + 1] == '/') {
+          pos += 2;
+          while (pos < data->size() && (*data)[pos] != '\n') {
+            ++pos;
+          }
+          continue;
+        }
+        if (c == '/' && pos + 1 < data->size() && (*data)[pos + 1] == '*') {
+          pos += 2;
+          while (pos + 1 < data->size()) {
+            if ((*data)[pos] == '*' && (*data)[pos + 1] == '/') {
+              pos += 2;
+              break;
+            }
+            ++pos;
+          }
+          continue;
+        }
+        if (static_cast<unsigned char>(c) <= 0x20) {
+          ++pos;
+          continue;
+        }
+        break;
+      }
+    }
+
+    [[nodiscard]] QString next(QString* err) {
+      if (err) {
+        err->clear();
+      }
+      skip_ws_and_comments();
+      if (at_end()) {
+        return {};
+      }
+
+      const char c = (*data)[pos];
+      // Single-character tokens.
+      if (c == '{' || c == '}' || c == '(' || c == ')') {
+        ++pos;
+        return QString(QChar::fromLatin1(c));
+      }
+
+      // Quoted string.
+      if (c == '"') {
+        ++pos;
+        const int start = pos;
+        while (pos < data->size() && (*data)[pos] != '"') {
+          ++pos;
+        }
+        const int end = pos;
+        if (pos < data->size() && (*data)[pos] == '"') {
+          ++pos;
+        }
+        return QString::fromLatin1(data->constData() + start, end - start);
+      }
+
+      const int start = pos;
+      while (pos < data->size()) {
+        const char cc = (*data)[pos];
+        if (static_cast<unsigned char>(cc) <= 0x20) {
+          break;
+        }
+        if (cc == '{' || cc == '}' || cc == '(' || cc == ')' || cc == '"') {
+          break;
+        }
+        ++pos;
+      }
+      return QString::fromLatin1(data->constData() + start, pos - start);
+    }
+  };
+
+  auto parse_int = [](const QString& s, bool* ok) -> int {
+    bool local_ok = false;
+    const int v = s.toInt(&local_ok);
+    if (ok) {
+      *ok = local_ok;
+    }
+    return v;
+  };
+  auto parse_float = [](const QString& s, bool* ok) -> float {
+    bool local_ok = false;
+    const float v = s.toFloat(&local_ok);
+    if (ok) {
+      *ok = local_ok;
+    }
+    return v;
+  };
+
+  struct Joint {
+    QString name;
+    int parent = -1;
+    QVector3D pos;
+    QQuaternion orient;
+    QVector3D world_pos;
+    QQuaternion world_orient;
+  };
+  struct Vert {
+    float u = 0.0f;
+    float v = 0.0f;
+    int start_weight = 0;
+    int count_weight = 0;
+  };
+  struct Weight {
+    int joint = 0;
+    float bias = 0.0f;
+    QVector3D pos;
+  };
+  struct Mesh {
+    QString shader;
+    QVector<Vert> verts;
+    QVector<std::uint32_t> tris;
+    QVector<Weight> weights;
+  };
+
+  Tok tok;
+  tok.data = &bytes;
+
+  QVector<Joint> joints;
+  QVector<Mesh> meshes;
+
+  auto expect = [&](const QString& want, QString* err) -> bool {
+    const QString got = tok.next(err);
+    if (got != want) {
+      if (err) {
+        *err = QString("MD5 parse error: expected '%1', got '%2'.").arg(want, got);
+      }
+      return false;
+    }
+    return true;
+  };
+
+  auto read_vec3_paren = [&](QVector3D* out, QString* err) -> bool {
+    if (!out) {
+      return false;
+    }
+    if (!expect("(", err)) {
+      return false;
+    }
+    bool okx = false, oky = false, okz = false;
+    const float x = parse_float(tok.next(err), &okx);
+    const float y = parse_float(tok.next(err), &oky);
+    const float z = parse_float(tok.next(err), &okz);
+    if (!(okx && oky && okz)) {
+      if (err) {
+        *err = "MD5 parse error: invalid vec3.";
+      }
+      return false;
+    }
+    if (!expect(")", err)) {
+      return false;
+    }
+    *out = QVector3D(x, y, z);
+    return true;
+  };
+
+  auto quat_from_xyz = [&](float x, float y, float z) -> QQuaternion {
+    const float t = 1.0f - (x * x + y * y + z * z);
+    const float w = (t > 0.0f) ? -std::sqrt(t) : 0.0f;
+    return QQuaternion(w, x, y, z);
+  };
+
+  QString err;
+  while (!tok.at_end()) {
+    const QString t = tok.next(&err);
+    if (t.isEmpty()) {
+      break;
+    }
+
+    if (t == "joints") {
+      if (!expect("{", &err)) {
+        break;
+      }
+      while (true) {
+        const QString name = tok.next(&err);
+        if (name.isEmpty()) {
+          err = "MD5 parse error: unexpected end of joints.";
+          break;
+        }
+        if (name == "}") {
+          break;
+        }
+
+        bool ok_parent = false;
+        const int parent = parse_int(tok.next(&err), &ok_parent);
+        if (!ok_parent) {
+          err = "MD5 parse error: invalid joint parent.";
+          break;
+        }
+
+        QVector3D pos;
+        if (!read_vec3_paren(&pos, &err)) {
+          break;
+        }
+
+        QVector3D oxyz;
+        if (!read_vec3_paren(&oxyz, &err)) {
+          break;
+        }
+
+        Joint j;
+        j.name = name;
+        j.parent = parent;
+        j.pos = pos;
+        j.orient = quat_from_xyz(oxyz.x(), oxyz.y(), oxyz.z());
+        joints.push_back(std::move(j));
+      }
+      if (!err.isEmpty()) {
+        break;
+      }
+      continue;
+    }
+
+    if (t == "mesh") {
+      if (!expect("{", &err)) {
+        break;
+      }
+      Mesh m;
+      while (true) {
+        const QString key = tok.next(&err);
+        if (key.isEmpty()) {
+          err = "MD5 parse error: unexpected end of mesh.";
+          break;
+        }
+        if (key == "}") {
+          break;
+        }
+
+        if (key == "shader") {
+          m.shader = tok.next(&err);
+          continue;
+        }
+
+        if (key == "numverts") {
+          bool ok = false;
+          const int n = parse_int(tok.next(&err), &ok);
+          if (!ok || n < 0 || n > 2'000'000) {
+            err = "MD5 parse error: invalid numverts.";
+            break;
+          }
+          m.verts.clear();
+          m.verts.resize(n);
+          continue;
+        }
+
+        if (key == "vert") {
+          bool ok_idx = false;
+          const int idx = parse_int(tok.next(&err), &ok_idx);
+          if (!ok_idx || idx < 0 || idx >= m.verts.size()) {
+            err = "MD5 parse error: invalid vert index.";
+            break;
+          }
+          if (!expect("(", &err)) {
+            break;
+          }
+          bool oku = false, okv = false;
+          const float u = parse_float(tok.next(&err), &oku);
+          const float v = parse_float(tok.next(&err), &okv);
+          if (!(oku && okv)) {
+            err = "MD5 parse error: invalid vert uv.";
+            break;
+          }
+          if (!expect(")", &err)) {
+            break;
+          }
+          bool ok_sw = false, ok_cw = false;
+          const int start_w = parse_int(tok.next(&err), &ok_sw);
+          const int count_w = parse_int(tok.next(&err), &ok_cw);
+          if (!(ok_sw && ok_cw) || start_w < 0 || count_w < 0) {
+            err = "MD5 parse error: invalid vert weights.";
+            break;
+          }
+          m.verts[idx].u = u;
+          m.verts[idx].v = v;
+          m.verts[idx].start_weight = start_w;
+          m.verts[idx].count_weight = count_w;
+          continue;
+        }
+
+        if (key == "numtris") {
+          bool ok = false;
+          const int n = parse_int(tok.next(&err), &ok);
+          if (!ok || n < 0 || n > 4'000'000) {
+            err = "MD5 parse error: invalid numtris.";
+            break;
+          }
+          m.tris.clear();
+          m.tris.reserve(n * 3);
+          continue;
+        }
+
+        if (key == "tri") {
+          bool ok0 = false, ok1 = false, ok2 = false, ok3 = false;
+          (void)parse_int(tok.next(&err), &ok0);  // tri index (unused)
+          const int i0 = parse_int(tok.next(&err), &ok1);
+          const int i1 = parse_int(tok.next(&err), &ok2);
+          const int i2 = parse_int(tok.next(&err), &ok3);
+          if (!(ok0 && ok1 && ok2 && ok3) || i0 < 0 || i1 < 0 || i2 < 0) {
+            err = "MD5 parse error: invalid tri.";
+            break;
+          }
+          m.tris.push_back(static_cast<std::uint32_t>(i0));
+          m.tris.push_back(static_cast<std::uint32_t>(i1));
+          m.tris.push_back(static_cast<std::uint32_t>(i2));
+          continue;
+        }
+
+        if (key == "numweights") {
+          bool ok = false;
+          const int n = parse_int(tok.next(&err), &ok);
+          if (!ok || n < 0 || n > 8'000'000) {
+            err = "MD5 parse error: invalid numweights.";
+            break;
+          }
+          m.weights.clear();
+          m.weights.resize(n);
+          continue;
+        }
+
+        if (key == "weight") {
+          bool ok_idx = false;
+          const int idx = parse_int(tok.next(&err), &ok_idx);
+          if (!ok_idx || idx < 0 || idx >= m.weights.size()) {
+            err = "MD5 parse error: invalid weight index.";
+            break;
+          }
+          bool okj = false, okb = false;
+          const int joint = parse_int(tok.next(&err), &okj);
+          const float bias = parse_float(tok.next(&err), &okb);
+          if (!(okj && okb) || joint < 0) {
+            err = "MD5 parse error: invalid weight.";
+            break;
+          }
+          QVector3D pos;
+          if (!read_vec3_paren(&pos, &err)) {
+            break;
+          }
+          m.weights[idx].joint = joint;
+          m.weights[idx].bias = bias;
+          m.weights[idx].pos = pos;
+          continue;
+        }
+
+        // Unknown key; skip one token best-effort.
+        (void)tok.next(&err);
+      }
+
+      if (!err.isEmpty()) {
+        break;
+      }
+      meshes.push_back(std::move(m));
+      continue;
+    }
+  }
+
+  if (!err.isEmpty()) {
+    if (error) {
+      *error = err;
+    }
+    return std::nullopt;
+  }
+
+  if (joints.isEmpty() || meshes.isEmpty()) {
+    if (error) {
+      *error = "MD5 mesh is missing joints or meshes.";
+    }
+    return std::nullopt;
+  }
+
+  // Build world transforms.
+  for (int i = 0; i < joints.size(); ++i) {
+    Joint& j = joints[i];
+    if (j.parent < 0) {
+      j.world_orient = j.orient;
+      j.world_pos = j.pos;
+    } else if (j.parent >= 0 && j.parent < joints.size()) {
+      const Joint& p = joints[j.parent];
+      j.world_orient = p.world_orient * j.orient;
+      j.world_pos = p.world_pos + p.world_orient.rotatedVector(j.pos);
+    } else {
+      j.world_orient = j.orient;
+      j.world_pos = j.pos;
+    }
+  }
+
+  QVector<ModelVertex> vertices;
+  QVector<std::uint32_t> indices;
+  QVector<ModelSurface> surfaces;
+  surfaces.reserve(meshes.size());
+
+  for (int mi = 0; mi < meshes.size(); ++mi) {
+    const Mesh& m = meshes[mi];
+    const int base_vertex = vertices.size();
+
+    vertices.reserve(vertices.size() + m.verts.size());
+    for (const Vert& v : m.verts) {
+      QVector3D p(0, 0, 0);
+      const int start = v.start_weight;
+      const int end = start + v.count_weight;
+      for (int wi = start; wi < end && wi < m.weights.size(); ++wi) {
+        const Weight& w = m.weights[wi];
+        if (w.joint < 0 || w.joint >= joints.size()) {
+          continue;
+        }
+        const Joint& j = joints[w.joint];
+        const QVector3D wp = j.world_pos + j.world_orient.rotatedVector(w.pos);
+        p += wp * w.bias;
+      }
+
+      ModelVertex mv;
+      mv.px = p.x();
+      mv.py = p.y();
+      mv.pz = p.z();
+      mv.u = v.u;
+      mv.v = 1.0f - v.v;
+      vertices.push_back(mv);
+    }
+
+    const int first_index = indices.size();
+    indices.reserve(indices.size() + m.tris.size());
+    for (const std::uint32_t idx : m.tris) {
+      indices.push_back(static_cast<std::uint32_t>(base_vertex) + idx);
+    }
+    const int index_count = indices.size() - first_index;
+    if (index_count > 0) {
+      ModelSurface s;
+      s.name = QString("mesh%1").arg(mi);
+      s.shader = m.shader;
+      s.first_index = first_index;
+      s.index_count = index_count;
+      surfaces.push_back(std::move(s));
+    }
+  }
+
+  if (vertices.isEmpty() || indices.isEmpty()) {
+    if (error) {
+      *error = "MD5 contains no drawable geometry.";
+    }
+    return std::nullopt;
+  }
+
+  if (surfaces.isEmpty()) {
+    surfaces = {ModelSurface{QString("model"), QString(), 0, static_cast<int>(indices.size())}};
+  }
+
+  LoadedModel out;
+  out.format = "md5mesh";
+  out.frame_count = 1;
+  out.surface_count = std::max(1, static_cast<int>(surfaces.size()));
+  out.mesh.vertices = std::move(vertices);
+  out.mesh.indices = std::move(indices);
+  out.surfaces = std::move(surfaces);
+  compute_smooth_normals(&out.mesh);
+  compute_bounds(&out.mesh);
+  return out;
+}
 }  // namespace
 
 std::optional<LoadedModel> load_model_file(const QString& file_path, QString* error) {
@@ -1012,6 +1848,12 @@ std::optional<LoadedModel> load_model_file(const QString& file_path, QString* er
   }
   if (ext == "md3") {
     return load_md3(info.absoluteFilePath(), error);
+  }
+  if (ext == "iqm") {
+    return load_iqm(info.absoluteFilePath(), error);
+  }
+  if (ext == "md5mesh") {
+    return load_md5mesh(info.absoluteFilePath(), error);
   }
 
   if (error) {

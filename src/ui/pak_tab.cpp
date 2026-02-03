@@ -33,7 +33,9 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QMatrix4x4>
 #include <QPainter>
+#include <QPolygonF>
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QRunnable>
@@ -470,6 +472,206 @@ QIcon make_badged_icon(const QIcon& base, const QSize& icon_size, const QString&
   return QIcon(pm);
 }
 
+QIcon make_archive_icon(const QIcon& base, const QSize& icon_size, const QPalette& pal) {
+  if (!icon_size.isValid()) {
+    return base;
+  }
+
+  QPixmap pm = base.pixmap(icon_size);
+  if (pm.isNull()) {
+    pm = QPixmap(icon_size);
+    pm.fill(Qt::transparent);
+  }
+
+  QPainter p(&pm);
+  p.setRenderHint(QPainter::Antialiasing, true);
+  p.setRenderHint(QPainter::TextAntialiasing, true);
+
+  QColor fill = pal.color(QPalette::Highlight);
+  if (!fill.isValid()) {
+    fill = pal.color(QPalette::Text);
+  }
+  fill.setAlpha(110);
+
+  QColor stroke = fill;
+  stroke.setAlpha(200);
+
+  const int w = icon_size.width();
+  const int h = icon_size.height();
+  const int box_h = qMax(6, h / 5);
+  QRect box(static_cast<int>(w * 0.18f), h - box_h - 2, static_cast<int>(w * 0.64f), box_h);
+
+  QPen pen(stroke);
+  pen.setWidth(qMax(1, w / 32));
+  p.setPen(pen);
+  p.setBrush(fill);
+  p.drawRoundedRect(box, 2.0, 2.0);
+
+  // Simple "zipper" to hint that this is an archive.
+  QColor zip = pal.color(QPalette::Base);
+  if (!zip.isValid()) {
+    zip = Qt::white;
+  }
+  zip.setAlpha(180);
+  p.setPen(QPen(zip, qMax(1, w / 64)));
+  const int zx = box.center().x();
+  for (int yy = box.top() + 2; yy < box.bottom() - 1; yy += qMax(3, box_h / 4)) {
+    p.drawPoint(zx, yy);
+  }
+
+  return QIcon(pm);
+}
+
+[[nodiscard]] QImage render_model_thumbnail(const LoadedModel& model, const QSize& size) {
+  if (!size.isValid() || size.width() <= 0 || size.height() <= 0) {
+    return {};
+  }
+  if (model.mesh.vertices.isEmpty() || model.mesh.indices.size() < 3) {
+    return {};
+  }
+
+  QImage img(size, QImage::Format_ARGB32_Premultiplied);
+  if (img.isNull()) {
+    return {};
+  }
+  img.fill(Qt::transparent);
+
+  const QVector3D mins = model.mesh.mins;
+  const QVector3D maxs = model.mesh.maxs;
+  const QVector3D center = (mins + maxs) * 0.5f;
+  const QVector3D ext = (maxs - mins);
+  const float radius = qMax(0.001f, 0.5f * qMax(ext.x(), qMax(ext.y(), ext.z())));
+
+  const float aspect = static_cast<float>(size.width()) / static_cast<float>(size.height());
+  const float dist = radius * 3.2f;
+
+  QMatrix4x4 m;
+  m.translate(-center);
+  m.rotate(35.0f, 1.0f, 0.0f, 0.0f);
+  m.rotate(45.0f, 0.0f, 1.0f, 0.0f);
+
+  QMatrix4x4 v;
+  v.translate(0.0f, 0.0f, -dist);
+
+  QMatrix4x4 pmat;
+  pmat.perspective(45.0f, aspect, qMax(0.001f, radius * 0.02f), qMax(10.0f, radius * 50.0f));
+
+  const QMatrix4x4 mvp = pmat * v * m;
+  const QVector3D light_dir = QVector3D(-0.3f, 0.5f, 1.0f).normalized();
+
+  struct Tri {
+    QPointF p0;
+    QPointF p1;
+    QPointF p2;
+    float depth = 0.0f;
+    QColor color;
+  };
+
+  const int tri_count = model.mesh.indices.size() / 3;
+  const int max_tris = 9000;
+  const int stride = (tri_count > max_tris) ? qMax(1, tri_count / max_tris) : 1;
+
+  QVector<Tri> tris;
+  tris.reserve(qMin(tri_count, max_tris));
+
+  const int vw = model.mesh.vertices.size();
+  for (int t = 0; t < tri_count; t += stride) {
+    const int base = t * 3;
+    const std::uint32_t i0u = model.mesh.indices[base + 0];
+    const std::uint32_t i1u = model.mesh.indices[base + 1];
+    const std::uint32_t i2u = model.mesh.indices[base + 2];
+    if (i0u >= static_cast<std::uint32_t>(vw) || i1u >= static_cast<std::uint32_t>(vw) ||
+        i2u >= static_cast<std::uint32_t>(vw)) {
+      continue;
+    }
+
+    const ModelVertex& v0 = model.mesh.vertices[static_cast<int>(i0u)];
+    const ModelVertex& v1 = model.mesh.vertices[static_cast<int>(i1u)];
+    const ModelVertex& v2 = model.mesh.vertices[static_cast<int>(i2u)];
+
+    const QVector3D p0(v0.px, v0.py, v0.pz);
+    const QVector3D p1(v1.px, v1.py, v1.pz);
+    const QVector3D p2(v2.px, v2.py, v2.pz);
+
+    const QVector4D c0 = mvp * QVector4D(p0, 1.0f);
+    const QVector4D c1 = mvp * QVector4D(p1, 1.0f);
+    const QVector4D c2 = mvp * QVector4D(p2, 1.0f);
+    if (c0.w() <= 0.0f || c1.w() <= 0.0f || c2.w() <= 0.0f) {
+      continue;
+    }
+
+    const QVector3D n0 = m.mapVector(QVector3D(v0.nx, v0.ny, v0.nz)).normalized();
+    const QVector3D n1 = m.mapVector(QVector3D(v1.nx, v1.ny, v1.nz)).normalized();
+    const QVector3D n2 = m.mapVector(QVector3D(v2.nx, v2.ny, v2.nz)).normalized();
+    const QVector3D nn = (n0 + n1 + n2).normalized();
+
+    const float ndotl = qMax(0.0f, QVector3D::dotProduct(nn, light_dir));
+    const float ambient = 0.25f;
+    const float lit = qBound(0.0f, ambient + ndotl * 0.75f, 1.0f);
+
+    auto to_screen = [&](const QVector4D& clip) -> QPointF {
+      const float invw = 1.0f / clip.w();
+      const float x = clip.x() * invw;
+      const float y = clip.y() * invw;
+      const float sx = (x * 0.5f + 0.5f) * static_cast<float>(size.width());
+      const float sy = (1.0f - (y * 0.5f + 0.5f)) * static_cast<float>(size.height());
+      return QPointF(sx, sy);
+    };
+
+    auto ndc_z = [&](const QVector4D& clip) -> float { return clip.z() / clip.w(); };
+    const float z = (ndc_z(c0) + ndc_z(c1) + ndc_z(c2)) / 3.0f;
+
+    // Basic backface cull in screen space.
+    const QPointF s0 = to_screen(c0);
+    const QPointF s1 = to_screen(c1);
+    const QPointF s2 = to_screen(c2);
+    const QPointF e1 = s1 - s0;
+    const QPointF e2 = s2 - s0;
+    const float area2 = static_cast<float>(e1.x() * e2.y() - e1.y() * e2.x());
+    if (area2 >= 0.0f) {
+      continue;
+    }
+
+    const int shade = static_cast<int>(40 + lit * 190.0f);
+    Tri tri;
+    tri.p0 = s0;
+    tri.p1 = s1;
+    tri.p2 = s2;
+    tri.depth = z;
+    tri.color = QColor(shade, shade, shade, 235);
+    tris.push_back(std::move(tri));
+  }
+
+  if (tris.isEmpty()) {
+    return img;
+  }
+
+  std::sort(tris.begin(), tris.end(), [](const Tri& a, const Tri& b) {
+    // NDC z: -1 near, +1 far -> draw far-to-near.
+    return a.depth > b.depth;
+  });
+
+  QPainter painter(&img);
+  painter.setRenderHint(QPainter::Antialiasing, true);
+  painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+
+  QColor outline = Qt::black;
+  outline.setAlpha(55);
+  painter.setPen(QPen(outline, 1));
+
+  for (const Tri& tri : tris) {
+    painter.setBrush(tri.color);
+    QPolygonF poly;
+    poly.reserve(3);
+    poly.push_back(tri.p0);
+    poly.push_back(tri.p1);
+    poly.push_back(tri.p2);
+    painter.drawPolygon(poly);
+  }
+
+  return img;
+}
+
 QString pak_leaf_name(QString pak_path) {
   pak_path = normalize_pak_path(pak_path);
   if (pak_path.endsWith('/')) {
@@ -500,6 +702,11 @@ bool is_supported_audio_file(const QString& name) {
 bool is_video_file_name(const QString& name) {
 	const QString ext = file_ext_lower(name);
 	return (ext == "cin" || ext == "roq" || ext == "mp4" || ext == "mkv" || ext == "avi" || ext == "ogv" || ext == "webm");
+}
+
+bool is_model_file_name(const QString& name) {
+  const QString ext = file_ext_lower(name);
+  return (ext == "mdl" || ext == "md2" || ext == "md3" || ext == "iqm" || ext == "md5mesh");
 }
 
 bool is_text_file_name(const QString& name) {
@@ -1240,11 +1447,11 @@ void PakTab::set_view_mode(ViewMode mode) {
   refresh_listing();
 }
 
-void PakTab::apply_auto_view(int file_count, int image_count, int video_count) {
-  // Auto: prefer large icons when the folder is predominantly visual media.
-  const int media_count = image_count + video_count;
-  const bool mostly_media = (file_count > 0) && (media_count * 100 >= file_count * 60);
-  effective_view_ = mostly_media ? ViewMode::LargeIcons : ViewMode::Details;
+void PakTab::apply_auto_view(int file_count, int image_count, int video_count, int model_count) {
+  // Auto: prefer Gallery when there's a meaningful amount of visual assets.
+  const int visual_count = image_count + video_count + model_count;
+  const bool show_gallery = (file_count > 0) && (visual_count * 100 >= file_count * 10);
+  effective_view_ = show_gallery ? ViewMode::Gallery : ViewMode::Details;
 }
 
 void PakTab::update_view_controls() {
@@ -1310,6 +1517,7 @@ void PakTab::configure_icon_view() {
   QListView::Flow flow = QListView::LeftToRight;
   bool word_wrap = true;
   bool wrapping = true;
+  int spacing = 10;
 
   switch (effective_view_) {
     case ViewMode::List:
@@ -1333,7 +1541,13 @@ void PakTab::configure_icon_view() {
     case ViewMode::Gallery:
       mode = QListView::IconMode;
       icon = QSize(128, 128);
-      grid = QSize(220, 210);
+      spacing = 2;
+      {
+        const QFontMetrics fm(icon_view_->font());
+        const int text_lines = 2;
+        const int text_h = fm.lineSpacing() * text_lines;
+        grid = QSize(icon.width() + 20, icon.height() + text_h + 18);
+      }
       break;
     case ViewMode::Details:
     case ViewMode::Auto:
@@ -1347,7 +1561,7 @@ void PakTab::configure_icon_view() {
   icon_view_->setResizeMode(QListView::Adjust);
   icon_view_->setMovement(QListView::Static);
   icon_view_->setFlow(flow);
-  icon_view_->setSpacing(10);
+  icon_view_->setSpacing(spacing);
   icon_view_->setGridSize(grid);
 }
 
@@ -1372,7 +1586,8 @@ void PakTab::queue_thumbnail(const QString& pak_path,
   const QString ext = file_ext_lower(leaf);
   const bool is_image = is_image_file_name(leaf);
   const bool is_cinematic = (ext == "cin" || ext == "roq");
-  if (!is_image && !is_cinematic) {
+  const bool is_model = is_model_file_name(leaf);
+  if (!is_image && !is_cinematic && !is_model) {
     return;
   }
 
@@ -1445,6 +1660,33 @@ void PakTab::queue_thumbnail(const QString& pak_path,
         CinematicFrame frame;
         if (dec->decode_frame(0, &frame, &err) && !frame.image.isNull()) {
           image = frame.image;
+        }
+      }
+    } else if (is_model_file_name(leaf)) {
+      QString model_path = source_path;
+      QString err;
+      QTemporaryFile tmp;
+      if (model_path.isEmpty()) {
+        constexpr qint64 kMaxModelBytes = 128LL * 1024 * 1024;
+        const qint64 max_bytes = (size > 0) ? std::min(size, kMaxModelBytes) : kMaxModelBytes;
+        QByteArray bytes;
+        if (self->view_archive().read_entry_bytes(pak_path, &bytes, &err, max_bytes)) {
+          tmp.setAutoRemove(true);
+          tmp.setFileTemplate(QDir(QDir::tempPath()).filePath(QString("pakfu-thumb-XXXXXX.%1").arg(ext)));
+          if (tmp.open()) {
+            tmp.write(bytes);
+            tmp.flush();
+            tmp.close();
+            model_path = tmp.fileName();
+          }
+        }
+      }
+
+      if (!model_path.isEmpty()) {
+        QString load_err;
+        const std::optional<LoadedModel> model = load_model_file(model_path, &load_err);
+        if (model) {
+          image = render_model_thumbnail(*model, icon_size);
         }
       }
     }
@@ -3628,6 +3870,7 @@ void PakTab::refresh_listing() {
   int file_count = 0;
   int image_count = 0;
   int video_count = 0;
+  int model_count = 0;
   for (const ChildListing& child : children) {
     if (child.is_dir) {
       continue;
@@ -3639,10 +3882,13 @@ void PakTab::refresh_listing() {
     if (is_video_file_name(child.name)) {
       ++video_count;
     }
+    if (is_model_file_name(child.name)) {
+      ++model_count;
+    }
   }
 
   if (view_mode_ == ViewMode::Auto) {
-    apply_auto_view(file_count, image_count, video_count);
+    apply_auto_view(file_count, image_count, video_count, model_count);
   } else {
     effective_view_ = view_mode_;
   }
@@ -3653,7 +3899,9 @@ void PakTab::refresh_listing() {
   const QIcon file_icon = style()->standardIcon(QStyle::SP_FileIcon);
   const QIcon audio_icon = style()->standardIcon(QStyle::SP_MediaVolume);
   const QIcon cfg_icon = make_badged_icon(file_icon, QSize(32, 32), "{}", palette());
-  const QIcon wad_icon = make_badged_icon(file_icon, QSize(32, 32), "WAD", palette());
+  const QIcon wad_base = make_archive_icon(file_icon, QSize(32, 32), palette());
+  const QIcon wad_icon = make_badged_icon(wad_base, QSize(32, 32), "WAD", palette());
+  const QIcon model_icon = make_badged_icon(file_icon, QSize(32, 32), "3D", palette());
 
   const bool show_details = (effective_view_ == ViewMode::Details);
   const bool want_thumbs = (effective_view_ == ViewMode::LargeIcons || effective_view_ == ViewMode::Gallery);
@@ -3688,6 +3936,8 @@ void PakTab::refresh_listing() {
           item->setIcon(0, audio_icon);
         } else if (ext == "wad") {
           item->setIcon(0, wad_icon);
+        } else if (is_model_file_name(leaf)) {
+          item->setIcon(0, model_icon);
         } else if (ext == "cfg") {
           item->setIcon(0, cfg_icon);
         } else {
@@ -3738,7 +3988,9 @@ void PakTab::refresh_listing() {
 
     const QSize icon_size = icon_view_->iconSize().isValid() ? icon_view_->iconSize() : QSize(64, 64);
     const QIcon cfg_icon = make_badged_icon(file_icon, icon_size, "{}", palette());
-    const QIcon wad_icon = make_badged_icon(file_icon, icon_size, "WAD", palette());
+    const QIcon wad_base = make_archive_icon(file_icon, icon_size, palette());
+    const QIcon wad_icon = make_badged_icon(wad_base, icon_size, "WAD", palette());
+    const QIcon model_icon = make_badged_icon(file_icon, icon_size, "3D", palette());
 
     for (const ChildListing& child : children) {
       const QString full_path =
@@ -3763,6 +4015,12 @@ void PakTab::refresh_listing() {
           icon = audio_icon;
         } else if (ext == "wad") {
           icon = wad_icon;
+        } else if (is_model_file_name(leaf)) {
+          icon = model_icon;
+          if (want_thumbs) {
+            // Thumbnail will be set asynchronously.
+            queue_thumbnail(full_path, leaf, child.source_path, static_cast<qint64>(child.size), icon_size);
+          }
         } else if (ext == "cfg") {
           icon = cfg_icon;
         } else if (want_thumbs && (is_image_file_name(leaf) || ext == "cin" || ext == "roq")) {
@@ -4452,7 +4710,7 @@ void PakTab::update_preview() {
   const bool is_audio = is_supported_audio_file(leaf);
   const bool is_cinematic = (ext == "roq" || ext == "cin");
   const bool is_video = (is_cinematic || ext == "mp4" || ext == "mkv");
-  const bool is_model = (ext == "mdl" || ext == "md2" || ext == "md3");
+  const bool is_model = is_model_file_name(leaf);
 
   QString source_path;
   const int added_idx = added_index_by_name_.value(normalize_pak_path(pak_path), -1);
