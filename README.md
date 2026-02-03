@@ -20,6 +20,7 @@ This project is still training under the waterfall 💦🥋 (early development).
   - Audio: `wav`, `ogg`, `mp3` 🔊🎶
   - Video: `cin`, `roq` 🎞️🍿
   - Models: `mdl`, `md2`, `md3`, `iqm`, `md5mesh` 🧊🧩
+  - Maps: `bsp` (Quake/Quake II/Quake III/Quake Live) 🗺️🧭
   - Text/config: `cfg` and similar plain-text formats 🧾🖋️
 - Stay responsive for large archives (no freezing in the middle of a roundhouse kick) 🥶➡️🥋
 - Guard official game archives with a default-on Pure PAK Protector preference 🛡️📦

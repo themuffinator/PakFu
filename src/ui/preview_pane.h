@@ -2,12 +2,14 @@
 
 #include <QByteArray>
 #include <QColor>
+#include <QHash>
 #include <QImage>
 #include <QVector>
 #include <QWidget>
 
 #include <memory>
 
+#include "formats/bsp_preview.h"
 #include "formats/image_loader.h"
 
 class QLabel;
@@ -22,6 +24,7 @@ class QToolButton;
 class CinematicPlayerWidget;
 class QSyntaxHighlighter;
 class ModelViewerWidget;
+class BspPreviewWidget;
 
 class PreviewPane : public QWidget {
 	Q_OBJECT
@@ -53,6 +56,8 @@ public:
 	void show_menu(const QString& title, const QString& subtitle, const QString& text);
 	void show_shader(const QString& title, const QString& subtitle, const QString& text);
 	void show_binary(const QString& title, const QString& subtitle, const QByteArray& bytes, bool truncated);
+	void show_image(const QString& title, const QString& subtitle, const QImage& image);
+	void show_bsp(const QString& title, const QString& subtitle, BspMesh mesh, QHash<QString, QImage> textures = {});
 	void show_image_from_bytes(const QString& title, const QString& subtitle, const QByteArray& bytes, const ImageDecodeOptions& options = {});
 	void show_image_from_file(const QString& title, const QString& subtitle, const QString& file_path, const ImageDecodeOptions& options = {});
 	void show_audio_from_file(const QString& title, const QString& subtitle, const QString& file_path);
@@ -123,6 +128,9 @@ private:
 
 	QWidget* cinematic_page_ = nullptr;
 	CinematicPlayerWidget* cinematic_widget_ = nullptr;
+
+	QWidget* bsp_page_ = nullptr;
+	BspPreviewWidget* bsp_widget_ = nullptr;
 
 	QWidget* model_page_ = nullptr;
 	ModelViewerWidget* model_widget_ = nullptr;

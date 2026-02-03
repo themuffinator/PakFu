@@ -60,7 +60,10 @@
 #include <QVBoxLayout>
 
 #include "archive/path_safety.h"
+#include "formats/bsp_preview.h"
 #include "formats/cinematic.h"
+#include "formats/miptex_image.h"
+#include "formats/wal_image.h"
 #include "formats/lmp_image.h"
 #include "formats/model.h"
 #include "formats/pcx_image.h"
@@ -736,6 +739,11 @@ bool is_video_file_name(const QString& name) {
 bool is_model_file_name(const QString& name) {
   const QString ext = file_ext_lower(name);
   return (ext == "mdl" || ext == "md2" || ext == "md3" || ext == "iqm" || ext == "md5mesh");
+}
+
+bool is_bsp_file_name(const QString& name) {
+  const QString ext = file_ext_lower(name);
+  return (ext == "bsp");
 }
 
 bool is_text_file_name(const QString& name) {
@@ -1540,10 +1548,10 @@ void PakTab::set_view_mode(ViewMode mode) {
   refresh_listing();
 }
 
-void PakTab::apply_auto_view(int file_count, int image_count, int video_count, int model_count) {
+void PakTab::apply_auto_view(int file_count, int image_count, int video_count, int model_count, int bsp_count) {
   // Auto: prefer Gallery when there's a meaningful amount of visual assets.
-  const int visual_count = image_count + video_count + model_count;
-  const bool show_gallery = (file_count > 0) && (visual_count * 100 >= file_count * 10);
+  const int visual_count = image_count + video_count + model_count + bsp_count;
+  const bool show_gallery = (bsp_count > 0) || ((file_count > 0) && (visual_count * 100 >= file_count * 10));
   effective_view_ = show_gallery ? ViewMode::Gallery : ViewMode::Details;
 }
 
@@ -1680,7 +1688,8 @@ void PakTab::queue_thumbnail(const QString& pak_path,
   const bool is_image = is_image_file_name(leaf);
   const bool is_cinematic = (ext == "cin" || ext == "roq");
   const bool is_model = is_model_file_name(leaf);
-  if (!is_image && !is_cinematic && !is_model) {
+  const bool is_bsp = is_bsp_file_name(leaf);
+  if (!is_image && !is_cinematic && !is_model && !is_bsp) {
     return;
   }
 
@@ -1781,6 +1790,22 @@ void PakTab::queue_thumbnail(const QString& pak_path,
         if (model) {
           image = render_model_thumbnail(*model, icon_size);
         }
+      }
+    } else if (ext == "bsp") {
+      BspPreviewResult preview;
+      if (!source_path.isEmpty()) {
+        preview = render_bsp_preview_file(source_path, BspPreviewStyle::Silhouette, qMax(icon_size.width(), icon_size.height()));
+      } else {
+        constexpr qint64 kMaxBspBytes = 128LL * 1024 * 1024;
+        const qint64 max_bytes = (size > 0) ? std::min(size, kMaxBspBytes) : kMaxBspBytes;
+        QByteArray bytes;
+        QString err;
+        if (self->view_archive().read_entry_bytes(pak_path, &bytes, &err, max_bytes)) {
+          preview = render_bsp_preview_bytes(bytes, leaf, BspPreviewStyle::Silhouette, qMax(icon_size.width(), icon_size.height()));
+        }
+      }
+      if (preview.ok()) {
+        image = preview.image;
       }
     }
 
@@ -4048,6 +4073,7 @@ void PakTab::refresh_listing() {
   int image_count = 0;
   int video_count = 0;
   int model_count = 0;
+  int bsp_count = 0;
   for (const ChildListing& child : children) {
     if (child.is_dir) {
       continue;
@@ -4062,10 +4088,13 @@ void PakTab::refresh_listing() {
     if (is_model_file_name(child.name)) {
       ++model_count;
     }
+    if (is_bsp_file_name(child.name)) {
+      ++bsp_count;
+    }
   }
 
   if (view_mode_ == ViewMode::Auto) {
-    apply_auto_view(file_count, image_count, video_count, model_count);
+    apply_auto_view(file_count, image_count, video_count, model_count, bsp_count);
   } else {
     effective_view_ = view_mode_;
   }
@@ -4194,6 +4223,11 @@ void PakTab::refresh_listing() {
           icon = wad_icon;
         } else if (is_model_file_name(leaf)) {
           icon = model_icon;
+          if (want_thumbs) {
+            // Thumbnail will be set asynchronously.
+            queue_thumbnail(full_path, leaf, child.source_path, static_cast<qint64>(child.size), icon_size);
+          }
+        } else if (is_bsp_file_name(leaf)) {
           if (want_thumbs) {
             // Thumbnail will be set asynchronously.
             queue_thumbnail(full_path, leaf, child.source_path, static_cast<qint64>(child.size), icon_size);
@@ -4893,6 +4927,7 @@ void PakTab::update_preview() {
   const bool is_cinematic = (ext == "roq" || ext == "cin");
   const bool is_video = (is_cinematic || ext == "mp4" || ext == "mkv");
   const bool is_model = is_model_file_name(leaf);
+  const bool is_bsp = is_bsp_file_name(leaf);
 
   QString source_path;
   const int added_idx = added_index_by_name_.value(normalize_pak_path(pak_path), -1);
@@ -5332,6 +5367,198 @@ void PakTab::update_preview() {
     (void)ensure_quake2_palette(nullptr);
     preview_->set_model_palettes(quake1_palette_, quake2_palette_);
     preview_->show_model_from_file(leaf, subtitle, model_path, skin_path);
+    return;
+  }
+
+  if (is_bsp) {
+    BspMesh mesh;
+    QString err;
+    bool ok = false;
+    QByteArray bsp_bytes;
+    if (!source_path.isEmpty()) {
+      QFile f(source_path);
+      if (!f.open(QIODevice::ReadOnly)) {
+        preview_->show_message(leaf, "Unable to open BSP file.");
+        return;
+      }
+      constexpr qint64 kMaxBspBytes = 128LL * 1024 * 1024;
+      const qint64 size_on_disk = f.size();
+      if (size_on_disk > kMaxBspBytes) {
+        preview_->show_message(leaf, "BSP file is too large to preview.");
+        return;
+      }
+      bsp_bytes = f.readAll();
+      ok = load_bsp_mesh_bytes(bsp_bytes, leaf, &mesh, &err, true);
+    } else {
+      constexpr qint64 kMaxBspBytes = 128LL * 1024 * 1024;
+      const qint64 max_bytes = (size > 0) ? std::min(size, kMaxBspBytes) : kMaxBspBytes;
+      if (!view_archive().read_entry_bytes(pak_path, &bsp_bytes, &err, max_bytes)) {
+        preview_->show_message(leaf, err.isEmpty() ? "Unable to read BSP from archive." : err);
+        return;
+      }
+      ok = load_bsp_mesh_bytes(bsp_bytes, leaf, &mesh, &err, true);
+    }
+
+    if (!ok) {
+      preview_->show_message(leaf, err.isEmpty() ? "Unable to render BSP preview." : err);
+      return;
+    }
+    QHash<QString, QImage> textures;
+    if (view_archive().is_loaded()) {
+      (void)ensure_quake1_palette(nullptr);
+      (void)ensure_quake2_palette(nullptr);
+
+      if (!bsp_bytes.isEmpty()) {
+        QHash<QString, QImage> embedded = extract_bsp_embedded_textures_bytes(bsp_bytes, quake1_palette_.size() == 256 ? &quake1_palette_ : nullptr);
+        for (auto it = embedded.begin(); it != embedded.end(); ++it) {
+          textures.insert(it.key().toLower(), it.value());
+        }
+      }
+
+      QSet<QString> wanted;
+      for (const BspMeshSurface& s : mesh.surfaces) {
+        if (!s.texture.isEmpty()) {
+          wanted.insert(s.texture);
+        }
+      }
+
+      if (!wanted.isEmpty()) {
+        const int bsp_version = bsp_version_bytes(bsp_bytes);
+        const QStringList exts_q3 = {"tga", "jpg", "jpeg", "png", "dds"};
+        const QStringList exts_q2 = {"wal", "png", "tga", "jpg", "jpeg", "dds"};
+        const QStringList exts_q1 = {"mip", "lmp", "pcx", "png", "tga", "jpg", "jpeg"};
+
+        QHash<QString, QString> by_lower;
+        by_lower.reserve(view_archive().entries().size() + (wad_mounted_ ? 0 : added_files_.size()));
+        for (const ArchiveEntry& e : view_archive().entries()) {
+          const QString n = normalize_pak_path(e.name);
+          if (!n.isEmpty()) {
+            by_lower.insert(n.toLower(), e.name);
+          }
+        }
+        if (!wad_mounted_) {
+          for (const AddedFile& f : added_files_) {
+            const QString n = normalize_pak_path(f.pak_name);
+            if (!n.isEmpty()) {
+              by_lower.insert(n.toLower(), f.pak_name);
+            }
+          }
+        }
+
+        auto find_entry_ci = [&](const QString& want) -> QString {
+          const QString key = normalize_pak_path(want).toLower();
+          return key.isEmpty() ? QString() : by_lower.value(key);
+        };
+
+        auto decode_texture = [&](const QByteArray& bytes, const QString& name) -> ImageDecodeResult {
+          const QString ext = file_ext_lower(name);
+          if (ext == "wal") {
+            if (quake2_palette_.size() != 256) {
+              return ImageDecodeResult{QImage(), "Missing Quake II palette for WAL."};
+            }
+            QString wal_err;
+            QImage img = decode_wal_image(bytes, quake2_palette_, &wal_err);
+            return ImageDecodeResult{std::move(img), wal_err};
+          }
+          if (ext == "mip") {
+            QString mip_err;
+            QImage img = decode_miptex_image(bytes, quake1_palette_.size() == 256 ? &quake1_palette_ : nullptr, &mip_err);
+            return ImageDecodeResult{std::move(img), mip_err};
+          }
+          ImageDecodeOptions opts;
+          if (ext == "lmp" && quake1_palette_.size() == 256) {
+            opts.palette = &quake1_palette_;
+          }
+          ImageDecodeResult decoded = decode_image_bytes(bytes, name, opts);
+          if (!decoded.ok() && opts.palette) {
+            decoded = decode_image_bytes(bytes, name, {});
+          }
+          return decoded;
+        };
+
+        constexpr qint64 kMaxTexBytes = 64LL * 1024 * 1024;
+
+        QSet<QString> attempted;
+        attempted.reserve(wanted.size());
+
+        for (const QString& tex : wanted) {
+          const QString tex_key = tex.toLower();
+          if (attempted.contains(tex_key)) {
+            continue;
+          }
+          attempted.insert(tex_key);
+          QString name = tex;
+          name.replace('\\', '/');
+          while (name.startsWith('/')) {
+            name.remove(0, 1);
+          }
+
+          const QString lower = name.toLower();
+          const QFileInfo info(name);
+          const QString ext = info.suffix().toLower();
+          const QString base = info.completeBaseName();
+          const bool is_q3 = [&]() {
+            for (const BspMeshSurface& s : mesh.surfaces) {
+              if (s.texture == tex && s.uv_normalized) {
+                return true;
+              }
+            }
+            return false;
+          }();
+          const QStringList img_exts = is_q3
+                                       ? exts_q3
+                                       : ((bsp_version == 38) ? exts_q2 : exts_q1);
+          const bool has_ext = img_exts.contains(ext);
+          const bool has_textures_prefix = lower.startsWith("textures/");
+
+          QVector<QString> candidates;
+          candidates.reserve(32);
+          auto add_candidate = [&](const QString& cand) {
+            const QString c = normalize_pak_path(cand);
+            if (!c.isEmpty()) {
+              candidates.push_back(c);
+            }
+          };
+
+          if (has_ext) {
+            add_candidate(name);
+            if (!has_textures_prefix) {
+              add_candidate(QString("textures/%1").arg(name));
+            }
+            if (!base.isEmpty() && ext != "tga") {
+              add_candidate(QString("%1.%2").arg(base, ext));
+            }
+          } else {
+            for (const QString& e : img_exts) {
+              add_candidate(QString("%1.%2").arg(name, e));
+              if (!has_textures_prefix) {
+                add_candidate(QString("textures/%1.%2").arg(name, e));
+              }
+            }
+          }
+
+          for (const QString& cand : candidates) {
+            const QString found = find_entry_ci(cand);
+            if (found.isEmpty()) {
+              continue;
+            }
+            QByteArray bytes;
+            QString tex_err;
+            if (!view_archive().read_entry_bytes(found, &bytes, &tex_err, kMaxTexBytes)) {
+              continue;
+            }
+            const ImageDecodeResult decoded = decode_texture(bytes, QFileInfo(found).fileName());
+            if (!decoded.ok()) {
+              continue;
+            }
+            textures.insert(tex_key, decoded.image);
+            break;
+          }
+        }
+      }
+    }
+
+    preview_->show_bsp(leaf, subtitle, std::move(mesh), std::move(textures));
     return;
   }
 

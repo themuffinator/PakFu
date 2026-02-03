@@ -197,3 +197,56 @@ QImage decode_wal_image_with_mips(const QByteArray& bytes, const QVector<QRgb>& 
 
 	return composite;
 }
+
+QImage decode_wal_image(const QByteArray& bytes, const QVector<QRgb>& palette, QString* error) {
+	if (error) {
+		error->clear();
+	}
+	if (bytes.size() < kWalHeaderSize) {
+		if (error) {
+			*error = "WAL header too small.";
+		}
+		return {};
+	}
+	if (palette.size() != 256) {
+		if (error) {
+			*error = "WAL decode requires a 256-color palette.";
+		}
+		return {};
+	}
+
+	const auto* data = reinterpret_cast<const uchar*>(bytes.constData());
+	const int size = bytes.size();
+
+	const quint32 width_u32 = read_u32le(data + 32);
+	const quint32 height_u32 = read_u32le(data + 36);
+	if (width_u32 == 0 || height_u32 == 0) {
+		if (error) {
+			*error = "Invalid WAL dimensions.";
+		}
+		return {};
+	}
+
+	constexpr quint32 kMaxDim = 16384;
+	if (width_u32 > kMaxDim || height_u32 > kMaxDim) {
+		if (error) {
+			*error = "WAL dimensions are unreasonably large.";
+		}
+		return {};
+	}
+
+	const quint32 offset0 = read_u32le(data + 40);
+	const int w0 = static_cast<int>(width_u32);
+	const int h0 = static_cast<int>(height_u32);
+
+	QImage mip0;
+	QString err;
+	if (!decode_wal_mip(data, size, offset0, w0, h0, palette, &mip0, &err)) {
+		if (error) {
+			*error = err.isEmpty() ? "Unable to decode WAL mip 0." : err;
+		}
+		return {};
+	}
+
+	return mip0;
+}

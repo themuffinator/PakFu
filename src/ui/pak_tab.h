@@ -152,7 +152,7 @@ private:
   bool ensure_editable(const QString& action);
 
   void set_view_mode(ViewMode mode);
-  void apply_auto_view(int file_count, int image_count, int video_count, int model_count);
+  void apply_auto_view(int file_count, int image_count, int video_count, int model_count, int bsp_count);
   void update_view_controls();
   void configure_icon_view();
   void stop_thumbnail_generation();

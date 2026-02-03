@@ -28,6 +28,7 @@
 #include <QStyle>
 
 #include "formats/image_loader.h"
+#include "ui/bsp_preview_widget.h"
 #include "ui/cfg_syntax_highlighter.h"
 #include "ui/cinematic_player_widget.h"
 #include "ui/model_viewer_widget.h"
@@ -385,6 +386,14 @@ void PreviewPane::build_ui() {
 	connect(cinematic_widget_, &CinematicPlayerWidget::request_previous_media, this, &PreviewPane::request_previous_video);
 	connect(cinematic_widget_, &CinematicPlayerWidget::request_next_media, this, &PreviewPane::request_next_video);
 
+	// BSP/map page.
+	bsp_page_ = new QWidget(stack_);
+	auto* bsp_layout = new QVBoxLayout(bsp_page_);
+	bsp_layout->setContentsMargins(0, 0, 0, 0);
+	bsp_widget_ = new BspPreviewWidget(bsp_page_);
+	bsp_layout->addWidget(bsp_widget_, 1);
+	stack_->addWidget(bsp_page_);
+
 	// Model page (MDL/MD2/MD3).
 	model_page_ = new QWidget(stack_);
 	auto* model_layout = new QVBoxLayout(model_page_);
@@ -582,6 +591,36 @@ void PreviewPane::show_binary(const QString& title,
 	}
 	if (stack_ && text_page_) {
 		stack_->setCurrentWidget(text_page_);
+	}
+}
+
+void PreviewPane::show_image(const QString& title, const QString& subtitle, const QImage& image) {
+	stop_audio_playback();
+	stop_cinematic_playback();
+	stop_model_preview();
+	set_header(title, subtitle);
+	if (stack_ && image_page_) {
+		stack_->setCurrentWidget(image_page_);
+	}
+	set_image_qimage(image);
+	QTimer::singleShot(0, this, [this]() {
+		if (!stack_ || stack_->currentWidget() != image_page_ || image_source_pixmap_.isNull()) {
+			return;
+		}
+		set_image_pixmap(image_source_pixmap_);
+	});
+}
+
+void PreviewPane::show_bsp(const QString& title, const QString& subtitle, BspMesh mesh, QHash<QString, QImage> textures) {
+	stop_audio_playback();
+	stop_cinematic_playback();
+	stop_model_preview();
+	set_header(title, subtitle);
+	if (stack_ && bsp_page_) {
+		stack_->setCurrentWidget(bsp_page_);
+	}
+	if (bsp_widget_) {
+		bsp_widget_->set_mesh(std::move(mesh), std::move(textures));
 	}
 }
 

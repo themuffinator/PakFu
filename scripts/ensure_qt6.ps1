@@ -18,8 +18,12 @@ function Ensure-Python {
 function Ensure-AqtInstall {
   param([string]$PythonExe)
   $args = @("-m", "aqt")
-  & $PythonExe @args 2>$null
-  if ($LASTEXITCODE -eq 0) {
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  & $PythonExe @args 2>$null | Out-Null
+  $exitCode = $LASTEXITCODE
+  $ErrorActionPreference = $prev
+  if ($exitCode -eq 0) {
     return
   }
   & $PythonExe -m pip install --user --upgrade aqtinstall
@@ -28,14 +32,27 @@ function Ensure-AqtInstall {
   }
 }
 
-function QtInstalled {
+function Get-QmakePath {
   param([string]$Root, [string]$Version, [string]$ArchName)
-  $qmake = Join-Path $Root (Join-Path $Version (Join-Path $ArchName "bin\\qmake6.exe"))
-  return Test-Path $qmake
+  $archDir = $ArchName
+  if ($archDir.StartsWith("win64_")) {
+    $archDir = $archDir.Substring(6)
+  } elseif ($archDir.StartsWith("win32_")) {
+    $archDir = $archDir.Substring(6)
+  }
+  $qmake6 = Join-Path $Root (Join-Path $Version (Join-Path $archDir "bin\\qmake6.exe"))
+  if (Test-Path $qmake6) {
+    return $qmake6
+  }
+  $qmake = Join-Path $Root (Join-Path $Version (Join-Path $archDir "bin\\qmake.exe"))
+  if (Test-Path $qmake) {
+    return $qmake
+  }
+  return $null
 }
 
-if (QtInstalled -Root $InstallRoot -Version $QtVersion -ArchName $Arch) {
-  Write-Host "Qt $QtVersion ($Arch) already installed at $InstallRoot."
+if ($qmakePath = Get-QmakePath -Root $InstallRoot -Version $QtVersion -ArchName $Arch) {
+  Write-Host "Qt $QtVersion ($Arch) already installed: $qmakePath"
   exit 0
 }
 
@@ -43,14 +60,25 @@ $pythonExe = Ensure-Python
 Ensure-AqtInstall -PythonExe $pythonExe
 
 Write-Host "Installing Qt $QtVersion ($Arch) to $InstallRoot ..."
-& $pythonExe -m aqt install-qt windows desktop $QtVersion $Arch -O $InstallRoot -m qtbase qtmultimedia qtsvg qtimageformats
+& $pythonExe -m aqt install-qt windows desktop $QtVersion $Arch -O $InstallRoot -m qtmultimedia qtimageformats
 if ($LASTEXITCODE -ne 0) {
   throw "aqtinstall failed with exit code $LASTEXITCODE"
 }
 
-if (-not (QtInstalled -Root $InstallRoot -Version $QtVersion -ArchName $Arch)) {
-  throw "Qt installation completed but qmake6.exe was not found."
+if (-not ($qmakePath = Get-QmakePath -Root $InstallRoot -Version $QtVersion -ArchName $Arch)) {
+  throw "Qt installation completed but qmake was not found."
 }
 
-Write-Host "Qt installation complete."
+$archDir = $Arch
+if ($archDir.StartsWith("win64_")) {
+  $archDir = $archDir.Substring(6)
+} elseif ($archDir.StartsWith("win32_")) {
+  $archDir = $archDir.Substring(6)
+}
+$qmake6Path = Join-Path $InstallRoot (Join-Path $QtVersion (Join-Path $archDir "bin\\qmake6.exe"))
+if (-not (Test-Path $qmake6Path) -and (Test-Path $qmakePath)) {
+  Copy-Item -Force $qmakePath $qmake6Path
+  $qmakePath = $qmake6Path
+}
 
+Write-Host "Qt installation complete: $qmakePath"
