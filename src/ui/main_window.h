@@ -40,6 +40,7 @@ private:
   void check_for_updates();
   void create_new_pak();
   void open_pak_dialog();
+  void open_folder_dialog();
   void open_pak(const QString& path);
   PakTab* open_pak_internal(const QString& path, bool allow_auto_select, bool add_recent);
   void save_current();
@@ -80,6 +81,7 @@ private:
   PreferencesTab* preferences_tab_ = nullptr;
   QAction* new_action_ = nullptr;
   QAction* open_action_ = nullptr;
+  QAction* open_folder_action_ = nullptr;
   QAction* save_action_ = nullptr;
   QAction* save_as_action_ = nullptr;
   QAction* undo_action_ = nullptr;

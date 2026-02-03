@@ -203,7 +203,7 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   parser.addOption(update_repo_option);
   parser.addOption(update_channel_option);
   parser.addOption(output_option);
-  parser.addPositionalArgument("archive", "Path to an archive (PAK/PK3/PK4/PKZ/ZIP/WAD).");
+  parser.addPositionalArgument("archive", "Path to an archive or folder (PAK/PK3/PK4/PKZ/ZIP/WAD).");
 
   if (!parser.parse(app.arguments())) {
     if (output) {
@@ -380,6 +380,8 @@ int run_cli(const CliOptions& options) {
 
   auto format_string = [](Archive::Format f) -> QString {
     switch (f) {
+      case Archive::Format::Directory:
+        return "DIR";
       case Archive::Format::Pak:
         return "PAK";
       case Archive::Format::Wad:

@@ -394,7 +394,7 @@ void PreviewPane::build_ui() {
 	bsp_layout->addWidget(bsp_widget_, 1);
 	stack_->addWidget(bsp_page_);
 
-	// Model page (MDL/MD2/MD3).
+	// Model page (MDL/MD2/MD3/IQM/MD5/LWO/OBJ).
 	model_page_ = new QWidget(stack_);
 	auto* model_layout = new QVBoxLayout(model_page_);
 	model_layout->setContentsMargins(0, 0, 0, 0);

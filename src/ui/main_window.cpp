@@ -296,7 +296,8 @@ QString random_welcome_message() {
 
 QWidget* build_welcome_tab(QWidget* parent,
                           const std::function<void()>& on_new,
-                          const std::function<void()>& on_open,
+                          const std::function<void()>& on_open_archive,
+                          const std::function<void()>& on_open_folder,
                           const std::function<void()>& on_exit) {
   auto* root = new QWidget(parent);
 
@@ -325,7 +326,7 @@ QWidget* build_welcome_tab(QWidget* parent,
   title->setFont(title_font);
   layout->addWidget(title);
 
-  auto* subtitle = new QLabel("Create a new PAK, open an existing one, or exit.", content);
+  auto* subtitle = new QLabel("Create a new PAK, open an archive or folder, or exit.", content);
   subtitle->setAlignment(Qt::AlignCenter);
   subtitle->setWordWrap(true);
   layout->addWidget(subtitle);
@@ -334,15 +335,19 @@ QWidget* build_welcome_tab(QWidget* parent,
   button_row->addStretch();
 
   auto* create_button = new QPushButton("Create PAK", content);
-  auto* load_button = new QPushButton("Open Archive", content);
+  auto* open_button = new QPushButton("Open…", content);
+  auto* open_menu = new QMenu(open_button);
+  QAction* open_archive_action = open_menu->addAction("Open Archive...");
+  QAction* open_folder_action = open_menu->addAction("Open Folder...");
+  open_button->setMenu(open_menu);
   auto* close_button = new QPushButton("Close", content);
   create_button->setMinimumWidth(170);
-  load_button->setMinimumWidth(170);
+  open_button->setMinimumWidth(170);
   close_button->setMinimumWidth(170);
 
   button_row->addWidget(create_button);
   button_row->addSpacing(18);
-  button_row->addWidget(load_button);
+  button_row->addWidget(open_button);
   button_row->addSpacing(18);
   button_row->addWidget(close_button);
   button_row->addStretch();
@@ -352,7 +357,8 @@ QWidget* build_welcome_tab(QWidget* parent,
   layout->addStretch();
 
   QObject::connect(create_button, &QPushButton::clicked, root, on_new);
-  QObject::connect(load_button, &QPushButton::clicked, root, on_open);
+  QObject::connect(open_archive_action, &QAction::triggered, root, on_open_archive);
+  QObject::connect(open_folder_action, &QAction::triggered, root, on_open_folder);
   QObject::connect(close_button, &QPushButton::clicked, root, on_exit);
 
   return root;
@@ -580,6 +586,7 @@ void MainWindow::setup_central() {
     tabs_,
     [this]() { create_new_pak(); },
     [this]() { open_pak_dialog(); },
+    [this]() { open_folder_dialog(); },
     [this]() { close(); });
   tabs_->addTab(welcome_tab_, "Welcome");
   if (auto* bar = tabs_->tabBar()) {
@@ -632,6 +639,10 @@ void MainWindow::setup_menus() {
   open_action_ = file_menu->addAction("Open Archive...");
   open_action_->setShortcut(QKeySequence::Open);
   connect(open_action_, &QAction::triggered, this, &MainWindow::open_pak_dialog);
+
+  open_folder_action_ = file_menu->addAction("Open Folder...");
+  open_folder_action_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
+  connect(open_folder_action_, &QAction::triggered, this, &MainWindow::open_folder_dialog);
 
   recent_files_menu_ = file_menu->addMenu("Recent Files");
   connect(recent_files_menu_, &QMenu::aboutToShow, this, &MainWindow::rebuild_recent_files_menu);
@@ -808,6 +819,26 @@ void MainWindow::open_pak_dialog() {
   open_pak(selected.first());
 }
 
+void MainWindow::open_folder_dialog() {
+  QFileDialog dialog(this);
+  dialog.setWindowTitle("Open Folder");
+  dialog.setFileMode(QFileDialog::Directory);
+  dialog.setOption(QFileDialog::ShowDirsOnly, true);
+  dialog.setDirectory(default_directory_for_dialogs());
+#if defined(Q_OS_WIN)
+  // Work around sporadic native dialog crashes reported in early development.
+  dialog.setOption(QFileDialog::DontUseNativeDialog, true);
+#endif
+  if (dialog.exec() != QDialog::Accepted) {
+    return;
+  }
+  const QStringList selected = dialog.selectedFiles();
+  if (selected.isEmpty()) {
+    return;
+  }
+  open_pak(selected.first());
+}
+
 PakTab* MainWindow::open_pak_internal(const QString& path, bool allow_auto_select, bool add_recent) {
   if (!tabs_) {
     return nullptr;
@@ -848,7 +879,7 @@ PakTab* MainWindow::open_pak_internal(const QString& path, bool allow_auto_selec
     add_recent_file(info.absoluteFilePath());
   }
 
-  const QString title = info.fileName();
+  const QString title = info.fileName().isEmpty() ? info.absoluteFilePath() : info.fileName();
   const int index = add_tab(title, tab);
   tabs_->setTabToolTip(index, info.absoluteFilePath());
   tabs_->setCurrentIndex(index);
@@ -1309,7 +1340,19 @@ bool MainWindow::save_tab_as(PakTab* tab) {
   }
 
   QString suggested = tab->pak_path();
-  if (suggested.isEmpty()) {
+  if (tab->archive_format() == Archive::Format::Directory) {
+    QString base = tab_base_title(tab);
+    if (base.isEmpty()) {
+      base = QFileInfo(tab->pak_path()).fileName();
+    }
+    if (base.isEmpty()) {
+      base = "folder";
+    }
+    if (!base.endsWith(".pak", Qt::CaseInsensitive)) {
+      base += ".pak";
+    }
+    suggested = base;
+  } else if (suggested.isEmpty()) {
     QString base = tab_base_title(tab);
     if (base.isEmpty()) {
       base = "untitled";
@@ -1328,7 +1371,7 @@ bool MainWindow::save_tab_as(PakTab* tab) {
     QStringList filters;
     const Archive::Format fmt = tab->archive_format();
     const bool is_new = tab->pak_path().isEmpty();
-    if (is_new || fmt == Archive::Format::Unknown) {
+    if (is_new || fmt == Archive::Format::Unknown || fmt == Archive::Format::Directory) {
       filters = {
         "Quake PAK (*.pak)",
         "PK3 (ZIP) (*.pk3)",

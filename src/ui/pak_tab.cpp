@@ -738,7 +738,8 @@ bool is_video_file_name(const QString& name) {
 
 bool is_model_file_name(const QString& name) {
   const QString ext = file_ext_lower(name);
-  return (ext == "mdl" || ext == "md2" || ext == "md3" || ext == "iqm" || ext == "md5mesh");
+  return (ext == "mdl" || ext == "md2" || ext == "md3" || ext == "iqm" || ext == "md5mesh" || ext == "obj" ||
+          ext == "lwo");
 }
 
 bool is_bsp_file_name(const QString& name) {
@@ -1030,6 +1031,9 @@ bool PakTab::is_editable() const {
   if (!loaded_) {
     return false;
   }
+  if (archive_.is_loaded() && archive_.format() == Archive::Format::Directory) {
+    return false;
+  }
   if (wad_mounted_) {
     return false;
   }
@@ -1081,6 +1085,11 @@ void PakTab::set_dirty(bool dirty) {
 
 bool PakTab::ensure_editable(const QString& action) {
   if (!loaded_) {
+    return false;
+  }
+  if (archive_.is_loaded() && archive_.format() == Archive::Format::Directory) {
+    const QString title = action.isEmpty() ? "Folder View" : action;
+    QMessageBox::information(this, title, "Folder views are read-only. Pack it into an archive via Save As...");
     return false;
   }
   if (wad_mounted_) {
@@ -3326,9 +3335,11 @@ bool PakTab::write_pak_file(const QString& dest_path, QString* error) {
     return false;
   }
 
-  if (mode_ == Mode::ExistingPak && archive_.is_loaded() && archive_.format() != Archive::Format::Pak) {
+  if (mode_ == Mode::ExistingPak && archive_.is_loaded() &&
+      archive_.format() != Archive::Format::Pak &&
+      archive_.format() != Archive::Format::Directory) {
     if (error) {
-      *error = "This archive was loaded from a ZIP-based format; saving as Quake PAK is not supported (use Save As... with a ZIP format instead).";
+      *error = "Saving as Quake PAK is only supported when the source is a Quake PAK or a folder.";
     }
     return false;
   }
@@ -3346,8 +3357,13 @@ bool PakTab::write_pak_file(const QString& dest_path, QString* error) {
 
   QFile src;
   qint64 src_size = 0;
-  const bool have_src = archive_.is_loaded() && !archive_.path().isEmpty();
-  if (have_src) {
+  const bool have_src_pak = archive_.is_loaded() &&
+    archive_.format() == Archive::Format::Pak &&
+    !archive_.path().isEmpty();
+  const bool have_src_dir = archive_.is_loaded() &&
+    archive_.format() == Archive::Format::Directory &&
+    !archive_.path().isEmpty();
+  if (have_src_pak) {
     src.setFileName(archive_.path());
     if (!src.open(QIODevice::ReadOnly)) {
       if (error) {
@@ -3379,7 +3395,7 @@ bool PakTab::write_pak_file(const QString& dest_path, QString* error) {
   }
 
   QVector<ArchiveEntry> new_entries;
-  new_entries.reserve((have_src ? archive_.entries().size() : 0) + added_files_.size());
+  new_entries.reserve(((have_src_pak || have_src_dir) ? archive_.entries().size() : 0) + added_files_.size());
 
   constexpr qint64 kChunk = 1 << 16;
   QByteArray buffer;
@@ -3395,7 +3411,7 @@ bool PakTab::write_pak_file(const QString& dest_path, QString* error) {
     return true;
   };
 
-  if (have_src) {
+  if (have_src_pak) {
     for (const ArchiveEntry& e : archive_.entries()) {
       const QString name = normalize_pak_path(e.name);
       if (is_deleted_path(name)) {
@@ -3463,6 +3479,83 @@ bool PakTab::write_pak_file(const QString& dest_path, QString* error) {
       out_entry.name = name;
       out_entry.offset = out_offset;
       out_entry.size = e.size;
+      new_entries.push_back(out_entry);
+    }
+  }
+
+  if (have_src_dir) {
+    const QString root = archive_.path();
+    const QDir root_dir(root);
+
+    for (const ArchiveEntry& e : archive_.entries()) {
+      const QString name = normalize_pak_path(e.name);
+      if (is_deleted_path(name)) {
+        continue;
+      }
+      if (added_index_by_name_.contains(name)) {
+        continue;  // overridden by an added/modified file
+      }
+      if (!is_safe_entry_name(name)) {
+        if (error) {
+          *error = QString("Refusing to save unsafe entry: %1").arg(name);
+        }
+        return false;
+      }
+      const QByteArray name_bytes = name.toLatin1();
+      if (name_bytes.isEmpty() || name_bytes.size() > kPakNameBytes) {
+        if (error) {
+          *error = QString("PAK entry name is too long: %1").arg(name);
+        }
+        return false;
+      }
+
+      QFile in(root_dir.filePath(QString(name).replace('/', QDir::separator())));
+      if (!in.open(QIODevice::ReadOnly)) {
+        if (error) {
+          *error = QString("Unable to open file: %1").arg(in.fileName());
+        }
+        return false;
+      }
+
+      const qint64 in_size64 = in.size();
+      if (in_size64 < 0 || in_size64 > std::numeric_limits<quint32>::max()) {
+        if (error) {
+          *error = QString("File is too large for PAK format: %1").arg(in.fileName());
+        }
+        return false;
+      }
+      const quint32 in_size = static_cast<quint32>(in_size64);
+
+      const qint64 out_offset64 = out.pos();
+      if (!ensure_u32_pos(out_offset64, "PAK output exceeds format limits.")) {
+        return false;
+      }
+      const quint32 out_offset = static_cast<quint32>(out_offset64);
+
+      quint32 remaining = in_size;
+      while (remaining > 0) {
+        const int to_read =
+          static_cast<int>(std::min<quint32>(remaining, static_cast<quint32>(buffer.size())));
+        const qint64 got = in.read(buffer.data(), to_read);
+        if (got <= 0) {
+          if (error) {
+            *error = QString("Unable to read file: %1").arg(in.fileName());
+          }
+          return false;
+        }
+        if (out.write(buffer.constData(), got) != got) {
+          if (error) {
+            *error = QString("Unable to write destination entry: %1").arg(name);
+          }
+          return false;
+        }
+        remaining -= static_cast<quint32>(got);
+      }
+
+      ArchiveEntry out_entry;
+      out_entry.name = name;
+      out_entry.offset = out_offset;
+      out_entry.size = in_size;
       new_entries.push_back(out_entry);
     }
   }
@@ -3607,9 +3700,11 @@ bool PakTab::write_zip_file(const QString& dest_path, bool quakelive_encrypt_pk3
     return false;
   }
 
-  if (mode_ == Mode::ExistingPak && archive_.is_loaded() && archive_.format() != Archive::Format::Zip) {
+  if (mode_ == Mode::ExistingPak && archive_.is_loaded() &&
+      archive_.format() != Archive::Format::Zip &&
+      archive_.format() != Archive::Format::Directory) {
     if (error) {
-      *error = "This archive was loaded from a Quake PAK; saving as ZIP-based formats is not supported (use Save As... with .pak instead).";
+      *error = "Saving as ZIP-based formats is only supported when the source is a ZIP-based archive or a folder.";
     }
     return false;
   }
@@ -3628,6 +3723,10 @@ bool PakTab::write_zip_file(const QString& dest_path, bool quakelive_encrypt_pk3
   QFile src_file;
   mz_zip_archive src_zip{};
   bool have_src_zip = false;
+
+  const bool have_src_dir = archive_.is_loaded() &&
+    archive_.format() == Archive::Format::Directory &&
+    !archive_.path().isEmpty();
 
   if (mode_ == Mode::ExistingPak && archive_.is_loaded() && archive_.format() == Archive::Format::Zip) {
     const QString src_path = archive_.readable_path();
@@ -3692,6 +3791,26 @@ bool PakTab::write_zip_file(const QString& dest_path, bool quakelive_encrypt_pk3
       *error = message;
     }
   };
+
+  QVector<AddedFile> dir_files;
+  if (have_src_dir) {
+    const QDir root_dir(archive_.path());
+    dir_files.reserve(archive_.entries().size());
+    for (const ArchiveEntry& e : archive_.entries()) {
+      const QString name = normalize_pak_path(e.name);
+      if (name.isEmpty()) {
+        continue;
+      }
+      if (added_index_by_name_.contains(name)) {
+        continue;
+      }
+      AddedFile f;
+      f.pak_name = name;
+      f.source_path = root_dir.filePath(QString(name).replace('/', QDir::separator()));
+      f.mtime_utc_secs = e.mtime_utc_secs;
+      dir_files.push_back(std::move(f));
+    }
+  }
 
   // Clone preserved entries from the source ZIP without recompressing.
   if (have_src_zip) {
@@ -3768,14 +3887,13 @@ bool PakTab::write_zip_file(const QString& dest_path, bool quakelive_encrypt_pk3
     }
   }
 
-  // Add modified/new files from disk.
-  for (const AddedFile& f : added_files_) {
+  auto add_disk_file = [&](const AddedFile& f) -> bool {
     const QString name = normalize_pak_path(f.pak_name);
     if (name.isEmpty()) {
-      continue;
+      return true;
     }
     if (is_deleted_path(name)) {
-      continue;
+      return true;
     }
     if (!is_safe_entry_name(name)) {
       mz_zip_writer_end(&out_zip);
@@ -3834,6 +3952,19 @@ bool PakTab::write_zip_file(const QString& dest_path, bool quakelive_encrypt_pk3
         mz_zip_reader_end(&src_zip);
       }
       add_error(msg ? QString("Unable to add file to ZIP (%1).").arg(QString::fromLatin1(msg)) : "Unable to add file to ZIP.");
+      return false;
+    }
+
+    return true;
+  };
+
+  for (const AddedFile& f : dir_files) {
+    if (!add_disk_file(f)) {
+      return false;
+    }
+  }
+  for (const AddedFile& f : added_files_) {
+    if (!add_disk_file(f)) {
       return false;
     }
   }
@@ -3949,7 +4080,11 @@ void PakTab::set_current_dir(const QStringList& parts) {
   QString root = "Root";
   if (mode_ == Mode::ExistingPak) {
     const QFileInfo info(pak_path_);
-    root = info.fileName().isEmpty() ? "PAK" : info.fileName();
+    if (archive_.is_loaded() && archive_.format() == Archive::Format::Directory) {
+      root = info.fileName().isEmpty() ? info.absoluteFilePath() : info.fileName();
+    } else {
+      root = info.fileName().isEmpty() ? "PAK" : info.fileName();
+    }
   } else if (!pak_path_.isEmpty()) {
     const QFileInfo info(pak_path_);
     root = info.fileName().isEmpty() ? "PAK" : info.fileName();
@@ -5184,59 +5319,135 @@ void PakTab::update_preview() {
 
       // For multi-surface formats, try to extract per-surface textures referenced by the model so the model viewer can
       // auto-load them from the exported temp directory.
-      if (ext == "md3" || ext == "md5mesh" || ext == "iqm") {
-        QString model_err;
-        const std::optional<LoadedModel> loaded_model = load_model_file(model_path, &model_err);
-        if (loaded_model && !loaded_model->surfaces.isEmpty()) {
-          const QString op_dir = QFileInfo(model_path).absolutePath();
-          const QString normalized_model = normalize_pak_path(pak_path);
-          const int slash = normalized_model.lastIndexOf('/');
-          const QString model_dir_prefix = (slash >= 0) ? normalized_model.left(slash + 1) : QString();
+      if (ext == "md3" || ext == "md5mesh" || ext == "iqm" || ext == "obj" || ext == "lwo") {
+        const QString op_dir = QFileInfo(model_path).absolutePath();
+        const QString normalized_model = normalize_pak_path(pak_path);
+        const int slash = normalized_model.lastIndexOf('/');
+        const QString model_dir_prefix = (slash >= 0) ? normalized_model.left(slash + 1) : QString();
 
-          const QStringList img_exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "dds", "lmp", "mip"};
+        const QStringList img_exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "dds", "lmp", "mip"};
 
-          // Build a quick case-insensitive lookup across the currently-viewed archive + added files.
-          QHash<QString, QString> by_lower;
-          by_lower.reserve(view_archive().entries().size() + (wad_mounted_ ? 0 : added_files_.size()));
-          for (const ArchiveEntry& e : view_archive().entries()) {
-            const QString n = normalize_pak_path(e.name);
+        // Build a quick case-insensitive lookup across the currently-viewed archive + added files.
+        QHash<QString, QString> by_lower;
+        by_lower.reserve(view_archive().entries().size() + (wad_mounted_ ? 0 : added_files_.size()));
+        for (const ArchiveEntry& e : view_archive().entries()) {
+          const QString n = normalize_pak_path(e.name);
+          if (!n.isEmpty()) {
+            by_lower.insert(n.toLower(), e.name);
+          }
+        }
+        if (!wad_mounted_) {
+          for (const AddedFile& f : added_files_) {
+            const QString n = normalize_pak_path(f.pak_name);
             if (!n.isEmpty()) {
-              by_lower.insert(n.toLower(), e.name);
+              by_lower.insert(n.toLower(), f.pak_name);
             }
           }
-          if (!wad_mounted_) {
-            for (const AddedFile& f : added_files_) {
-              const QString n = normalize_pak_path(f.pak_name);
-              if (!n.isEmpty()) {
-                by_lower.insert(n.toLower(), f.pak_name);
+        }
+
+        auto find_entry_ci = [&](const QString& want) -> QString {
+          const QString key = normalize_pak_path(want).toLower();
+          return key.isEmpty() ? QString() : by_lower.value(key);
+        };
+
+        auto extract_entry_to_model_dir = [&](const QString& found_entry) -> void {
+          const QString entry_leaf = pak_leaf_name(found_entry);
+          if (entry_leaf.isEmpty()) {
+            return;
+          }
+          const QString dest = QDir(op_dir).filePath(entry_leaf);
+          if (QFileInfo::exists(dest)) {
+            return;
+          }
+
+          QString tex_err;
+          const int tex_added_idx = added_index_by_name_.value(normalize_pak_path(found_entry), -1);
+          if (tex_added_idx >= 0 && tex_added_idx < added_files_.size()) {
+            (void)copy_file_stream(added_files_[tex_added_idx].source_path, dest, &tex_err);
+            return;
+          }
+          (void)view_archive().extract_entry_to_file(found_entry, dest, &tex_err);
+        };
+
+        // If we exported an OBJ, try to extract its referenced .mtl files first so the OBJ loader can resolve
+        // per-surface texture paths.
+        if (ext == "obj") {
+          QFile obj_file(model_path);
+          if (obj_file.open(QIODevice::ReadOnly)) {
+            QSet<QString> extracted_mtl_lower;
+            extracted_mtl_lower.reserve(8);
+            while (!obj_file.atEnd()) {
+              QString line = QString::fromLatin1(obj_file.readLine());
+              const int hash = line.indexOf('#');
+              if (hash >= 0) {
+                line = line.left(hash);
+              }
+              line = line.trimmed();
+              if (line.isEmpty()) {
+                continue;
+              }
+              if (!line.startsWith("mtllib", Qt::CaseInsensitive)) {
+                continue;
+              }
+              QString rest = line.mid(6).trimmed().simplified();
+              if (rest.isEmpty()) {
+                continue;
+              }
+              const QStringList refs = rest.split(' ', Qt::SkipEmptyParts);
+              for (const QString& ref0 : refs) {
+                QString ref = ref0.trimmed();
+                if (ref.isEmpty()) {
+                  continue;
+                }
+                ref.replace('\\', '/');
+                while (ref.startsWith('/')) {
+                  ref.remove(0, 1);
+                }
+
+                const QString leaf = QFileInfo(ref).fileName();
+                const QString ext_name = file_ext_lower(leaf);
+
+                QVector<QString> candidates;
+                candidates.reserve(8);
+                auto add = [&](const QString& c) {
+                  if (!c.isEmpty()) {
+                    candidates.push_back(c);
+                  }
+                };
+
+                add(ref);
+                add(model_dir_prefix + ref);
+                add(leaf);
+                add(model_dir_prefix + leaf);
+
+                if (ext_name.isEmpty()) {
+                  add(ref + ".mtl");
+                  add(model_dir_prefix + ref + ".mtl");
+                  add(leaf + ".mtl");
+                  add(model_dir_prefix + leaf + ".mtl");
+                }
+
+                for (const QString& want : candidates) {
+                  const QString found = find_entry_ci(want);
+                  if (found.isEmpty()) {
+                    continue;
+                  }
+                  const QString leaf_lower = pak_leaf_name(found).toLower();
+                  if (leaf_lower.isEmpty() || extracted_mtl_lower.contains(leaf_lower)) {
+                    continue;
+                  }
+                  extracted_mtl_lower.insert(leaf_lower);
+                  extract_entry_to_model_dir(found);
+                  break;
+                }
               }
             }
           }
+        }
 
-          auto find_entry_ci = [&](const QString& want) -> QString {
-            const QString key = normalize_pak_path(want).toLower();
-            return key.isEmpty() ? QString() : by_lower.value(key);
-          };
-
-          auto extract_entry_to_model_dir = [&](const QString& found_entry) -> void {
-            const QString entry_leaf = pak_leaf_name(found_entry);
-            if (entry_leaf.isEmpty()) {
-              return;
-            }
-            const QString dest = QDir(op_dir).filePath(entry_leaf);
-            if (QFileInfo::exists(dest)) {
-              return;
-            }
-
-            QString tex_err;
-            const int tex_added_idx = added_index_by_name_.value(normalize_pak_path(found_entry), -1);
-            if (tex_added_idx >= 0 && tex_added_idx < added_files_.size()) {
-              (void)copy_file_stream(added_files_[tex_added_idx].source_path, dest, &tex_err);
-              return;
-            }
-            (void)view_archive().extract_entry_to_file(found_entry, dest, &tex_err);
-          };
-
+        QString model_err;
+        const std::optional<LoadedModel> loaded_model = load_model_file(model_path, &model_err);
+        if (loaded_model && !loaded_model->surfaces.isEmpty()) {
           QSet<QString> extracted_lower;
           extracted_lower.reserve(32);
 
@@ -5270,7 +5481,7 @@ void PakTab::update_preview() {
             const bool has_known_ext = img_exts.contains(ext_name);
             if (has_known_ext) {
               add_candidate(sh);
-              if (!model_dir_prefix.isEmpty() && !sh.contains('/')) {
+              if (!model_dir_prefix.isEmpty() && !sh.startsWith(model_dir_prefix)) {
                 add_candidate(model_dir_prefix + sh);
               }
 
@@ -5279,24 +5490,22 @@ void PakTab::update_preview() {
                 if (!dir_name.isEmpty() && dir_name != ".") {
                   for (const QString& e : img_exts) {
                     add_candidate(QString("%1/%2.%3").arg(dir_name, base_name, e));
+                    if (!model_dir_prefix.isEmpty()) {
+                      add_candidate(QString("%1%2/%3.%4").arg(model_dir_prefix, dir_name, base_name, e));
+                    }
                   }
                 }
                 for (const QString& e : img_exts) {
                   add_candidate(QString("%1.%2").arg(base_name, e));
-                }
-                if (!model_dir_prefix.isEmpty() && !sh.contains('/')) {
-                  for (const QString& e : img_exts) {
                     add_candidate(QString("%1%2.%3").arg(model_dir_prefix, base_name, e));
-                  }
                 }
               }
             } else {
               for (const QString& e : img_exts) {
-                add_candidate(QString("%1.%2").arg(sh, e));
-              }
-              if (!model_dir_prefix.isEmpty() && !sh.contains('/')) {
-                for (const QString& e : img_exts) {
-                  add_candidate(QString("%1%2.%3").arg(model_dir_prefix, sh, e));
+                const QString cand = QString("%1.%2").arg(sh, e);
+                add_candidate(cand);
+                if (!model_dir_prefix.isEmpty() && !cand.startsWith(model_dir_prefix)) {
+                  add_candidate(model_dir_prefix + cand);
                 }
               }
             }

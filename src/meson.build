@@ -13,6 +13,7 @@ sources = files(
   'main.cpp',
   'cli/cli.cpp',
   'archive/archive.cpp',
+  'archive/dir_archive.cpp',
   'game/game_set.cpp',
   'game/game_auto_detect.cpp',
   'formats/dds_image.cpp',

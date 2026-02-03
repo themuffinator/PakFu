@@ -4,10 +4,12 @@
 #include <cmath>
 #include <cstring>
 
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
 #include <QQuaternion>
+#include <QVector2D>
 
 namespace {
 struct Cursor {
@@ -1929,6 +1931,1064 @@ std::optional<LoadedModel> load_md5mesh(const QString& file_path, QString* error
   compute_bounds(&out.mesh);
   return out;
 }
+
+struct ObjVertKey {
+  int v = -1;
+  int vt = -1;
+};
+
+inline bool operator==(const ObjVertKey& a, const ObjVertKey& b) { return a.v == b.v && a.vt == b.vt; }
+
+inline uint qHash(const ObjVertKey& k, uint seed = 0) noexcept {
+  const quint32 v = static_cast<quint32>(k.v) * 0x9E3779B1u;
+  const quint32 vt = static_cast<quint32>(k.vt) * 0x85EBCA77u;
+  return ::qHash(v ^ (vt + 0xC2B2AE3Du + (seed << 6) + (seed >> 2)), seed);
+}
+
+std::optional<LoadedModel> load_obj(const QString& file_path, QString* error) {
+  if (error) {
+    error->clear();
+  }
+
+  QFile f(file_path);
+  if (!f.open(QIODevice::ReadOnly)) {
+    if (error) {
+      *error = "Unable to open OBJ.";
+    }
+    return std::nullopt;
+  }
+  const QByteArray bytes = f.readAll();
+  if (bytes.isEmpty()) {
+    if (error) {
+      *error = "Empty OBJ.";
+    }
+    return std::nullopt;
+  }
+
+  struct LineTok {
+    const char* data = nullptr;
+    int len = 0;
+    int pos = 0;
+
+    void skip_ws() {
+      while (pos < len && static_cast<unsigned char>(data[pos]) <= 0x20) {
+        ++pos;
+      }
+    }
+
+    [[nodiscard]] QString next() {
+      skip_ws();
+      if (pos >= len) {
+        return {};
+      }
+
+      if (data[pos] == '"') {
+        ++pos;
+        const int start = pos;
+        while (pos < len && data[pos] != '"') {
+          ++pos;
+        }
+        const int end = pos;
+        if (pos < len && data[pos] == '"') {
+          ++pos;
+        }
+        return QString::fromLatin1(data + start, end - start);
+      }
+
+      const int start = pos;
+      while (pos < len && static_cast<unsigned char>(data[pos]) > 0x20) {
+        ++pos;
+      }
+      return QString::fromLatin1(data + start, pos - start);
+    }
+  };
+
+  const QString obj_dir = QFileInfo(file_path).absolutePath();
+
+  QHash<QString, QString> material_to_map;
+  QHash<QString, bool> parsed_mtls;
+
+  const auto parse_mtl_file = [&](const QString& mtl_path) {
+    const QString abs = QFileInfo(mtl_path).absoluteFilePath();
+    if (parsed_mtls.contains(abs)) {
+      return;
+    }
+    parsed_mtls.insert(abs, true);
+
+    QFile mf(mtl_path);
+    if (!mf.open(QIODevice::ReadOnly)) {
+      return;
+    }
+    const QByteArray mbytes = mf.readAll();
+    if (mbytes.isEmpty()) {
+      return;
+    }
+
+    QString current;
+
+    int p = 0;
+    while (p < mbytes.size()) {
+      int nl = mbytes.indexOf('\n', p);
+      if (nl < 0) {
+        nl = mbytes.size();
+      }
+      int line_len = nl - p;
+      if (line_len > 0 && mbytes[p + line_len - 1] == '\r') {
+        --line_len;
+      }
+
+      const char* line = mbytes.constData() + p;
+      p = nl + 1;
+
+      // Strip comments.
+      int effective_len = line_len;
+      for (int i = 0; i < line_len; ++i) {
+        if (line[i] == '#') {
+          effective_len = i;
+          break;
+        }
+      }
+
+      // Trim.
+      int b = 0;
+      while (b < effective_len && static_cast<unsigned char>(line[b]) <= 0x20) {
+        ++b;
+      }
+      int e = effective_len;
+      while (e > b && static_cast<unsigned char>(line[e - 1]) <= 0x20) {
+        --e;
+      }
+      if (e <= b) {
+        continue;
+      }
+
+      LineTok tok{line + b, e - b, 0};
+      const QString cmd = tok.next().toLower();
+      if (cmd.isEmpty()) {
+        continue;
+      }
+      if (cmd == "newmtl") {
+        current = tok.next().trimmed();
+        continue;
+      }
+      if (cmd == "map_kd") {
+        if (current.isEmpty()) {
+          continue;
+        }
+        QString last;
+        for (;;) {
+          const QString t = tok.next();
+          if (t.isEmpty()) {
+            break;
+          }
+          last = t;
+        }
+        if (last.isEmpty()) {
+          continue;
+        }
+        material_to_map.insert(current.toLower(), last.trimmed());
+      }
+    }
+  };
+
+  QVector<QVector3D> positions;
+  QVector<QVector2D> texcoords;
+  QVector<QVector3D> normals;
+
+  QVector<ModelVertex> vertices;
+  QVector<std::uint32_t> indices;
+  QHash<ObjVertKey, std::uint32_t> vert_map;
+
+  QVector<ModelSurface> surfaces;
+  QString current_object;
+  QString current_group;
+  QString current_material;
+  int surface_first_index = 0;
+  QString surface_name = "model";
+  QString surface_shader;
+  bool surface_active = false;
+
+  const auto flush_surface = [&]() {
+    if (!surface_active) {
+      return;
+    }
+    const int count = indices.size() - surface_first_index;
+    if (count <= 0) {
+      surface_active = false;
+      return;
+    }
+    ModelSurface s;
+    s.name = surface_name.isEmpty() ? "model" : surface_name;
+    s.shader = surface_shader;
+    s.first_index = surface_first_index;
+    s.index_count = count;
+    surfaces.push_back(std::move(s));
+    surface_active = false;
+  };
+
+  const auto begin_surface = [&]() {
+    surface_first_index = indices.size();
+    surface_active = true;
+  };
+
+  const auto resolve_shader = [&](const QString& material) -> QString {
+    if (material.isEmpty()) {
+      return {};
+    }
+    const QString key = material.trimmed().toLower();
+    const QString mapped = material_to_map.value(key);
+    return mapped.isEmpty() ? material : mapped;
+  };
+
+  const auto pick_surface_name = [&]() -> QString {
+    if (!current_material.isEmpty()) {
+      return current_material;
+    }
+    if (!current_group.isEmpty()) {
+      return current_group;
+    }
+    if (!current_object.isEmpty()) {
+      return current_object;
+    }
+    return "model";
+  };
+
+  const auto ensure_surface = [&]() {
+    const QString want_name = pick_surface_name();
+    const QString want_shader = resolve_shader(current_material);
+    if (!surface_active) {
+      surface_name = want_name;
+      surface_shader = want_shader;
+      begin_surface();
+      return;
+    }
+    if (surface_name != want_name || surface_shader != want_shader) {
+      flush_surface();
+      surface_name = want_name;
+      surface_shader = want_shader;
+      begin_surface();
+    }
+  };
+
+  auto parse_float = [](const QString& s, bool* ok) -> float {
+    bool local_ok = false;
+    const float out = s.toFloat(&local_ok);
+    if (ok) {
+      *ok = local_ok;
+    }
+    return out;
+  };
+
+  auto parse_int = [](const QString& s, bool* ok) -> int {
+    bool local_ok = false;
+    const int out = s.toInt(&local_ok);
+    if (ok) {
+      *ok = local_ok;
+    }
+    return out;
+  };
+
+  struct ObjRef {
+    int v = -1;
+    int vt = -1;
+  };
+
+  const auto parse_ref = [&](const QString& tok, ObjRef* out) -> bool {
+    if (!out) {
+      return false;
+    }
+    out->v = -1;
+    out->vt = -1;
+
+    const int s1 = tok.indexOf('/');
+    const int s2 = (s1 >= 0) ? tok.indexOf('/', s1 + 1) : -1;
+
+    const QString sv = (s1 < 0) ? tok : tok.left(s1);
+    const QString st = (s1 < 0) ? QString() : (s2 < 0 ? tok.mid(s1 + 1) : tok.mid(s1 + 1, s2 - (s1 + 1)));
+
+    bool okv = false;
+    const int iv = parse_int(sv, &okv);
+    if (!okv || iv == 0) {
+      return false;
+    }
+    const int vcount = positions.size();
+    const int v0 = (iv > 0) ? (iv - 1) : (vcount + iv);
+    if (v0 < 0 || v0 >= vcount) {
+      return false;
+    }
+    out->v = v0;
+
+    if (!st.isEmpty()) {
+      bool okt = false;
+      const int it = parse_int(st, &okt);
+      if (okt && it != 0) {
+        const int tcount = texcoords.size();
+        const int t0 = (it > 0) ? (it - 1) : (tcount + it);
+        if (t0 >= 0 && t0 < tcount) {
+          out->vt = t0;
+        }
+      }
+    }
+    return true;
+  };
+
+  const auto find_or_create_vertex = [&](const ObjRef& r) -> std::uint32_t {
+    ObjVertKey key;
+    key.v = r.v;
+    key.vt = r.vt;
+    const auto it = vert_map.find(key);
+    if (it != vert_map.end()) {
+      return *it;
+    }
+
+    const QVector3D p = positions[r.v];
+    QVector2D uv(0.0f, 0.0f);
+    if (r.vt >= 0 && r.vt < texcoords.size()) {
+      uv = texcoords[r.vt];
+    }
+
+    ModelVertex v;
+    v.px = p.x();
+    v.py = p.y();
+    v.pz = p.z();
+    v.u = uv.x();
+    v.v = uv.y();
+    vertices.push_back(v);
+
+    const std::uint32_t idx = static_cast<std::uint32_t>(vertices.size() - 1);
+    vert_map.insert(key, idx);
+    return idx;
+  };
+
+  int p = 0;
+  while (p < bytes.size()) {
+    int nl = bytes.indexOf('\n', p);
+    if (nl < 0) {
+      nl = bytes.size();
+    }
+    int line_len = nl - p;
+    if (line_len > 0 && bytes[p + line_len - 1] == '\r') {
+      --line_len;
+    }
+
+    const char* line = bytes.constData() + p;
+    p = nl + 1;
+
+    int effective_len = line_len;
+    for (int i = 0; i < line_len; ++i) {
+      if (line[i] == '#') {
+        effective_len = i;
+        break;
+      }
+    }
+
+    int b = 0;
+    while (b < effective_len && static_cast<unsigned char>(line[b]) <= 0x20) {
+      ++b;
+    }
+    int e = effective_len;
+    while (e > b && static_cast<unsigned char>(line[e - 1]) <= 0x20) {
+      --e;
+    }
+    if (e <= b) {
+      continue;
+    }
+
+    LineTok tok{line + b, e - b, 0};
+    const QString cmd = tok.next().toLower();
+    if (cmd.isEmpty()) {
+      continue;
+    }
+
+    if (cmd == "v") {
+      bool okx = false, oky = false, okz = false;
+      const float x = parse_float(tok.next(), &okx);
+      const float y = parse_float(tok.next(), &oky);
+      const float z = parse_float(tok.next(), &okz);
+      if (!(okx && oky && okz)) {
+        continue;
+      }
+      positions.push_back(QVector3D(x, y, z));
+      continue;
+    }
+
+    if (cmd == "vt") {
+      const QString su = tok.next();
+      const QString sv = tok.next();
+      if (su.isEmpty()) {
+        continue;
+      }
+      bool oku = false;
+      const float u = parse_float(su, &oku);
+      float v = 0.0f;
+      bool okv = true;
+      if (!sv.isEmpty()) {
+        v = parse_float(sv, &okv);
+      }
+      if (!(oku && okv)) {
+        continue;
+      }
+      texcoords.push_back(QVector2D(u, v));
+      continue;
+    }
+
+    if (cmd == "vn") {
+      bool okx = false, oky = false, okz = false;
+      const float x = parse_float(tok.next(), &okx);
+      const float y = parse_float(tok.next(), &oky);
+      const float z = parse_float(tok.next(), &okz);
+      if (!(okx && oky && okz)) {
+        continue;
+      }
+      normals.push_back(QVector3D(x, y, z));
+      continue;
+    }
+
+    if (cmd == "o") {
+      const QString name = tok.next().trimmed();
+      if (!name.isEmpty()) {
+        current_object = name;
+      }
+      continue;
+    }
+
+    if (cmd == "g") {
+      const QString name = tok.next().trimmed();
+      if (!name.isEmpty()) {
+        current_group = name;
+      }
+      continue;
+    }
+
+    if (cmd == "mtllib") {
+      for (;;) {
+        QString ref = tok.next().trimmed();
+        if (ref.isEmpty()) {
+          break;
+        }
+        ref.replace('\\', '/');
+
+        QString candidate = QDir(obj_dir).filePath(ref);
+        if (!QFileInfo::exists(candidate)) {
+          const QString leaf = QFileInfo(ref).fileName();
+          const QString alt = QDir(obj_dir).filePath(leaf);
+          candidate = QFileInfo::exists(alt) ? alt : QString();
+        }
+        if (!candidate.isEmpty()) {
+          parse_mtl_file(candidate);
+        }
+      }
+      continue;
+    }
+
+    if (cmd == "usemtl") {
+      current_material = tok.next().trimmed();
+      continue;
+    }
+
+    if (cmd == "f") {
+      if (positions.isEmpty()) {
+        continue;
+      }
+
+      QVector<ObjRef> refs;
+      refs.reserve(8);
+      for (;;) {
+        const QString t = tok.next();
+        if (t.isEmpty()) {
+          break;
+        }
+        ObjRef r;
+        if (parse_ref(t, &r)) {
+          refs.push_back(r);
+        }
+      }
+      if (refs.size() < 3) {
+        continue;
+      }
+
+      ensure_surface();
+      const std::uint32_t i0 = find_or_create_vertex(refs[0]);
+      for (int i = 1; i + 1 < refs.size(); ++i) {
+        const std::uint32_t i1 = find_or_create_vertex(refs[i]);
+        const std::uint32_t i2 = find_or_create_vertex(refs[i + 1]);
+        indices.push_back(i0);
+        indices.push_back(i1);
+        indices.push_back(i2);
+      }
+      continue;
+    }
+  }
+
+  flush_surface();
+
+  if (vertices.isEmpty() || indices.isEmpty()) {
+    if (error) {
+      *error = "OBJ contains no drawable geometry.";
+    }
+    return std::nullopt;
+  }
+
+  // Update shaders from MTL mappings (surface name == material name).
+  if (!material_to_map.isEmpty()) {
+    for (ModelSurface& s : surfaces) {
+      const QString mapped = material_to_map.value(s.name.trimmed().toLower());
+      if (!mapped.isEmpty()) {
+        s.shader = mapped;
+      }
+    }
+  }
+
+  if (surfaces.isEmpty()) {
+    surfaces = {ModelSurface{QString("model"), QString(), 0, static_cast<int>(indices.size())}};
+  }
+
+  LoadedModel out;
+  out.format = "obj";
+  out.frame_count = 1;
+  out.surface_count = std::max(1, static_cast<int>(surfaces.size()));
+  out.mesh.vertices = std::move(vertices);
+  out.mesh.indices = std::move(indices);
+  out.surfaces = std::move(surfaces);
+  compute_smooth_normals(&out.mesh);
+  compute_bounds(&out.mesh);
+  return out;
+}
+
+struct LwoLayer {
+  int number = 0;
+  QString name;
+
+  QVector<QVector3D> points;
+  QVector<QVector<quint32>> polys;               // point indices per polygon (poly index is array index)
+  QVector<QPair<quint32, quint16>> ptag_surfs;   // (poly_index, tag_index) for SURF PTAGs
+
+  QString uv_map_name;
+  QHash<quint32, QVector2D> vmap_uv;  // point -> uv
+  QHash<quint64, QVector2D> vmad_uv;  // (poly<<32)|point -> uv
+};
+
+std::optional<LoadedModel> load_lwo(const QString& file_path, QString* error) {
+  if (error) {
+    error->clear();
+  }
+
+  QFile f(file_path);
+  if (!f.open(QIODevice::ReadOnly)) {
+    if (error) {
+      *error = "Unable to open LWO.";
+    }
+    return std::nullopt;
+  }
+  const QByteArray bytes = f.readAll();
+  if (bytes.isEmpty()) {
+    if (error) {
+      *error = "Empty LWO.";
+    }
+    return std::nullopt;
+  }
+
+  struct BeCursor {
+    const QByteArray* data = nullptr;
+    int pos = 0;
+
+    [[nodiscard]] bool can_read(int n) const { return data && n >= 0 && pos >= 0 && pos + n <= data->size(); }
+
+    bool seek(int p) {
+      if (!data) {
+        return false;
+      }
+      if (p < 0 || p > data->size()) {
+        return false;
+      }
+      pos = p;
+      return true;
+    }
+
+    bool skip(int n) { return seek(pos + n); }
+
+    bool read_u16(quint16* out) {
+      if (!can_read(2) || !out) {
+        return false;
+      }
+      const quint8 b0 = static_cast<quint8>((*data)[pos + 0]);
+      const quint8 b1 = static_cast<quint8>((*data)[pos + 1]);
+      *out = static_cast<quint16>((b0 << 8) | b1);
+      pos += 2;
+      return true;
+    }
+
+    bool read_u32(quint32* out) {
+      if (!can_read(4) || !out) {
+        return false;
+      }
+      const quint8 b0 = static_cast<quint8>((*data)[pos + 0]);
+      const quint8 b1 = static_cast<quint8>((*data)[pos + 1]);
+      const quint8 b2 = static_cast<quint8>((*data)[pos + 2]);
+      const quint8 b3 = static_cast<quint8>((*data)[pos + 3]);
+      *out = (static_cast<quint32>(b0) << 24) | (static_cast<quint32>(b1) << 16) | (static_cast<quint32>(b2) << 8) |
+             static_cast<quint32>(b3);
+      pos += 4;
+      return true;
+    }
+
+    bool read_f32(float* out) {
+      quint32 u = 0;
+      if (!read_u32(&u) || !out) {
+        return false;
+      }
+      static_assert(sizeof(float) == sizeof(quint32));
+      float f = 0.0f;
+      memcpy(&f, &u, sizeof(float));
+      *out = f;
+      return true;
+    }
+
+    bool read_id(QByteArray* out) {
+      if (!can_read(4) || !out) {
+        return false;
+      }
+      *out = data->mid(pos, 4);
+      pos += 4;
+      return true;
+    }
+
+    bool read_s0(QString* out, int end_pos) {
+      if (!data || pos < 0 || pos >= end_pos) {
+        if (out) {
+          out->clear();
+        }
+        return true;
+      }
+      const int start = pos;
+      while (pos < end_pos && (*data)[pos] != '\0') {
+        ++pos;
+      }
+      const int len = pos - start;
+      if (out) {
+        *out = QString::fromLatin1(data->constData() + start, len);
+      }
+      if (pos < end_pos && (*data)[pos] == '\0') {
+        ++pos;
+      }
+      // Pad to even.
+      if (((len + 1) & 1) != 0) {
+        if (pos < end_pos) {
+          ++pos;
+        }
+      }
+      return true;
+    }
+
+    bool read_vx(quint32* out, int end_pos) {
+      if (!out) {
+        return false;
+      }
+      if (!can_read(2) || pos + 2 > end_pos) {
+        return false;
+      }
+      quint16 w = 0;
+      if (!read_u16(&w)) {
+        return false;
+      }
+      if (w < 0xFF00u) {
+        *out = static_cast<quint32>(w);
+        return true;
+      }
+      if (!can_read(2) || pos + 2 > end_pos) {
+        return false;
+      }
+      quint16 lo = 0;
+      if (!read_u16(&lo)) {
+        return false;
+      }
+      *out = (static_cast<quint32>(w & 0x00FFu) << 16) | static_cast<quint32>(lo);
+      return true;
+    }
+  };
+
+  BeCursor cur;
+  cur.data = &bytes;
+
+  QByteArray form;
+  quint32 form_size = 0;
+  QByteArray form_type;
+  if (!cur.read_id(&form) || !cur.read_u32(&form_size) || !cur.read_id(&form_type)) {
+    if (error) {
+      *error = "LWO header is incomplete.";
+    }
+    return std::nullopt;
+  }
+  if (form != "FORM") {
+    if (error) {
+      *error = "Not an IFF FORM file.";
+    }
+    return std::nullopt;
+  }
+  (void)form_size;
+  if (form_type != "LWO2" && form_type != "LWO3") {
+    if (error) {
+      *error = QString("Unsupported LWO type: %1").arg(QString::fromLatin1(form_type));
+    }
+    return std::nullopt;
+  }
+
+  QVector<QString> tags;
+  QVector<LwoLayer> layers;
+  layers.push_back(LwoLayer{});
+  int current_layer = 0;
+
+  auto layer = [&]() -> LwoLayer* {
+    if (current_layer < 0 || current_layer >= layers.size()) {
+      return nullptr;
+    }
+    return &layers[current_layer];
+  };
+
+  while (cur.pos + 8 <= bytes.size()) {
+    QByteArray cid;
+    quint32 csize = 0;
+    if (!cur.read_id(&cid) || !cur.read_u32(&csize)) {
+      break;
+    }
+    const int data_start = cur.pos;
+    const int data_end = data_start + static_cast<int>(csize);
+    if (data_end < data_start || data_end > bytes.size()) {
+      if (error) {
+        *error = "LWO chunk extends past end of file.";
+      }
+      return std::nullopt;
+    }
+
+    const auto finish = [&]() {
+      cur.seek(data_end);
+      if ((csize & 1u) != 0u) {
+        cur.skip(1);
+      }
+    };
+
+    if (cid == "TAGS") {
+      cur.seek(data_start);
+      while (cur.pos < data_end) {
+        QString s;
+        if (!cur.read_s0(&s, data_end)) {
+          break;
+        }
+        tags.push_back(s);
+      }
+      finish();
+      continue;
+    }
+
+    if (cid == "LAYR") {
+      cur.seek(data_start);
+      quint16 num = 0;
+      quint16 flags = 0;
+      if (!cur.read_u16(&num) || !cur.read_u16(&flags)) {
+        finish();
+        continue;
+      }
+      (void)flags;
+      cur.skip(12);  // pivot
+      QString lname;
+      (void)cur.read_s0(&lname, data_end);
+
+      LwoLayer l;
+      l.number = static_cast<int>(num);
+      l.name = lname;
+      layers.push_back(std::move(l));
+      current_layer = layers.size() - 1;
+      finish();
+      continue;
+    }
+
+    if (cid == "PNTS") {
+      LwoLayer* l = layer();
+      cur.seek(data_start);
+      const int count = (data_end - data_start) / 12;
+      if (l) {
+        l->points.reserve(l->points.size() + count);
+      }
+      for (int i = 0; i < count; ++i) {
+        float x = 0.0f, y = 0.0f, z = 0.0f;
+        if (!cur.read_f32(&x) || !cur.read_f32(&y) || !cur.read_f32(&z)) {
+          break;
+        }
+        if (l) {
+          l->points.push_back(QVector3D(x, y, z));
+        }
+      }
+      finish();
+      continue;
+    }
+
+    if (cid == "POLS") {
+      LwoLayer* l = layer();
+      cur.seek(data_start);
+      QByteArray ptype;
+      if (!cur.read_id(&ptype)) {
+        finish();
+        continue;
+      }
+      if (!l || ptype != "FACE") {
+        finish();
+        continue;
+      }
+
+      while (cur.pos < data_end) {
+        quint16 nv_raw = 0;
+        if (!cur.read_u16(&nv_raw)) {
+          break;
+        }
+        int nv = static_cast<int>(nv_raw);
+        if (nv > 1023) {
+          nv = nv & 0x03FF;
+        }
+
+        QVector<quint32> poly;
+        if (nv > 0) {
+          poly.reserve(nv);
+        }
+        for (int i = 0; i < nv; ++i) {
+          quint32 idx = 0;
+          if (!cur.read_vx(&idx, data_end)) {
+            break;
+          }
+          poly.push_back(idx);
+        }
+        l->polys.push_back(std::move(poly));
+      }
+
+      finish();
+      continue;
+    }
+
+    if (cid == "PTAG") {
+      LwoLayer* l = layer();
+      cur.seek(data_start);
+      QByteArray ptype;
+      if (!cur.read_id(&ptype) || !l || ptype != "SURF") {
+        finish();
+        continue;
+      }
+
+      while (cur.pos < data_end) {
+        quint32 poly = 0;
+        quint16 tag = 0;
+        if (!cur.read_vx(&poly, data_end) || !cur.read_u16(&tag)) {
+          break;
+        }
+        l->ptag_surfs.push_back(qMakePair(poly, tag));
+      }
+
+      finish();
+      continue;
+    }
+
+    if (cid == "VMAP" || cid == "VMAD") {
+      LwoLayer* l = layer();
+      cur.seek(data_start);
+      QByteArray vtype;
+      quint16 dim = 0;
+      if (!cur.read_id(&vtype) || !cur.read_u16(&dim) || !l) {
+        finish();
+        continue;
+      }
+      QString name;
+      (void)cur.read_s0(&name, data_end);
+
+      const bool is_txuv = (vtype == "TXUV" && dim >= 2);
+      if (!is_txuv) {
+        finish();
+        continue;
+      }
+
+      if (l->uv_map_name.isEmpty()) {
+        l->uv_map_name = name;
+      }
+      const bool use = (name == l->uv_map_name);
+
+      if (cid == "VMAP") {
+        while (cur.pos < data_end) {
+          quint32 point = 0;
+          if (!cur.read_vx(&point, data_end)) {
+            break;
+          }
+          float u = 0.0f, v = 0.0f;
+          if (!cur.read_f32(&u) || !cur.read_f32(&v)) {
+            break;
+          }
+          for (int i = 2; i < static_cast<int>(dim); ++i) {
+            float tmp = 0.0f;
+            if (!cur.read_f32(&tmp)) {
+              break;
+            }
+          }
+          if (use) {
+            l->vmap_uv.insert(point, QVector2D(u, v));
+          }
+        }
+      } else {  // VMAD
+        while (cur.pos < data_end) {
+          quint32 point = 0;
+          quint32 poly = 0;
+          if (!cur.read_vx(&point, data_end) || !cur.read_vx(&poly, data_end)) {
+            break;
+          }
+          float u = 0.0f, v = 0.0f;
+          if (!cur.read_f32(&u) || !cur.read_f32(&v)) {
+            break;
+          }
+          for (int i = 2; i < static_cast<int>(dim); ++i) {
+            float tmp = 0.0f;
+            if (!cur.read_f32(&tmp)) {
+              break;
+            }
+          }
+          if (use) {
+            const quint64 key = (static_cast<quint64>(poly) << 32) | static_cast<quint64>(point);
+            l->vmad_uv.insert(key, QVector2D(u, v));
+          }
+        }
+      }
+
+      finish();
+      continue;
+    }
+
+    // Unknown chunk.
+    finish();
+  }
+
+  QVector<ModelVertex> vertices;
+  QHash<QString, QVector<std::uint32_t>> indices_by_surface;
+  QVector<QString> surface_order;
+
+  for (const LwoLayer& l : layers) {
+    if (l.points.isEmpty() || l.polys.isEmpty()) {
+      continue;
+    }
+
+    QVector<int> poly_to_tag;
+    poly_to_tag.resize(l.polys.size());
+    for (int i = 0; i < poly_to_tag.size(); ++i) {
+      poly_to_tag[i] = -1;
+    }
+    for (const auto& it : l.ptag_surfs) {
+      const int poly = static_cast<int>(it.first);
+      if (poly < 0 || poly >= poly_to_tag.size()) {
+        continue;
+      }
+      poly_to_tag[poly] = static_cast<int>(it.second);
+    }
+
+    QHash<quint64, std::uint32_t> vert_map;
+    vert_map.reserve(l.points.size());
+
+    const auto vertex_for = [&](int poly_index, quint32 point_index) -> std::uint32_t {
+      const quint64 vmad_key = (static_cast<quint64>(static_cast<quint32>(poly_index)) << 32) | static_cast<quint64>(point_index);
+      const bool has_vmad = l.vmad_uv.contains(vmad_key);
+      const quint32 uv_poly = has_vmad ? static_cast<quint32>(poly_index + 1) : 0u;
+      const quint64 key = (static_cast<quint64>(point_index) << 32) | static_cast<quint64>(uv_poly);
+      const auto it = vert_map.find(key);
+      if (it != vert_map.end()) {
+        return *it;
+      }
+
+      const QVector3D p = (point_index < static_cast<quint32>(l.points.size())) ? l.points[static_cast<int>(point_index)] : QVector3D();
+      QVector2D uv(0.0f, 0.0f);
+      if (has_vmad) {
+        uv = l.vmad_uv.value(vmad_key);
+      } else if (l.vmap_uv.contains(point_index)) {
+        uv = l.vmap_uv.value(point_index);
+      }
+
+      ModelVertex v;
+      v.px = p.x();
+      v.py = p.y();
+      v.pz = p.z();
+      v.u = uv.x();
+      v.v = 1.0f - uv.y();
+      vertices.push_back(v);
+
+      const std::uint32_t idx = static_cast<std::uint32_t>(vertices.size() - 1);
+      vert_map.insert(key, idx);
+      return idx;
+    };
+
+    for (int pi = 0; pi < l.polys.size(); ++pi) {
+      const QVector<quint32>& poly = l.polys[pi];
+      if (poly.size() < 3) {
+        continue;
+      }
+
+      QString surf = "model";
+      const int tag = poly_to_tag.value(pi, -1);
+      if (tag >= 0 && tag < tags.size()) {
+        const QString t = tags[tag].trimmed();
+        if (!t.isEmpty()) {
+          surf = t;
+        }
+      }
+
+      if (!indices_by_surface.contains(surf)) {
+        indices_by_surface.insert(surf, {});
+        surface_order.push_back(surf);
+      }
+      QVector<std::uint32_t>& out = indices_by_surface[surf];
+
+      const std::uint32_t i0 = vertex_for(pi, poly[0]);
+      for (int i = 1; i + 1 < poly.size(); ++i) {
+        const std::uint32_t i1 = vertex_for(pi, poly[i]);
+        const std::uint32_t i2 = vertex_for(pi, poly[i + 1]);
+        out.push_back(i0);
+        out.push_back(i1);
+        out.push_back(i2);
+      }
+    }
+  }
+
+  QVector<std::uint32_t> indices;
+  QVector<ModelSurface> surfaces;
+
+  for (const QString& surf : surface_order) {
+    const QVector<std::uint32_t> tri = indices_by_surface.value(surf);
+    if (tri.isEmpty()) {
+      continue;
+    }
+    const int first = indices.size();
+    indices += tri;
+
+    ModelSurface s;
+    s.name = surf;
+    s.shader = surf;
+    s.first_index = first;
+    s.index_count = indices.size() - first;
+    surfaces.push_back(std::move(s));
+  }
+
+  if (vertices.isEmpty() || indices.isEmpty()) {
+    if (error) {
+      *error = "LWO contains no drawable geometry.";
+    }
+    return std::nullopt;
+  }
+
+  if (surfaces.isEmpty()) {
+    surfaces = {ModelSurface{QString("model"), QString(), 0, static_cast<int>(indices.size())}};
+  }
+
+  LoadedModel out;
+  out.format = "lwo";
+  out.frame_count = 1;
+  out.surface_count = std::max(1, static_cast<int>(surfaces.size()));
+  out.mesh.vertices = std::move(vertices);
+  out.mesh.indices = std::move(indices);
+  out.surfaces = std::move(surfaces);
+  compute_smooth_normals(&out.mesh);
+  compute_bounds(&out.mesh);
+  return out;
+}
 }  // namespace
 
 std::optional<LoadedModel> load_model_file(const QString& file_path, QString* error) {
@@ -1953,6 +3013,14 @@ std::optional<LoadedModel> load_model_file(const QString& file_path, QString* er
   }
   if (ext == "md5mesh") {
     return load_md5mesh(info.absoluteFilePath(), error);
+  }
+  if (ext == "obj") {
+    // Wavefront OBJ
+    return load_obj(info.absoluteFilePath(), error);
+  }
+  if (ext == "lwo") {
+    // LightWave Object (LWO2/LWO3)
+    return load_lwo(info.absoluteFilePath(), error);
   }
 
   if (error) {

@@ -6,6 +6,7 @@
 #include <QVector>
 
 #include "archive/archive_entry.h"
+#include "archive/dir_archive.h"
 #include "pak/pak_archive.h"
 #include "wad/wad_archive.h"
 #include "zip/zip_archive.h"
@@ -14,6 +15,7 @@ class Archive {
 public:
   enum class Format {
     Unknown = 0,
+    Directory,
     Pak,
     Wad,
     Zip,
@@ -40,6 +42,7 @@ private:
   bool quakelive_encrypted_pk3_ = false;
   QString path_;
   QString readable_path_;
+  DirArchive dir_;
   PakArchive pak_;
   WadArchive wad_;
   ZipArchive zip_;

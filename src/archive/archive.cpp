@@ -17,6 +17,8 @@ const QVector<ArchiveEntry>& Archive::entries() const {
 		return kEmpty;
 	}
 	switch (format_) {
+		case Format::Directory:
+			return dir_.entries();
 		case Format::Pak:
 			return pak_.entries();
 		case Format::Wad:
@@ -41,9 +43,25 @@ bool Archive::load(const QString& path, QString* error) {
 	readable_path_.clear();
 
 	const QString abs = QFileInfo(path).absoluteFilePath();
-	if (abs.isEmpty() || !QFileInfo::exists(abs)) {
+	const QFileInfo info(abs);
+	if (abs.isEmpty() || !info.exists()) {
 		if (error) {
 			*error = "Archive file not found.";
+		}
+		return false;
+	}
+
+	if (info.isDir()) {
+		QString err;
+		if (dir_.load(abs, &err)) {
+			loaded_ = true;
+			format_ = Format::Directory;
+			path_ = abs;
+			readable_path_ = abs;
+			return true;
+		}
+		if (error) {
+			*error = err.isEmpty() ? "Unable to open folder." : err;
 		}
 		return false;
 	}
@@ -122,6 +140,8 @@ bool Archive::read_entry_bytes(const QString& name, QByteArray* out, QString* er
 		return false;
 	}
 	switch (format_) {
+		case Format::Directory:
+			return dir_.read_entry_bytes(name, out, error, max_bytes);
 		case Format::Pak:
 			return pak_.read_entry_bytes(name, out, error, max_bytes);
 		case Format::Wad:
@@ -149,6 +169,8 @@ bool Archive::extract_entry_to_file(const QString& name, const QString& dest_pat
 		return false;
 	}
 	switch (format_) {
+		case Format::Directory:
+			return dir_.extract_entry_to_file(name, dest_path, error);
 		case Format::Pak:
 			return pak_.extract_entry_to_file(name, dest_path, error);
 		case Format::Wad:

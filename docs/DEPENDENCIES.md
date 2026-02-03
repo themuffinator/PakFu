@@ -9,7 +9,7 @@
   - Network
   - Widgets
   - OpenGL (Qt OpenGL helpers)
-  - OpenGLWidgets (model preview: MDL/MD2/MD3/IQM/MD5)
+  - OpenGLWidgets (model preview: MDL/MD2/MD3/IQM/MD5/LWO/OBJ)
   - Multimedia (audio playback: WAV/MP3/Ogg Vorbis, via platform codecs)
 
 ## Planned / Optional

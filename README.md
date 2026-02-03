@@ -19,12 +19,41 @@ This project is still training under the waterfall 💦🥋 (early development).
   - Images: `pcx`, `wal`, `mip`, `dds`, `lmp`, `png`, `tga`, `jpg` 🖼️🎨
   - Audio: `wav`, `ogg`, `mp3` 🔊🎶
   - Video: `cin`, `roq` 🎞️🍿
-  - Models: `mdl`, `md2`, `md3`, `iqm`, `md5mesh` 🧊🧩
+  - Models: `mdl`, `md2`, `md3`, `iqm`, `md5mesh`, `lwo`, `obj` 🧊🧩
   - Maps: `bsp` (Quake/Quake II/Quake III/Quake Live) 🗺️🧭
   - Text/config: `cfg` and similar plain-text formats 🧾🖋️
 - Stay responsive for large archives (no freezing in the middle of a roundhouse kick) 🥶➡️🥋
 - Guard official game archives with a default-on Pure PAK Protector preference 🛡️📦
 - Keep C++ code clean, portable, and documented (minimal OS-specific sorcery) 🧠🧹🧾
+
+## PK3 / PK4 / PKZ Support (ZIP packs) 📦🧨
+PakFu treats `*.pk3`, `*.pk4`, and `*.pkz` as **ZIP-based packs** (same container, different extension).
+
+Common conventions:
+- `*.pk3`: id Tech 3 packs (Quake III Arena / Quake Live, etc.)
+- `*.pk4`: id Tech 4 packs (Doom 3 / Quake 4, etc.)
+- `*.pkz`: ZIP-based packs used by some games/mods (handled like PK3/ZIP)
+
+These packs are supported anywhere PakFu supports ZIP:
+
+- **Open/browse/preview/extract** in the GUI
+- **List/info/extract** in the CLI (`--cli`)
+- **Rebuild/write** via **File → Save / Save As…** (uses a vendored `miniz` backend)
+
+```sh
+./build/src/pakfu --cli --info path/to/archive.pk3
+./build/src/pakfu --cli --list path/to/archive.pk4
+./build/src/pakfu --cli --extract -o out_dir path/to/archive.pkz
+```
+
+### Quake Live Beta (QL BETA) encrypted PK3 (encode/decode) 🔐
+Quake Live **Beta** used an XOR-obfuscated PK3. PakFu can transparently **decode** these when reading, and can **encode** them when writing:
+
+- **Auto-detect on open**: if a `*.pk3` looks like a Quake Live Beta encrypted ZIP header, PakFu decodes it to a temporary ZIP for reading/listing/extraction.
+  - CLI tip: `--cli --info` prints `Quake Live encrypted PK3: yes` when detected.
+- **Decode (encrypted → normal PK3)**: open the encrypted `*.pk3`, then **File → Save As… → `PK3 (ZIP) (*.pk3)`**
+- **Encode (normal → QL Beta encrypted PK3)**: open any ZIP-based pack, then **File → Save As… → `PK3 (Quake Live encrypted) (*.pk3)`**
+- **Note**: encode/decode is the same XOR stream operation (historical obfuscation, not real security).
 
 ## The Forbidden Techniques (Non-Goals... for now) 🙅‍♂️⛔
 - Deep editing of complex proprietary binary formats 🧟‍♂️📦
@@ -75,6 +104,12 @@ meson compile -C build
 ```
 
 ## Run (GUI or CLI) 🏃‍♂️💨
+
+### GUI 🪟
+- Use **File → Open Archive…** or **File → Open Folder…** (opens in a tab).
+
+### CLI 🧑‍💻
+- Most archive actions also work on folders (pass a directory path instead of an archive file).
 
 ## Game Sets 🎮🧾
 PakFu uses **Game Sets** to store per-game defaults:
