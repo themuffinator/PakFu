@@ -29,6 +29,7 @@ class PreviewPane : public QWidget {
 public:
 	enum class TextSyntax {
 		None,
+		C,
 		Cfg,
 		Json,
 		QuakeTxtBlocks,
@@ -45,6 +46,7 @@ public:
 	void show_placeholder();
 	void show_message(const QString& title, const QString& body);
 	void show_text(const QString& title, const QString& subtitle, const QString& text);
+	void show_c(const QString& title, const QString& subtitle, const QString& text);
 	void show_txt(const QString& title, const QString& subtitle, const QString& text);
 	void show_cfg(const QString& title, const QString& subtitle, const QString& text);
 	void show_json(const QString& title, const QString& subtitle, const QString& text);

@@ -515,6 +515,20 @@ void PreviewPane::show_text(const QString& title, const QString& subtitle, const
 	}
 }
 
+void PreviewPane::show_c(const QString& title, const QString& subtitle, const QString& text) {
+	stop_audio_playback();
+	stop_cinematic_playback();
+	stop_model_preview();
+	set_text_highlighter(TextSyntax::C);
+	set_header(title, subtitle);
+	if (text_view_) {
+		text_view_->setPlainText(text);
+	}
+	if (stack_ && text_page_) {
+		stack_->setCurrentWidget(text_page_);
+	}
+}
+
 void PreviewPane::show_txt(const QString& title, const QString& subtitle, const QString& text) {
 	stop_audio_playback();
 	stop_cinematic_playback();
@@ -585,6 +599,9 @@ void PreviewPane::set_text_highlighter(TextSyntax syntax) {
 
 	switch (syntax) {
 		case TextSyntax::None:
+			return;
+		case TextSyntax::C:
+			text_highlighter_ = std::make_unique<SimpleSyntaxHighlighter>(SimpleSyntaxHighlighter::Mode::C, text_view_->document());
 			return;
 		case TextSyntax::Cfg:
 			text_highlighter_ = std::make_unique<CfgSyntaxHighlighter>(text_view_->document());

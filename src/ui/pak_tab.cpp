@@ -741,7 +741,7 @@ bool is_model_file_name(const QString& name) {
 bool is_text_file_name(const QString& name) {
   const QString ext = file_ext_lower(name);
   static const QSet<QString> kTextExts = {
-    "cfg", "txt", "log", "md", "ini", "json", "xml", "shader", "menu", "script"
+    "cfg", "txt", "log", "md", "ini", "json", "xml", "shader", "menu", "script", "c", "h"
   };
   return kTextExts.contains(ext);
 }
@@ -5334,6 +5334,8 @@ void PakTab::update_preview() {
       preview_->show_cfg(leaf, sub, text);
     } else if (ext == "json") {
       preview_->show_json(leaf, sub, text);
+    } else if (ext == "c" || ext == "h") {
+      preview_->show_c(leaf, sub, text);
     } else if (ext == "txt") {
       preview_->show_txt(leaf, sub, text);
     } else if (ext == "menu") {
