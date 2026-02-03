@@ -6,7 +6,8 @@
 #include <QSettings>
 
 namespace {
-constexpr char kStateKey[] = "gameSets/stateJson";
+constexpr char kStateKey[] = "gameInstalls/stateJson";
+constexpr char kLegacyStateKey[] = "gameSets/stateJson";
 constexpr int kStateVersion = 1;
 
 QString normalize_json_string(const QByteArray& bytes) {
@@ -172,7 +173,14 @@ GameSetState load_game_set_state(QString* error) {
   }
 
   QSettings settings;
-  const QString raw = settings.value(kStateKey).toString().trimmed();
+  QString raw = settings.value(kStateKey).toString().trimmed();
+  bool migrated = false;
+  if (raw.isEmpty()) {
+    raw = settings.value(kLegacyStateKey).toString().trimmed();
+    if (!raw.isEmpty()) {
+      migrated = true;
+    }
+  }
   if (raw.isEmpty()) {
     return {};
   }
@@ -217,6 +225,9 @@ GameSetState load_game_set_state(QString* error) {
     out.sets.push_back(set);
   }
 
+  if (migrated) {
+    (void)save_game_set_state(out);
+  }
   return out;
 }
 

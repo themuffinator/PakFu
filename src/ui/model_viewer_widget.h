@@ -62,6 +62,7 @@ private:
   void upload_textures_if_possible();
   void destroy_gl_resources();
   void ensure_program();
+  void update_ground_mesh_if_needed();
 
   std::optional<LoadedModel> model_;
   bool pending_upload_ = false;
@@ -69,10 +70,15 @@ private:
   QOpenGLShaderProgram program_;
   QOpenGLBuffer vbo_{QOpenGLBuffer::VertexBuffer};
   QOpenGLBuffer ibo_{QOpenGLBuffer::IndexBuffer};
+  QOpenGLBuffer ground_vbo_{QOpenGLBuffer::VertexBuffer};
+  QOpenGLBuffer ground_ibo_{QOpenGLBuffer::IndexBuffer};
   QOpenGLVertexArrayObject vao_;
   bool gl_ready_ = false;
   int index_count_ = 0;
   GLenum index_type_ = GL_UNSIGNED_INT;
+  int ground_index_count_ = 0;
+  float ground_extent_ = 0.0f;
+  float ground_z_ = 0.0f;
   QVector<DrawSurface> surfaces_;
   GLuint texture_id_ = 0;
   bool has_texture_ = false;

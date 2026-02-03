@@ -41,7 +41,7 @@ void GameSetEditorDialog::build_ui() {
   layout->setContentsMargins(18, 16, 18, 16);
   layout->setSpacing(12);
 
-  auto* title = new QLabel("Game Set", this);
+  auto* title = new QLabel("Installation", this);
   QFont title_font = title->font();
   title_font.setPointSize(title_font.pointSize() + 4);
   title_font.setWeight(QFont::DemiBold);
@@ -373,7 +373,7 @@ bool GameSetEditorDialog::validate_and_apply() {
   const QString palette = palette_from_combo();
 
   if (name.isEmpty()) {
-    QMessageBox::warning(this, "Game Set", "Name cannot be empty.");
+    QMessageBox::warning(this, "Installation", "Name cannot be empty.");
     return false;
   }
 
@@ -383,7 +383,7 @@ bool GameSetEditorDialog::validate_and_apply() {
     }
     const QFileInfo info(dir);
     if (!info.exists() || !info.isDir()) {
-      QMessageBox::warning(this, "Game Set", QString("%1 is not a valid directory:\n%2").arg(label, dir));
+      QMessageBox::warning(this, "Installation", QString("%1 is not a valid directory:\n%2").arg(label, dir));
       return false;
     }
     return true;
@@ -395,7 +395,7 @@ bool GameSetEditorDialog::validate_and_apply() {
     }
     const QFileInfo info(file);
     if (!info.exists() || !info.isFile()) {
-      QMessageBox::warning(this, "Game Set", QString("%1 is not a valid file:\n%2").arg(label, file));
+      QMessageBox::warning(this, "Installation", QString("%1 is not a valid file:\n%2").arg(label, file));
       return false;
     }
     return true;

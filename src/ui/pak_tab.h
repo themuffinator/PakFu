@@ -70,6 +70,9 @@ public:
   QString load_error() const { return load_error_; }
   bool is_dirty() const { return dirty_; }
   bool save(QString* error);
+  QString current_prefix() const;
+  QString selected_pak_path(bool* is_dir) const;
+  void restore_workspace(const QString& dir_prefix, const QString& selected_path);
   struct SaveOptions {
     // When saving as a ZIP-based archive, optionally encrypt using Quake Live Beta PK3 XOR.
     bool quakelive_encrypt_pk3 = false;
@@ -101,6 +104,7 @@ private:
   void build_ui();
   void load_archive();
   void set_current_dir(const QStringList& parts);
+  void select_path(const QString& pak_path);
   void refresh_listing();
   void update_preview();
 	void select_adjacent_audio(int delta);
@@ -141,7 +145,6 @@ private:
   bool add_file_mapping(const QString& pak_name, const QString& source_path, QString* error);
   bool write_pak_file(const QString& dest_path, QString* error);
   bool write_zip_file(const QString& dest_path, bool quakelive_encrypt_pk3, QString* error);
-  QString current_prefix() const;
   void set_dirty(bool dirty);
 
   void set_view_mode(ViewMode mode);
@@ -151,7 +154,6 @@ private:
   void stop_thumbnail_generation();
   void queue_thumbnail(const QString& pak_path, const QString& leaf, const QString& source_path, qint64 size, const QSize& icon_size);
 
-  QString selected_pak_path(bool* is_dir) const;
   QVector<QPair<QString, bool>> selected_items() const;
   void rebuild_added_index();
   void remove_added_file_by_name(const QString& pak_name);

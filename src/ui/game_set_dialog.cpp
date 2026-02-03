@@ -54,14 +54,14 @@ GameSetDialog::GameSetDialog(QWidget* parent) : QDialog(parent) {
 
 void GameSetDialog::build_ui() {
   setModal(true);
-  setWindowTitle("Game Sets");
+  setWindowTitle("Installations");
   resize(760, 520);
 
   auto* layout = new QVBoxLayout(this);
   layout->setContentsMargins(18, 16, 18, 16);
   layout->setSpacing(12);
 
-  auto* title = new QLabel("Choose a Game Set", this);
+  auto* title = new QLabel("Choose an Installation", this);
   QFont title_font = title->font();
   title_font.setPointSize(title_font.pointSize() + 6);
   title_font.setWeight(QFont::DemiBold);
@@ -69,7 +69,7 @@ void GameSetDialog::build_ui() {
   layout->addWidget(title);
 
   hint_label_ = new QLabel(
-    "Game Sets hold per-game defaults (directories, palettes, launch settings). "
+    "Installations hold per-game defaults (directories, palettes, launch settings). "
     "Add one, or auto-detect installs (Steam, then GOG.com, then EOS), then select a game to continue.",
     this);
   hint_label_->setWordWrap(true);
@@ -120,14 +120,14 @@ void GameSetDialog::load_state() {
   QString err;
   state_ = load_game_set_state(&err);
   if (!err.isEmpty()) {
-    QMessageBox::warning(this, "Game Sets", err);
+    QMessageBox::warning(this, "Installations", err);
   }
 }
 
 void GameSetDialog::save_state_or_warn() {
   QString err;
   if (!save_game_set_state(state_, &err)) {
-    QMessageBox::warning(this, "Game Sets", err.isEmpty() ? "Failed to save game sets." : err);
+    QMessageBox::warning(this, "Installations", err.isEmpty() ? "Failed to save installations." : err);
   }
 }
 
@@ -197,7 +197,7 @@ void GameSetDialog::update_ui_state() {
 void GameSetDialog::add_game_set() {
   GameSet set = make_new_game_set_template();
   GameSetEditorDialog editor(set, this);
-  editor.setWindowTitle("Add Game Set");
+  editor.setWindowTitle("Add Installation");
   if (editor.exec() != QDialog::Accepted) {
     return;
   }
@@ -216,7 +216,7 @@ void GameSetDialog::configure_game_set() {
     return;
   }
   GameSetEditorDialog editor(*current, this);
-  editor.setWindowTitle("Configure Game Set");
+  editor.setWindowTitle("Configure Installation");
   if (editor.exec() != QDialog::Accepted) {
     return;
   }
@@ -235,8 +235,8 @@ void GameSetDialog::remove_game_set() {
   const GameSet* set = find_game_set(state_, uid);
   const QString name = set ? set->name : QString();
   const auto reply =
-    QMessageBox::question(this, "Remove Game Set",
-                          name.isEmpty() ? "Remove selected game set?" : QString("Remove \"%1\"?").arg(name));
+    QMessageBox::question(this, "Remove Installation",
+                          name.isEmpty() ? "Remove selected installation?" : QString("Remove \"%1\"?").arg(name));
   if (reply != QMessageBox::Yes) {
     return;
   }

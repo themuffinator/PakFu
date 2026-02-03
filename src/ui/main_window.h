@@ -41,6 +41,7 @@ private:
   void create_new_pak();
   void open_pak_dialog();
   void open_pak(const QString& path);
+  PakTab* open_pak_internal(const QString& path, bool allow_auto_select, bool add_recent);
   void save_current();
   void save_current_as();
   void open_preferences();
@@ -62,6 +63,9 @@ private:
   void clear_recent_files();
   void rebuild_recent_files_menu();
   QString default_directory_for_dialogs() const;
+  void save_workspace_for_current_install();
+  void restore_workspace_for_install(const QString& uid);
+  void clear_archive_tabs();
 
   GameSetState game_sets_;
   GameSet game_set_;
@@ -84,6 +88,7 @@ private:
   QAction* preferences_action_ = nullptr;
   QAction* exit_action_ = nullptr;
   QMenu* recent_files_menu_ = nullptr;
+  bool restoring_workspace_ = false;
   bool schedule_updates_ = true;
   int untitled_counter_ = 1;
 };

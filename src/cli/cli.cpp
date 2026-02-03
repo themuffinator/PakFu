@@ -160,13 +160,21 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   const QCommandLineOption info_option({"i", "info"}, "Show archive summary information.");
   const QCommandLineOption extract_option({"x", "extract"}, "Extract archive contents.");
   const QCommandLineOption check_updates_option("check-updates", "Check GitHub for new releases.");
-  const QCommandLineOption list_game_sets_option("list-game-sets", "List configured Game Sets.");
+  const QCommandLineOption list_game_sets_option("list-game-sets", "List configured installations (legacy option).");
+  const QCommandLineOption list_game_installs_option("list-game-installs", "List configured installations.");
   const QCommandLineOption auto_detect_game_sets_option(
     "auto-detect-game-sets",
-    "Auto-detect supported games (Steam → GOG.com → EOS) and create/update Game Sets.");
+    "Auto-detect supported games (Steam → GOG.com → EOS) and create/update installations (legacy option).");
+  const QCommandLineOption auto_detect_game_installs_option(
+    "auto-detect-game-installs",
+    "Auto-detect supported games (Steam → GOG.com → EOS) and create/update installations.");
   const QCommandLineOption select_game_set_option(
     "select-game-set",
-    "Select the active Game Set (by UID, game key, or name).",
+    "Select the active installation (by UID, game key, or name) (legacy option).",
+    "selector");
+  const QCommandLineOption select_game_install_option(
+    "select-game-install",
+    "Select the active installation (by UID, game key, or name).",
     "selector");
   const QCommandLineOption update_repo_option(
     "update-repo",
@@ -187,8 +195,11 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   parser.addOption(extract_option);
   parser.addOption(check_updates_option);
   parser.addOption(list_game_sets_option);
+  parser.addOption(list_game_installs_option);
   parser.addOption(auto_detect_game_sets_option);
+  parser.addOption(auto_detect_game_installs_option);
   parser.addOption(select_game_set_option);
+  parser.addOption(select_game_install_option);
   parser.addOption(update_repo_option);
   parser.addOption(update_channel_option);
   parser.addOption(output_option);
@@ -219,9 +230,12 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   options.info = parser.isSet(info_option);
   options.extract = parser.isSet(extract_option);
   options.check_updates = parser.isSet(check_updates_option);
-  options.list_game_sets = parser.isSet(list_game_sets_option);
-  options.auto_detect_game_sets = parser.isSet(auto_detect_game_sets_option);
+  options.list_game_sets = parser.isSet(list_game_sets_option) || parser.isSet(list_game_installs_option);
+  options.auto_detect_game_sets = parser.isSet(auto_detect_game_sets_option) || parser.isSet(auto_detect_game_installs_option);
   options.select_game_set = parser.value(select_game_set_option);
+  if (options.select_game_set.isEmpty()) {
+    options.select_game_set = parser.value(select_game_install_option);
+  }
   options.output_dir = parser.value(output_option);
   options.update_repo = parser.value(update_repo_option);
   options.update_channel = parser.value(update_channel_option);

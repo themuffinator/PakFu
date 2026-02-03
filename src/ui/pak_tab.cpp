@@ -1826,6 +1826,102 @@ QString PakTab::selected_pak_path(bool* is_dir) const {
   return r.isEmpty() ? try_icons() : r;
 }
 
+void PakTab::restore_workspace(const QString& dir_prefix, const QString& selected_path) {
+  if (!loaded_) {
+    return;
+  }
+
+  QString prefix = normalize_pak_path(dir_prefix);
+  if (prefix.isEmpty() && !selected_path.isEmpty()) {
+    const QString sel = normalize_pak_path(selected_path);
+    const int slash = sel.lastIndexOf('/');
+    if (slash >= 0) {
+      prefix = sel.left(slash + 1);
+    }
+  }
+  if (prefix.endsWith('/')) {
+    prefix.chop(1);
+  }
+
+  QStringList parts;
+  if (!prefix.isEmpty()) {
+    parts = prefix.split('/', Qt::SkipEmptyParts);
+  }
+  set_current_dir(parts);
+
+  const QString sel = normalize_pak_path(selected_path);
+  if (!sel.isEmpty()) {
+    QTimer::singleShot(0, this, [this, sel]() { select_path(sel); });
+  }
+}
+
+void PakTab::select_path(const QString& pak_path) {
+  if (!loaded_) {
+    return;
+  }
+  const QString want = normalize_pak_path(pak_path);
+  if (want.isEmpty()) {
+    return;
+  }
+
+  auto select_in_details = [&]() -> bool {
+    if (!details_view_) {
+      return false;
+    }
+    for (int i = 0; i < details_view_->topLevelItemCount(); ++i) {
+      QTreeWidgetItem* item = details_view_->topLevelItem(i);
+      if (!item) {
+        continue;
+      }
+      const QString stored = item->data(0, kRolePakPath).toString();
+      if (!stored.isEmpty() && normalize_pak_path(stored) == want) {
+        details_view_->setCurrentItem(item);
+        item->setSelected(true);
+        details_view_->scrollToItem(item);
+        return true;
+      }
+    }
+    return false;
+  };
+
+  auto select_in_icons = [&]() -> bool {
+    if (!icon_view_) {
+      return false;
+    }
+    for (int i = 0; i < icon_view_->count(); ++i) {
+      QListWidgetItem* item = icon_view_->item(i);
+      if (!item) {
+        continue;
+      }
+      const QString stored = item->data(kRolePakPath).toString();
+      if (!stored.isEmpty() && normalize_pak_path(stored) == want) {
+        icon_view_->setCurrentItem(item);
+        item->setSelected(true);
+        icon_view_->scrollToItem(item);
+        return true;
+      }
+    }
+    return false;
+  };
+
+  if (view_stack_ && view_stack_->currentWidget() == details_view_) {
+    if (!select_in_details()) {
+      (void)select_in_icons();
+    }
+    return;
+  }
+  if (view_stack_ && view_stack_->currentWidget() == icon_view_) {
+    if (!select_in_icons()) {
+      (void)select_in_details();
+    }
+    return;
+  }
+
+  if (!select_in_details()) {
+    (void)select_in_icons();
+  }
+}
+
 QVector<QPair<QString, bool>> PakTab::selected_items() const {
   QVector<QPair<QString, bool>> out;
   if (!loaded_) {
