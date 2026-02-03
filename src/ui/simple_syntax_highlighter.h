@@ -8,6 +8,7 @@ class SimpleSyntaxHighlighter final : public QSyntaxHighlighter {
 public:
   enum class Mode {
     Json,
+    QuakeTxtBlocks,
     Quake3Menu,
     Quake3Shader,
   };
@@ -32,4 +33,3 @@ private:
   Formats formats_;
   QSet<QString> keywords_;
 };
-

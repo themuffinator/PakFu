@@ -50,6 +50,14 @@ QString clean_path(const QString& path) {
   return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
 }
 
+// ROQ chunk sizes are commonly treated as 24-bit little-endian in idTech3 (the 4th byte is unused/reserved).
+[[nodiscard]] quint32 read_u24_le_from(const char* b) {
+  const quint32 b0 = static_cast<quint8>(b[0]);
+  const quint32 b1 = static_cast<quint8>(b[1]);
+  const quint32 b2 = static_cast<quint8>(b[2]);
+  return b0 | (b1 << 8) | (b2 << 16);
+}
+
 [[nodiscard]] bool read_exact(QFile& f, qint64 n, QByteArray* out) {
   if (out) {
     out->clear();
@@ -83,21 +91,29 @@ QString clean_path(const QString& path) {
 }
 
 struct YuvTables {
-  int r_add_v[256]{};
-  int g_add_u[256]{};
-  int g_add_v[256]{};
-  int b_add_u[256]{};
+  int yy[256]{};
+  int ub[256]{};
+  int vr[256]{};
+  int ug[256]{};
+  int vg[256]{};
 };
 
 const YuvTables& yuv_tables() {
   static const YuvTables tables = []() {
     YuvTables t;
     for (int i = 0; i < 256; ++i) {
-      const int d = i - 128;
-      t.r_add_v[i] = (1436 * d) >> 10;
-      t.g_add_v[i] = (731 * d) >> 10;
-      t.g_add_u[i] = (352 * d) >> 10;
-      t.b_add_u[i] = (1815 * d) >> 10;
+      // Match Quake III's ROQ YUV tables (see ROQ_GenYUVTables in cl_cin.c).
+      const float t_ub = (1.77200f / 2.0f) * static_cast<float>(1 << 6) + 0.5f;
+      const float t_vr = (1.40200f / 2.0f) * static_cast<float>(1 << 6) + 0.5f;
+      const float t_ug = (0.34414f / 2.0f) * static_cast<float>(1 << 6) + 0.5f;
+      const float t_vg = (0.71414f / 2.0f) * static_cast<float>(1 << 6) + 0.5f;
+
+      const float x = static_cast<float>(2 * i - 255);
+      t.ub[i] = static_cast<int>((t_ub * x) + (1 << 5));
+      t.vr[i] = static_cast<int>((t_vr * x) + (1 << 5));
+      t.ug[i] = static_cast<int>((-t_ug * x));
+      t.vg[i] = static_cast<int>((-t_vg * x) + (1 << 5));
+      t.yy[i] = (i << 6) | (i >> 2);
     }
     return t;
   }();
@@ -106,12 +122,12 @@ const YuvTables& yuv_tables() {
 
 [[nodiscard]] QRgb yuv_to_rgb(quint8 y, quint8 u, quint8 v) {
   const YuvTables& t = yuv_tables();
-  const int yy = static_cast<int>(y);
+  const int yy = t.yy[y];
 
-  // Full-range (JPEG) YUV -> RGB.
-  const int r = yy + t.r_add_v[v];
-  const int g = yy - t.g_add_u[u] - t.g_add_v[v];
-  const int b = yy + t.b_add_u[u];
+  // Match Quake III's yuv_to_rgb24 (cl_cin.c), with u=Cb, v=Cr.
+  const int r = (yy + t.vr[v]) >> 6;
+  const int g = (yy + t.ug[u] + t.vg[v]) >> 6;
+  const int b = (yy + t.ub[u]) >> 6;
 
   return qRgba(clamp_u8(r), clamp_u8(g), clamp_u8(b), 255);
 }
@@ -730,7 +746,7 @@ bool RoqCinematicDecoder::read_next_chunk(quint16* type, quint32* size, quint16*
       packet_pos_ += kRoqPreambleSize;
 
       const quint16 t = read_u16_le_from(pre);
-      const quint32 s = read_u32_le_from(pre + 2);
+      const quint32 s = read_u24_le_from(pre + 2);
       const quint16 a = read_u16_le_from(pre + 6);
 
       const qint64 remaining = static_cast<qint64>(packet_bytes_.size()) - packet_pos_;
@@ -766,7 +782,7 @@ bool RoqCinematicDecoder::read_next_chunk(quint16* type, quint32* size, quint16*
     }
 
     const quint16 t = read_u16_le_from(pre.constData());
-    const quint32 s = read_u32_le_from(pre.constData() + 2);
+    const quint32 s = read_u24_le_from(pre.constData() + 2);
     const quint16 a = read_u16_le_from(pre.constData() + 6);
 
     const qint64 remaining = file_.size() - file_.pos();

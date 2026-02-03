@@ -16,6 +16,7 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTimer>
+#include <QThread>
 #include <QTextStream>
 #include <QToolButton>
 #include <QWidget>
@@ -176,16 +177,28 @@ QByteArray build_ipc_payload(const QStringList& paths, bool focus) {
 }
 
 bool send_ipc_payload(const QString& server_name, const QByteArray& payload) {
-  QLocalSocket socket;
-  socket.connectToServer(server_name, QIODevice::WriteOnly);
-  if (!socket.waitForConnected(100)) {
-    return false;
+  // Be tolerant of slow startup or temporary contention so we don't accidentally
+  // spawn a second UI window when an instance is already running.
+  for (int attempt = 0; attempt < 6; ++attempt) {
+    QLocalSocket socket;
+    socket.connectToServer(server_name, QIODevice::WriteOnly);
+    const int connect_ms = 400 + attempt * 400;
+    if (!socket.waitForConnected(connect_ms)) {
+      QThread::msleep(50);
+      continue;
+    }
+
+    const qint64 wrote = socket.write(payload);
+    socket.flush();
+    const bool ok = (wrote == payload.size()) && socket.waitForBytesWritten(1200);
+    socket.disconnectFromServer();
+    if (ok) {
+      return true;
+    }
+
+    QThread::msleep(50);
   }
-  socket.write(payload);
-  socket.flush();
-  (void)socket.waitForBytesWritten(200);
-  socket.disconnectFromServer();
-  return true;
+  return false;
 }
 
 bool should_check_updates() {

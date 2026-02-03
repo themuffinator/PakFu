@@ -42,9 +42,19 @@ private:
     float u, v;
   };
 
+  struct DrawSurface {
+    int first_index = 0;
+    int index_count = 0;
+    QString shader_hint;
+    QString shader_leaf;
+    QImage image;
+    GLuint texture_id = 0;
+    bool has_texture = false;
+  };
+
   void reset_camera_from_mesh();
   void upload_mesh_if_possible();
-  void upload_texture_if_possible();
+  void upload_textures_if_possible();
   void destroy_gl_resources();
   void ensure_program();
 
@@ -58,6 +68,7 @@ private:
   bool gl_ready_ = false;
   int index_count_ = 0;
   GLenum index_type_ = GL_UNSIGNED_INT;
+  QVector<DrawSurface> surfaces_;
   GLuint texture_id_ = 0;
   bool has_texture_ = false;
   bool pending_texture_upload_ = false;

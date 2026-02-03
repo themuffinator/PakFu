@@ -103,6 +103,9 @@ SimpleSyntaxHighlighter::SimpleSyntaxHighlighter(Mode mode, QTextDocument* paren
     case Mode::Json:
       keywords_ = QSet<QString>{"true", "false", "null"};
       break;
+    case Mode::QuakeTxtBlocks:
+      keywords_.clear();
+      break;
     case Mode::Quake3Menu:
       keywords_ = quake3_menu_keywords();
       break;
@@ -141,6 +144,19 @@ void SimpleSyntaxHighlighter::highlightBlock(const QString& text) {
 
   const bool allow_comments = (mode_ != Mode::Json);
   int state = previousBlockState();
+  const bool quake_txt = (mode_ == Mode::QuakeTxtBlocks);
+
+  if (quake_txt) {
+    int j = 0;
+    while (j < n && text[j].isSpace()) {
+      ++j;
+    }
+    if (j < n && (text[j] == u';' || text[j] == u'#')) {
+      setFormat(j, n - j, formats_.comment);
+      setCurrentBlockState(0);
+      return;
+    }
+  }
 
   // Block comment continuation.
   if (allow_comments && state == 1) {
@@ -156,6 +172,7 @@ void SimpleSyntaxHighlighter::highlightBlock(const QString& text) {
   }
 
   setCurrentBlockState(0);
+  bool quake_txt_key_done = false;
 
   auto is_punct = [](QChar c) -> bool {
     switch (c.unicode()) {
@@ -175,6 +192,15 @@ void SimpleSyntaxHighlighter::highlightBlock(const QString& text) {
 
   while (i < n) {
     const QChar c = text[i];
+
+    if (quake_txt && (c == u';' || c == u'#')) {
+      // Treat ';' and '#' as line comments when preceded by whitespace (Quake-style loose text/INI-ish).
+      const bool preceded_by_space = (i == 0) || text[i - 1].isSpace();
+      if (preceded_by_space) {
+        setFormat(i, n - i, formats_.comment);
+        break;
+      }
+    }
 
     if (allow_comments && c == u'/' && i + 1 < n) {
       const QChar n1 = text[i + 1];
@@ -282,6 +308,21 @@ void SimpleSyntaxHighlighter::highlightBlock(const QString& text) {
         ++i;
       }
       const QString token = text.mid(start, i - start).toLower();
+      if (quake_txt && !quake_txt_key_done) {
+        bool only_ws_or_braces = true;
+        for (int k = 0; k < start; ++k) {
+          const QChar pc = text[k];
+          if (!(pc.isSpace() || pc == u'{' || pc == u'}')) {
+            only_ws_or_braces = false;
+            break;
+          }
+        }
+        if (only_ws_or_braces) {
+          setFormat(start, i - start, formats_.key);
+          quake_txt_key_done = true;
+          continue;
+        }
+      }
       if (keywords_.contains(token)) {
         setFormat(start, i - start, formats_.keyword);
       }
@@ -297,4 +338,3 @@ void SimpleSyntaxHighlighter::highlightBlock(const QString& text) {
     ++i;
   }
 }
-

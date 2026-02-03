@@ -515,6 +515,20 @@ void PreviewPane::show_text(const QString& title, const QString& subtitle, const
 	}
 }
 
+void PreviewPane::show_txt(const QString& title, const QString& subtitle, const QString& text) {
+	stop_audio_playback();
+	stop_cinematic_playback();
+	stop_model_preview();
+	set_text_highlighter(TextSyntax::QuakeTxtBlocks);
+	set_header(title, subtitle);
+	if (text_view_) {
+		text_view_->setPlainText(text);
+	}
+	if (stack_ && text_page_) {
+		stack_->setCurrentWidget(text_page_);
+	}
+}
+
 void PreviewPane::show_cfg(const QString& title, const QString& subtitle, const QString& text) {
 	stop_audio_playback();
 	stop_cinematic_playback();
@@ -577,6 +591,9 @@ void PreviewPane::set_text_highlighter(TextSyntax syntax) {
 			return;
 		case TextSyntax::Json:
 			text_highlighter_ = std::make_unique<SimpleSyntaxHighlighter>(SimpleSyntaxHighlighter::Mode::Json, text_view_->document());
+			return;
+		case TextSyntax::QuakeTxtBlocks:
+			text_highlighter_ = std::make_unique<SimpleSyntaxHighlighter>(SimpleSyntaxHighlighter::Mode::QuakeTxtBlocks, text_view_->document());
 			return;
 		case TextSyntax::Quake3Menu:
 			text_highlighter_ = std::make_unique<SimpleSyntaxHighlighter>(SimpleSyntaxHighlighter::Mode::Quake3Menu, text_view_->document());

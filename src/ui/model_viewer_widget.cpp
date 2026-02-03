@@ -8,6 +8,8 @@
 
 #include <QMatrix4x4>
 #include <QMouseEvent>
+#include <QDir>
+#include <QFileInfo>
 #include <QSurfaceFormat>
 #include <QWheelEvent>
 #include <QDebug>
@@ -220,6 +222,33 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
     return false;
   }
 
+  surfaces_.clear();
+  if (model_->surfaces.isEmpty()) {
+    DrawSurface s;
+    s.first_index = 0;
+    s.index_count = model_->mesh.indices.size();
+    surfaces_.push_back(std::move(s));
+  } else {
+    surfaces_.reserve(model_->surfaces.size());
+    for (const ModelSurface& ms : model_->surfaces) {
+      if (ms.index_count <= 0) {
+        continue;
+      }
+      DrawSurface s;
+      s.first_index = ms.first_index;
+      s.index_count = ms.index_count;
+      s.shader_hint = ms.shader;
+      s.shader_leaf = QFileInfo(ms.shader).fileName();
+      surfaces_.push_back(std::move(s));
+    }
+    if (surfaces_.isEmpty()) {
+      DrawSurface s;
+      s.first_index = 0;
+      s.index_count = model_->mesh.indices.size();
+      surfaces_.push_back(std::move(s));
+    }
+  }
+
   skin_image_ = {};
   has_texture_ = false;
   pending_texture_upload_ = false;
@@ -227,7 +256,65 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
     const ImageDecodeResult decoded = decode_image_file(skin_path, ImageDecodeOptions{});
     if (decoded.ok()) {
       skin_image_ = decoded.image;
+    }
+  }
+
+  const QString model_dir = QFileInfo(file_path).absolutePath();
+  if (!model_dir.isEmpty()) {
+    const QStringList exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "dds"};
+
+    const auto try_find_in_dir = [&](const QString& base_or_file) -> QString {
+      if (base_or_file.isEmpty()) {
+        return {};
+      }
+      const QFileInfo fi(base_or_file);
+      const QString base = fi.completeBaseName();
+      const QString file = fi.fileName();
+      if (!file.isEmpty() && QFileInfo::exists(QDir(model_dir).filePath(file))) {
+        return QDir(model_dir).filePath(file);
+      }
+      if (!base.isEmpty()) {
+        for (const QString& ext : exts) {
+          const QString cand = QDir(model_dir).filePath(QString("%1.%2").arg(base, ext));
+          if (QFileInfo::exists(cand)) {
+            return cand;
+          }
+        }
+      }
+      // Case-insensitive basename match (helps when extracted filenames differ in case).
+      QDir d(model_dir);
+      const QStringList files = d.entryList(QStringList() << "*.png" << "*.tga" << "*.jpg" << "*.jpeg" << "*.pcx" << "*.wal" << "*.dds",
+                                            QDir::Files,
+                                            QDir::Name);
+      for (const QString& f : files) {
+        const QFileInfo cfi(f);
+        if (cfi.completeBaseName().compare(base, Qt::CaseInsensitive) == 0 || f.compare(file, Qt::CaseInsensitive) == 0) {
+          return d.filePath(f);
+        }
+      }
+      return {};
+    };
+
+    for (DrawSurface& s : surfaces_) {
+      if (s.shader_leaf.isEmpty()) {
+        continue;
+      }
+      const QString found = try_find_in_dir(s.shader_leaf);
+      if (found.isEmpty()) {
+        continue;
+      }
+      const ImageDecodeResult decoded = decode_image_file(found, ImageDecodeOptions{});
+      if (decoded.ok()) {
+        s.image = decoded.image;
+      }
+    }
+  }
+
+  pending_texture_upload_ = (!skin_image_.isNull());
+  for (const DrawSurface& s : surfaces_) {
+    if (!s.image.isNull()) {
       pending_texture_upload_ = true;
+      break;
     }
   }
 
@@ -242,6 +329,7 @@ void ModelViewerWidget::unload() {
   model_.reset();
   index_count_ = 0;
   index_type_ = GL_UNSIGNED_INT;
+  surfaces_.clear();
   pending_upload_ = false;
   pending_texture_upload_ = false;
   skin_image_ = {};
@@ -295,18 +383,7 @@ void ModelViewerWidget::paintGL() {
   program_.setUniformValue("uModel", model_m);
   program_.setUniformValue("uLightDir", QVector3D(0.4f, 0.25f, 1.0f));
   program_.setUniformValue("uBaseColor", QVector3D(0.75f, 0.78f, 0.82f));
-  program_.setUniformValue("uHasTex", has_texture_ ? 1 : 0);
   program_.setUniformValue("uTex", 0);
-
-  if (has_texture_ && texture_id_ != 0) {
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, texture_id_);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-  } else {
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glDisable(GL_BLEND);
-  }
 
   if (vao_.isCreated()) {
     vao_.bind();
@@ -324,11 +401,39 @@ void ModelViewerWidget::paintGL() {
     program_.setAttributeBuffer(uv_loc, GL_FLOAT, offsetof(GpuVertex, u), 2, sizeof(GpuVertex));
   }
 
-  glDrawElements(GL_TRIANGLES, index_count_, index_type_, nullptr);
+  const int index_size = (index_type_ == GL_UNSIGNED_SHORT) ? 2 : 4;
+  const QVector<DrawSurface>& draw_surfaces = surfaces_;
+  for (const DrawSurface& s : draw_surfaces) {
+    if (s.index_count <= 0) {
+      continue;
+    }
 
-  if (has_texture_ && texture_id_ != 0) {
-    glBindTexture(GL_TEXTURE_2D, 0);
+    GLuint tid = 0;
+    bool has_tex = false;
+    if (s.has_texture && s.texture_id != 0) {
+      tid = s.texture_id;
+      has_tex = true;
+    } else if (has_texture_ && texture_id_ != 0) {
+      tid = texture_id_;
+      has_tex = true;
+    }
+
+    program_.setUniformValue("uHasTex", has_tex ? 1 : 0);
+    if (has_tex) {
+      glActiveTexture(GL_TEXTURE0);
+      glBindTexture(GL_TEXTURE_2D, tid);
+      glEnable(GL_BLEND);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    } else {
+      glBindTexture(GL_TEXTURE_2D, 0);
+      glDisable(GL_BLEND);
+    }
+
+    const uintptr_t offs = static_cast<uintptr_t>(s.first_index) * static_cast<uintptr_t>(index_size);
+    glDrawElements(GL_TRIANGLES, s.index_count, index_type_, reinterpret_cast<const void*>(offs));
   }
+
+  glBindTexture(GL_TEXTURE_2D, 0);
 
   if (vao_.isCreated()) {
     vao_.release();
@@ -431,6 +536,13 @@ void ModelViewerWidget::destroy_gl_resources() {
   if (ibo_.isCreated()) {
     ibo_.destroy();
   }
+  for (DrawSurface& s : surfaces_) {
+    if (s.texture_id != 0) {
+      glDeleteTextures(1, &s.texture_id);
+      s.texture_id = 0;
+      s.has_texture = false;
+    }
+  }
   if (texture_id_ != 0) {
     glDeleteTextures(1, &texture_id_);
     texture_id_ = 0;
@@ -525,50 +637,74 @@ void ModelViewerWidget::upload_mesh_if_possible() {
 
   index_count_ = model_->mesh.indices.size();
   pending_upload_ = false;
-  upload_texture_if_possible();
+  upload_textures_if_possible();
   doneCurrent();
 }
 
-void ModelViewerWidget::upload_texture_if_possible() {
+void ModelViewerWidget::upload_textures_if_possible() {
   if (!pending_texture_upload_ || !gl_ready_ || !context()) {
     return;
   }
 
-  if (texture_id_ != 0) {
-    glDeleteTextures(1, &texture_id_);
-    texture_id_ = 0;
+  auto delete_tex = [&](GLuint* id) {
+    if (id && *id != 0) {
+      glDeleteTextures(1, id);
+      *id = 0;
+    }
+  };
+
+  for (DrawSurface& s : surfaces_) {
+    delete_tex(&s.texture_id);
+    s.has_texture = false;
   }
+
+  delete_tex(&texture_id_);
   has_texture_ = false;
 
-  if (skin_image_.isNull()) {
-    pending_texture_upload_ = false;
-    return;
+  auto upload = [&](const QImage& src, GLuint* out_id) -> bool {
+    if (!out_id) {
+      return false;
+    }
+    *out_id = 0;
+    if (src.isNull()) {
+      return false;
+    }
+    QImage img = src.convertToFormat(QImage::Format_RGBA8888).flipped(Qt::Vertical);
+    if (img.isNull()) {
+      return false;
+    }
+    glGenTextures(1, out_id);
+    if (*out_id == 0) {
+      return false;
+    }
+    glBindTexture(GL_TEXTURE_2D, *out_id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D,
+                 0,
+                 GL_RGBA,
+                 img.width(),
+                 img.height(),
+                 0,
+                 GL_RGBA,
+                 GL_UNSIGNED_BYTE,
+                 img.constBits());
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return (*out_id != 0);
+  };
+
+  if (upload(skin_image_, &texture_id_)) {
+    has_texture_ = true;
   }
 
-  QImage img = skin_image_.convertToFormat(QImage::Format_RGBA8888).flipped(Qt::Vertical);
-  if (img.isNull()) {
-    pending_texture_upload_ = false;
-    return;
+  for (DrawSurface& s : surfaces_) {
+    if (upload(s.image, &s.texture_id)) {
+      s.has_texture = true;
+    }
   }
 
-  glGenTextures(1, &texture_id_);
-  glBindTexture(GL_TEXTURE_2D, texture_id_);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-  glTexImage2D(GL_TEXTURE_2D,
-               0,
-               GL_RGBA,
-               img.width(),
-               img.height(),
-               0,
-               GL_RGBA,
-               GL_UNSIGNED_BYTE,
-               img.constBits());
-  glBindTexture(GL_TEXTURE_2D, 0);
-
-  has_texture_ = (texture_id_ != 0);
   pending_texture_upload_ = false;
 }

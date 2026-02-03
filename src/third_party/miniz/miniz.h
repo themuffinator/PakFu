@@ -162,6 +162,12 @@
 #define MINIZ_NO_TIME
 #endif
 
+/* PakFu: Prefer enabling ZIP timestamp support so file "Modified" times can be shown in the UI.
+   Define PAKFU_MINIZ_DISABLE_TIME to keep MINIZ_NO_TIME behavior. */
+#if defined(MINIZ_NO_TIME) && !defined(PAKFU_MINIZ_DISABLE_TIME) && !(defined(__TINYC__) && (defined(__linux) || defined(__linux__)))
+#undef MINIZ_NO_TIME
+#endif
+
 #include <stddef.h>
 
 #if !defined(MINIZ_NO_TIME) && !defined(MINIZ_NO_ARCHIVE_APIS)

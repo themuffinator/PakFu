@@ -484,6 +484,7 @@ std::optional<LoadedModel> load_mdl(const QString& file_path, QString* error) {
   out.surface_count = 1;
   out.mesh.vertices = std::move(verts);
   out.mesh.indices = std::move(indices);
+  out.surfaces = {ModelSurface{QString("model"), QString(), 0, static_cast<int>(out.mesh.indices.size())}};
   compute_smooth_normals(&out.mesh);
   compute_bounds(&out.mesh);
   return out;
@@ -730,6 +731,7 @@ std::optional<LoadedModel> load_md2(const QString& file_path, QString* error) {
   out.surface_count = 1;
   out.mesh.vertices = std::move(verts);
   out.mesh.indices = std::move(indices);
+  out.surfaces = {ModelSurface{QString("model"), QString(), 0, static_cast<int>(out.mesh.indices.size())}};
   compute_smooth_normals(&out.mesh);
   compute_bounds(&out.mesh);
   return out;
@@ -814,7 +816,8 @@ std::optional<LoadedModel> load_md3(const QString& file_path, QString* error) {
 
   QVector<ModelVertex> vertices;
   QVector<std::uint32_t> indices;
-  int surface_count = 0;
+  QVector<ModelSurface> surfaces;
+  surfaces.reserve(num_surfaces);
 
   int surf_off = ofs_surfaces;
   for (int s = 0; s < num_surfaces; ++s) {
@@ -833,7 +836,8 @@ std::optional<LoadedModel> load_md3(const QString& file_path, QString* error) {
       return std::nullopt;
     }
 
-    if (!cur.skip(64)) {  // name
+    QString surf_name;
+    if (!cur.read_fixed_string(64, &surf_name)) {  // name
       if (error) {
         *error = "MD3 surface header is incomplete.";
       }
@@ -860,8 +864,16 @@ std::optional<LoadedModel> load_md3(const QString& file_path, QString* error) {
       return std::nullopt;
     }
     (void)surf_flags;
-    (void)surf_num_shaders;
-    (void)ofs_shaders;
+
+    QString shader_name;
+    if (surf_num_shaders > 0 && ofs_shaders > 0) {
+      const int sh_off = surf_off + ofs_shaders;
+      if (cur.seek(sh_off)) {
+        (void)cur.read_fixed_string(64, &shader_name);
+        qint32 shader_index = 0;
+        (void)cur.read_i32(&shader_index);
+      }
+    }
 
     if (surf_num_verts <= 0 || surf_num_verts > 200000 || surf_num_tris < 0 || surf_num_tris > 200000 || ofs_surf_end <= 0) {
       if (error) {
@@ -927,6 +939,7 @@ std::optional<LoadedModel> load_md3(const QString& file_path, QString* error) {
       }
       return std::nullopt;
     }
+    const int first_index = indices.size();
     indices.reserve(indices.size() + surf_num_tris * 3);
     for (int t = 0; t < surf_num_tris; ++t) {
       qint32 i0 = 0, i1 = 0, i2 = 0;
@@ -944,7 +957,15 @@ std::optional<LoadedModel> load_md3(const QString& file_path, QString* error) {
       indices.push_back(static_cast<std::uint32_t>(base_vertex + i2));
     }
 
-    ++surface_count;
+    const int index_count = indices.size() - first_index;
+    if (index_count > 0) {
+      ModelSurface surf;
+      surf.name = surf_name;
+      surf.shader = shader_name;
+      surf.first_index = first_index;
+      surf.index_count = index_count;
+      surfaces.push_back(std::move(surf));
+    }
     surf_off += ofs_surf_end;
     if (surf_off <= 0 || surf_off > ofs_end) {
       break;
@@ -958,12 +979,17 @@ std::optional<LoadedModel> load_md3(const QString& file_path, QString* error) {
     return std::nullopt;
   }
 
+  if (surfaces.isEmpty()) {
+    surfaces = {ModelSurface{QString("model"), QString(), 0, static_cast<int>(indices.size())}};
+  }
+
   LoadedModel out;
   out.format = "md3";
   out.frame_count = num_frames;
-  out.surface_count = std::max(1, surface_count);
+  out.surface_count = std::max(1, static_cast<int>(surfaces.size()));
   out.mesh.vertices = std::move(vertices);
   out.mesh.indices = std::move(indices);
+  out.surfaces = std::move(surfaces);
   compute_smooth_normals(&out.mesh);
   compute_bounds(&out.mesh);
   return out;

@@ -12,6 +12,8 @@
 #include <QTemporaryDir>
 #include <QUrl>
 
+#include <memory>
+
 #include "archive/archive.h"
 
 class BreadcrumbBar;
@@ -87,7 +89,7 @@ public:
     QString pak_name;
     QString source_path;
     quint32 size = 0;
-    qint64 mtime_utc_secs = 0;
+    qint64 mtime_utc_secs = -1;
   };
 
 signals:
@@ -101,6 +103,11 @@ private:
   void update_preview();
 	void select_adjacent_audio(int delta);
 	void select_adjacent_video(int delta);
+  bool mount_wad_from_selected_file(const QString& pak_path, QString* error);
+  void unmount_wad();
+  [[nodiscard]] bool is_wad_mounted() const { return wad_mounted_; }
+  [[nodiscard]] const Archive& view_archive() const { return (wad_mounted_ && wad_archive_) ? *wad_archive_ : archive_; }
+  [[nodiscard]] Archive& view_archive_mut() { return (wad_mounted_ && wad_archive_) ? *wad_archive_ : archive_; }
   bool ensure_quake1_palette(QString* error);
   bool ensure_quake2_palette(QString* error);
   SaveOptions default_save_options_for_current_path() const;
@@ -190,6 +197,11 @@ private:
   int export_seq_ = 1;
   QStringList current_dir_;
   Archive archive_;
+  bool wad_mounted_ = false;
+  std::unique_ptr<Archive> wad_archive_;
+  QString wad_mount_name_;
+  QString wad_mount_fs_path_;
+  QStringList outer_dir_before_wad_mount_;
   QVector<AddedFile> added_files_;
   QHash<QString, int> added_index_by_name_;
   QSet<QString> virtual_dirs_;

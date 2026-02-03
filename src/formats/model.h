@@ -25,11 +25,19 @@ struct ModelMesh {
   QVector3D maxs;
 };
 
+struct ModelSurface {
+  QString name;    // Surface/mesh name (when available).
+  QString shader;  // Skin/texture hint path (when available).
+  int first_index = 0;
+  int index_count = 0;
+};
+
 struct LoadedModel {
   QString format;  // "mdl", "md2", "md3"
   int frame_count = 1;
   int surface_count = 1;
   ModelMesh mesh;
+  QVector<ModelSurface> surfaces;
 };
 
 [[nodiscard]] std::optional<LoadedModel> load_model_file(const QString& file_path, QString* error = nullptr);

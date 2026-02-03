@@ -9,6 +9,8 @@ constexpr int kPaletteBytes = 256 * 3;
 constexpr int kQPicHeaderBytes = 8;
 constexpr int kConcharsWidth = 128;
 constexpr int kConcharsHeight = 128;
+constexpr int kColormapWidth = 256;
+constexpr int kColormapHeight = 64;
 constexpr int kPaletteGridCols = 16;
 constexpr int kPaletteGridRows = 16;
 
@@ -226,6 +228,38 @@ QImage decode_lmp_image(const QByteArray& bytes, const QString& file_name, const
     return img;
   }
 
+  // colormap.lmp: raw 256x64 8bpp indices (no header). Useful for inspection even though it's primarily a lighting table.
+  if (lower.endsWith("colormap.lmp")) {
+    if (bytes.size() != kColormapWidth * kColormapHeight) {
+      if (error) {
+        *error = "Invalid colormap.lmp size (expected 16384 bytes).";
+      }
+      return {};
+    }
+    if (!palette || palette->size() != 256) {
+      if (error) {
+        *error = "colormap.lmp requires a 256-color Quake palette (gfx/palette.lmp).";
+      }
+      return {};
+    }
+    QImage img;
+    QString err;
+    if (!decode_paletted_indices(reinterpret_cast<const uchar*>(bytes.constData()),
+                                 static_cast<quint64>(bytes.size()),
+                                 kColormapWidth,
+                                 kColormapHeight,
+                                 *palette,
+                                 /*transparent_index=*/-1,
+                                 &img,
+                                 &err)) {
+      if (error) {
+        *error = err.isEmpty() ? "Unable to decode colormap.lmp." : err;
+      }
+      return {};
+    }
+    return img;
+  }
+
   // QPIC: width/height + indices.
   if (bytes.size() < kQPicHeaderBytes) {
     if (error) {
@@ -292,4 +326,3 @@ QImage decode_lmp_image(const QByteArray& bytes, const QString& file_name, const
   }
   return img;
 }
-
