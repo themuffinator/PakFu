@@ -66,6 +66,9 @@ private:
   void save_workspace_for_current_install();
   void restore_workspace_for_install(const QString& uid);
   void clear_archive_tabs();
+  void update_pure_pak_protector_for_tabs();
+  bool is_official_archive_for_current_install(const QString& path) const;
+  bool pure_pak_protector_enabled() const;
 
   GameSetState game_sets_;
   GameSet game_set_;

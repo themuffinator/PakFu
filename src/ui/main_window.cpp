@@ -101,6 +101,59 @@ bool path_is_under(const QString& path, const QString& root) {
 #endif
 }
 
+bool is_numbered_archive_name(const QString& lower_file, const QString& ext) {
+  const QString suffix = "." + ext;
+  if (!lower_file.endsWith(suffix)) {
+    return false;
+  }
+  const QString base = lower_file.left(lower_file.size() - suffix.size());
+  if (!base.startsWith("pak")) {
+    return false;
+  }
+  const QString digits = base.mid(3);
+  if (digits.isEmpty()) {
+    return false;
+  }
+  for (const QChar c : digits) {
+    if (!c.isDigit()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool is_official_archive_name(GameId game, const QString& lower_file) {
+  switch (game) {
+    case GameId::Quake:
+    case GameId::QuakeRerelease:
+    case GameId::Quake2:
+    case GameId::Quake2Rerelease:
+      return is_numbered_archive_name(lower_file, "pak");
+    case GameId::Quake3Arena:
+    case GameId::QuakeLive:
+      return is_numbered_archive_name(lower_file, "pk3");
+    case GameId::Quake4:
+      return is_numbered_archive_name(lower_file, "pk4");
+  }
+  return false;
+}
+
+bool is_official_archive_for_set(const GameSet& set, const QString& path) {
+  if (path.isEmpty()) {
+    return false;
+  }
+  const QString base_dir = !set.default_dir.isEmpty() ? set.default_dir : set.root_dir;
+  if (base_dir.isEmpty()) {
+    return false;
+  }
+  const QString abs = QFileInfo(path).absoluteFilePath();
+  if (!path_is_under(abs, base_dir)) {
+    return false;
+  }
+  const QString file_lower = QFileInfo(abs).fileName().toLower();
+  return is_official_archive_name(set.game, file_lower);
+}
+
 QStringList normalize_recent_paths(const QStringList& files) {
   // Normalize, drop empty, de-dupe (preserve order).
   QStringList normalized;
@@ -348,6 +401,32 @@ QString MainWindow::default_directory_for_dialogs() const {
     return game_set_.root_dir;
   }
   return QDir::homePath();
+}
+
+bool MainWindow::pure_pak_protector_enabled() const {
+  QSettings settings;
+  return settings.value("archive/purePakProtector", true).toBool();
+}
+
+bool MainWindow::is_official_archive_for_current_install(const QString& path) const {
+  return is_official_archive_for_set(game_set_, path);
+}
+
+void MainWindow::update_pure_pak_protector_for_tabs() {
+  if (!tabs_) {
+    return;
+  }
+  const bool enabled = pure_pak_protector_enabled();
+  for (int i = 0; i < tabs_->count(); ++i) {
+    auto* pak_tab = qobject_cast<PakTab*>(tabs_->widget(i));
+    if (!pak_tab) {
+      continue;
+    }
+    const bool official = !pak_tab->pak_path().isEmpty()
+      && is_official_archive_for_current_install(pak_tab->pak_path());
+    pak_tab->set_pure_pak_protector(enabled, official);
+  }
+  update_action_states();
 }
 
 void MainWindow::save_workspace_for_current_install() {
@@ -698,6 +777,7 @@ void MainWindow::create_new_pak() {
   const QString title = QString("Untitled %1").arg(untitled_counter_++);
   auto* tab = new PakTab(PakTab::Mode::NewPak, QString(), this);
   tab->set_default_directory(default_directory_for_dialogs());
+  tab->set_pure_pak_protector(pure_pak_protector_enabled(), false);
   const int index = add_tab(title, tab);
   tabs_->setCurrentIndex(index);
 }
@@ -762,6 +842,7 @@ PakTab* MainWindow::open_pak_internal(const QString& path, bool allow_auto_selec
     QMessageBox::warning(this, "Open Archive", error.isEmpty() ? "Failed to load archive." : error);
     return nullptr;
   }
+  tab->set_pure_pak_protector(pure_pak_protector_enabled(), is_official_archive_for_current_install(info.absoluteFilePath()));
 
   if (add_recent) {
     add_recent_file(info.absoluteFilePath());
@@ -841,9 +922,11 @@ void MainWindow::update_action_states() {
   const PakTab* pak_tab = current_pak_tab();
   const bool has_pak = pak_tab != nullptr;
   const bool loaded = pak_tab && pak_tab->is_loaded();
+  const bool editable = pak_tab && pak_tab->is_editable();
+  const bool protected_archive = pak_tab && pak_tab->is_pure_protected();
   if (save_action_) {
     const bool dirty_or_new = pak_tab && (pak_tab->is_dirty() || pak_tab->pak_path().isEmpty());
-    save_action_->setEnabled(has_pak && loaded && dirty_or_new);
+    save_action_->setEnabled(has_pak && loaded && dirty_or_new && !protected_archive);
   }
   if (save_as_action_) {
     save_as_action_->setEnabled(has_pak && loaded);
@@ -858,16 +941,16 @@ void MainWindow::update_action_states() {
     redo_action_->setEnabled(has_pak && loaded && stack && stack->canRedo());
   }
   if (cut_action_) {
-    cut_action_->setEnabled(has_pak && loaded);
+    cut_action_->setEnabled(has_pak && loaded && editable);
   }
   if (copy_action_) {
     copy_action_->setEnabled(has_pak && loaded);
   }
   if (paste_action_) {
-    paste_action_->setEnabled(has_pak && loaded);
+    paste_action_->setEnabled(has_pak && loaded && editable);
   }
   if (rename_action_) {
-    rename_action_->setEnabled(has_pak && loaded);
+    rename_action_->setEnabled(has_pak && loaded && editable);
   }
 }
 
@@ -1093,6 +1176,9 @@ void MainWindow::open_preferences() {
         pak_tab->set_model_texture_smoothing(enabled);
       }
     }
+  });
+  connect(preferences_tab_, &PreferencesTab::pure_pak_protector_changed, this, [this](bool) {
+    update_pure_pak_protector_for_tabs();
   });
   const int idx = add_tab("Preferences", preferences_tab_);
   tabs_->setCurrentIndex(idx);

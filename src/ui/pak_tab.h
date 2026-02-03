@@ -63,6 +63,9 @@ public:
   QString default_directory() const { return default_directory_; }
 
   void set_model_texture_smoothing(bool enabled);
+  void set_pure_pak_protector(bool enabled, bool is_official);
+  bool is_editable() const;
+  bool is_pure_protected() const;
 
   QString pak_path() const { return pak_path_; }
   bool is_loaded() const { return loaded_; }
@@ -146,6 +149,7 @@ private:
   bool write_pak_file(const QString& dest_path, QString* error);
   bool write_zip_file(const QString& dest_path, bool quakelive_encrypt_pk3, QString* error);
   void set_dirty(bool dirty);
+  bool ensure_editable(const QString& action);
 
   void set_view_mode(ViewMode mode);
   void apply_auto_view(int file_count, int image_count, int video_count, int model_count);
@@ -220,4 +224,6 @@ private:
   bool quake2_palette_loaded_ = false;
   QVector<QRgb> quake2_palette_;
   QString quake2_palette_error_;
+  bool pure_pak_protector_enabled_ = true;
+  bool official_archive_ = false;
 };

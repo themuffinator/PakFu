@@ -1012,6 +1012,29 @@ void PakTab::set_model_texture_smoothing(bool enabled) {
   }
 }
 
+void PakTab::set_pure_pak_protector(bool enabled, bool is_official) {
+  pure_pak_protector_enabled_ = enabled;
+  official_archive_ = is_official;
+  refresh_listing();
+}
+
+bool PakTab::is_editable() const {
+  if (!loaded_) {
+    return false;
+  }
+  if (wad_mounted_) {
+    return false;
+  }
+  if (pure_pak_protector_enabled_ && official_archive_) {
+    return false;
+  }
+  return true;
+}
+
+bool PakTab::is_pure_protected() const {
+  return pure_pak_protector_enabled_ && official_archive_;
+}
+
 void PakTab::cut() {
   copy_selected(true);
 }
@@ -1048,6 +1071,26 @@ void PakTab::set_dirty(bool dirty) {
   emit dirty_changed(dirty_);
 }
 
+bool PakTab::ensure_editable(const QString& action) {
+  if (!loaded_) {
+    return false;
+  }
+  if (wad_mounted_) {
+    QMessageBox::information(this, "Mounted WAD", "This WAD view is read-only. Click the Root breadcrumb to go back.");
+    return false;
+  }
+  if (pure_pak_protector_enabled_ && official_archive_) {
+    const QString title = action.isEmpty() ? "Pure PAK Protector" : action;
+    QMessageBox::information(
+      this,
+      title,
+      "This archive appears to be an official game archive and is protected from modification.\n\n"
+      "Disable Pure PAK Protector in Preferences to edit it, or use Save As to create a copy.");
+    return false;
+  }
+  return true;
+}
+
 bool PakTab::save(QString* error) {
   if (!loaded_) {
     if (error) {
@@ -1057,6 +1100,12 @@ bool PakTab::save(QString* error) {
   }
   if (!dirty_) {
     return true;
+  }
+  if (pure_pak_protector_enabled_ && official_archive_) {
+    if (error) {
+      *error = "Pure PAK Protector is enabled for this official archive. Disable it in Preferences or use Save As to create a copy.";
+    }
+    return false;
   }
   if (pak_path_.isEmpty()) {
     if (error) {
@@ -1140,6 +1189,15 @@ bool PakTab::save_as(const QString& dest_path, const SaveOptions& options, QStri
       *error = "Invalid destination path.";
     }
     return false;
+  }
+  if (pure_pak_protector_enabled_ && official_archive_ && !pak_path_.isEmpty()) {
+    const QString current = QFileInfo(pak_path_).absoluteFilePath();
+    if (!current.isEmpty() && current == abs) {
+      if (error) {
+        *error = "Pure PAK Protector is enabled for this official archive. Disable it in Preferences or use a new destination.";
+      }
+      return false;
+    }
   }
 
   if (!write_archive_file(abs, options, error)) {
@@ -2271,11 +2329,7 @@ bool PakTab::export_path_to_temp(const QString& pak_path_in, bool is_dir, QStrin
 }
 
 void PakTab::delete_selected(bool skip_confirmation) {
-  if (!loaded_) {
-    return;
-  }
-  if (wad_mounted_) {
-    QMessageBox::information(this, "Mounted WAD", "This WAD view is read-only. Click the Root breadcrumb to go back.");
+  if (!ensure_editable("Delete")) {
     return;
   }
 
@@ -2557,7 +2611,7 @@ bool PakTab::import_urls(const QList<QUrl>& urls,
 }
 
 void PakTab::import_urls_with_undo(const QList<QUrl>& urls, const QString& dest_prefix, const QString& label) {
-  if (!loaded_) {
+  if (!ensure_editable(label)) {
     return;
   }
 
@@ -2700,11 +2754,7 @@ void PakTab::copy_selected(bool cut) {
 }
 
 void PakTab::paste_from_clipboard() {
-  if (!loaded_) {
-    return;
-  }
-  if (wad_mounted_) {
-    QMessageBox::information(this, "Mounted WAD", "This WAD view is read-only. Click the Root breadcrumb to go back.");
+  if (!ensure_editable("Paste")) {
     return;
   }
 
@@ -2818,11 +2868,7 @@ void PakTab::paste_from_clipboard() {
 }
 
 void PakTab::rename_selected() {
-  if (!loaded_) {
-    return;
-  }
-  if (wad_mounted_) {
-    QMessageBox::information(this, "Mounted WAD", "This WAD view is read-only. Click the Root breadcrumb to go back.");
+  if (!ensure_editable("Rename")) {
     return;
   }
 
@@ -2972,11 +3018,7 @@ bool PakTab::add_file_mapping(const QString& pak_name_in, const QString& source_
 }
 
 void PakTab::add_files() {
-  if (!loaded_) {
-    return;
-  }
-  if (wad_mounted_) {
-    QMessageBox::information(this, "Mounted WAD", "This WAD view is read-only. Click the Root breadcrumb to go back.");
+  if (!ensure_editable("Add Files")) {
     return;
   }
 
@@ -3136,11 +3178,7 @@ bool PakTab::add_folder_from_path(const QString& folder_path_in,
 }
 
 void PakTab::add_folder() {
-  if (!loaded_) {
-    return;
-  }
-  if (wad_mounted_) {
-    QMessageBox::information(this, "Mounted WAD", "This WAD view is read-only. Click the Root breadcrumb to go back.");
+  if (!ensure_editable("Add Folder")) {
     return;
   }
 
@@ -3204,11 +3242,7 @@ void PakTab::add_folder() {
 }
 
 void PakTab::new_folder() {
-  if (!loaded_) {
-    return;
-  }
-  if (wad_mounted_) {
-    QMessageBox::information(this, "Mounted WAD", "This WAD view is read-only. Click the Root breadcrumb to go back.");
+  if (!ensure_editable("New Folder")) {
     return;
   }
 
@@ -3922,7 +3956,7 @@ void PakTab::refresh_listing() {
     icon_view_->clear();
   }
 
-  const bool can_edit = loaded_ && !wad_mounted_;
+  const bool can_edit = is_editable();
   if (add_files_action_) {
     add_files_action_->setEnabled(can_edit);
   }

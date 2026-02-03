@@ -22,6 +22,7 @@ This project is still training under the waterfall 💦🥋 (early development).
   - Models: `mdl`, `md2`, `md3`, `iqm`, `md5mesh` 🧊🧩
   - Text/config: `cfg` and similar plain-text formats 🧾🖋️
 - Stay responsive for large archives (no freezing in the middle of a roundhouse kick) 🥶➡️🥋
+- Guard official game archives with a default-on Pure PAK Protector preference 🛡️📦
 - Keep C++ code clean, portable, and documented (minimal OS-specific sorcery) 🧠🧹🧾
 
 ## The Forbidden Techniques (Non-Goals... for now) 🙅‍♂️⛔

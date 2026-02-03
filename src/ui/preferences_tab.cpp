@@ -132,6 +132,29 @@ void PreferencesTab::build_ui() {
   model_layout->addStretch();
   layout->addWidget(model_card);
 
+  auto* archive_card = new QFrame(this);
+  archive_card->setFrameShape(QFrame::StyledPanel);
+  archive_card->setFrameShadow(QFrame::Plain);
+  auto* archive_layout = new QVBoxLayout(archive_card);
+  archive_layout->setContentsMargins(18, 18, 18, 18);
+  archive_layout->setSpacing(10);
+
+  auto* archive_label = new QLabel("Archive Protection", archive_card);
+  archive_label->setFont(label_font);
+  archive_layout->addWidget(archive_label);
+
+  auto* archive_help = new QLabel(
+    "Lock official game archives to prevent accidental edits. Disable this if you intentionally want to modify stock game data.",
+    archive_card);
+  archive_help->setWordWrap(true);
+  archive_layout->addWidget(archive_help);
+
+  pure_pak_protector_ = new QCheckBox("Pure PAK protector (read-only official archives)", archive_card);
+  archive_layout->addWidget(pure_pak_protector_);
+
+  archive_layout->addStretch();
+  layout->addWidget(archive_card);
+
   auto* assoc_card = new QFrame(this);
   assoc_card->setFrameShape(QFrame::StyledPanel);
   assoc_card->setFrameShadow(QFrame::Plain);
@@ -176,6 +199,13 @@ void PreferencesTab::build_ui() {
       emit model_texture_smoothing_changed(checked);
     });
   }
+  if (pure_pak_protector_) {
+    connect(pure_pak_protector_, &QCheckBox::toggled, this, [this](bool checked) {
+      QSettings s;
+      s.setValue("archive/purePakProtector", checked);
+      emit pure_pak_protector_changed(checked);
+    });
+  }
   connect(assoc_apply_, &QPushButton::clicked, this, &PreferencesTab::apply_association);
   connect(assoc_details_, &QPushButton::clicked, this, [this]() {
     QString details;
@@ -199,6 +229,13 @@ void PreferencesTab::load_settings() {
     model_texture_smoothing_->blockSignals(true);
     model_texture_smoothing_->setChecked(smooth);
     model_texture_smoothing_->blockSignals(false);
+  }
+  if (pure_pak_protector_) {
+    QSettings s;
+    const bool enabled = s.value("archive/purePakProtector", true).toBool();
+    pure_pak_protector_->blockSignals(true);
+    pure_pak_protector_->setChecked(enabled);
+    pure_pak_protector_->blockSignals(false);
   }
 
   refresh_association_status();
