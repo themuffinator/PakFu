@@ -63,6 +63,7 @@ public:
   QString default_directory() const { return default_directory_; }
 
   void set_model_texture_smoothing(bool enabled);
+  void set_image_texture_smoothing(bool enabled);
   void set_pure_pak_protector(bool enabled, bool is_official);
   bool is_editable() const;
   bool is_pure_protected() const;
@@ -226,4 +227,5 @@ private:
   QString quake2_palette_error_;
   bool pure_pak_protector_enabled_ = true;
   bool official_archive_ = false;
+  bool image_texture_smoothing_ = false;
 };

@@ -404,6 +404,7 @@ void PreviewPane::build_ui() {
 
 	QSettings settings;
 	image_bg_checkerboard_ = settings.value("preview/image/checkerboard", true).toBool();
+	image_texture_smoothing_ = settings.value("preview/image/textureSmoothing", false).toBool();
 
 	{
 		QVariant bg = settings.value("preview/image/backgroundColor");
@@ -681,7 +682,8 @@ void PreviewPane::set_image_pixmap(const QPixmap& pixmap) {
 	const QSize avail =
 		image_scroll_ ? image_scroll_->viewport()->size() : QSize();
 	if (avail.isValid()) {
-		image_label_->setPixmap(pixmap.scaled(avail, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+		const auto transform_mode = image_texture_smoothing_ ? Qt::SmoothTransformation : Qt::FastTransformation;
+		image_label_->setPixmap(pixmap.scaled(avail, Qt::KeepAspectRatio, transform_mode));
 	} else {
 		image_label_->setPixmap(pixmap);
 	}
@@ -871,8 +873,20 @@ void PreviewPane::show_model_from_file(const QString& title,
 }
 
 void PreviewPane::set_model_texture_smoothing(bool enabled) {
-	if (model_widget_) {
-		model_widget_->set_texture_smoothing(enabled);
+  if (model_widget_) {
+    model_widget_->set_texture_smoothing(enabled);
+  }
+}
+
+void PreviewPane::set_image_texture_smoothing(bool enabled) {
+	image_texture_smoothing_ = enabled;
+	// Re-render the current image with the new setting if one is displayed.
+	if (stack_ && stack_->currentWidget() == image_page_ && !image_source_pixmap_.isNull()) {
+		set_image_pixmap(image_source_pixmap_);
+	}
+	// Also update the cinematic player widget.
+	if (cinematic_widget_) {
+		cinematic_widget_->set_texture_smoothing(enabled);
 	}
 }
 

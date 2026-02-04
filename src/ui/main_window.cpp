@@ -1268,6 +1268,16 @@ void MainWindow::open_preferences() {
       }
     }
   });
+  connect(preferences_tab_, &PreferencesTab::image_texture_smoothing_changed, this, [this](bool enabled) {
+    if (!tabs_) {
+      return;
+    }
+    for (int i = 0; i < tabs_->count(); ++i) {
+      if (auto* pak_tab = qobject_cast<PakTab*>(tabs_->widget(i))) {
+        pak_tab->set_image_texture_smoothing(enabled);
+      }
+    }
+  });
   connect(preferences_tab_, &PreferencesTab::pure_pak_protector_changed, this, [this](bool) {
     update_pure_pak_protector_for_tabs();
   });

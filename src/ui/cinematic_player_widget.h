@@ -30,6 +30,7 @@ public:
   [[nodiscard]] bool load_file(const QString& file_path, QString* error = nullptr);
   void unload();
   void play_from_start();
+  void set_texture_smoothing(bool enabled);
 
 signals:
   void request_previous_media();
@@ -92,4 +93,5 @@ private:
   bool audio_needs_restart_ = false;
   bool playing_ = false;
   bool user_scrubbing_ = false;
+  bool texture_smoothing_ = false;
 };

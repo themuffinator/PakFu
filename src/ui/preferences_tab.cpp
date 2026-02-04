@@ -132,6 +132,29 @@ void PreferencesTab::build_ui() {
   model_layout->addStretch();
   layout->addWidget(model_card);
 
+  auto* image_card = new QFrame(this);
+  image_card->setFrameShape(QFrame::StyledPanel);
+  image_card->setFrameShadow(QFrame::Plain);
+  auto* image_layout = new QVBoxLayout(image_card);
+  image_layout->setContentsMargins(18, 18, 18, 18);
+  image_layout->setSpacing(10);
+
+  auto* image_label = new QLabel("Image Preview", image_card);
+  image_label->setFont(label_font);
+  image_layout->addWidget(image_label);
+
+  auto* image_help = new QLabel(
+    "Configure how 2D image and video previews are rendered.",
+    image_card);
+  image_help->setWordWrap(true);
+  image_layout->addWidget(image_help);
+
+  image_texture_smoothing_ = new QCheckBox("Texture smoothing (bilinear filtering)", image_card);
+  image_layout->addWidget(image_texture_smoothing_);
+
+  image_layout->addStretch();
+  layout->addWidget(image_card);
+
   auto* archive_card = new QFrame(this);
   archive_card->setFrameShape(QFrame::StyledPanel);
   archive_card->setFrameShadow(QFrame::Plain);
@@ -199,6 +222,13 @@ void PreferencesTab::build_ui() {
       emit model_texture_smoothing_changed(checked);
     });
   }
+  if (image_texture_smoothing_) {
+    connect(image_texture_smoothing_, &QCheckBox::toggled, this, [this](bool checked) {
+      QSettings s;
+      s.setValue("preview/image/textureSmoothing", checked);
+      emit image_texture_smoothing_changed(checked);
+    });
+  }
   if (pure_pak_protector_) {
     connect(pure_pak_protector_, &QCheckBox::toggled, this, [this](bool checked) {
       QSettings s;
@@ -229,6 +259,13 @@ void PreferencesTab::load_settings() {
     model_texture_smoothing_->blockSignals(true);
     model_texture_smoothing_->setChecked(smooth);
     model_texture_smoothing_->blockSignals(false);
+  }
+  if (image_texture_smoothing_) {
+    QSettings s;
+    const bool smooth = s.value("preview/image/textureSmoothing", false).toBool();
+    image_texture_smoothing_->blockSignals(true);
+    image_texture_smoothing_->setChecked(smooth);
+    image_texture_smoothing_->blockSignals(false);
   }
   if (pure_pak_protector_) {
     QSettings s;
