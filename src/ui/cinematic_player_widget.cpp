@@ -6,6 +6,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QScrollBar>
+#include <QSettings>
 #include <QSlider>
 #include <QStringList>
 #include <QTimer>
@@ -134,6 +135,8 @@ private:
 };
 
 CinematicPlayerWidget::CinematicPlayerWidget(QWidget* parent) : QWidget(parent) {
+  QSettings settings;
+  texture_smoothing_ = settings.value("preview/image/textureSmoothing", false).toBool();
   build_ui();
   update_ui_state();
 }
@@ -454,7 +457,8 @@ void CinematicPlayerWidget::update_scaled_frame() {
     qMax(1, static_cast<int>(label_size.height() * dpr)));
 
   QPixmap pix = QPixmap::fromImage(current_frame_image_);
-  pix = pix.scaled(target, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+  const auto transform_mode = texture_smoothing_ ? Qt::SmoothTransformation : Qt::FastTransformation;
+  pix = pix.scaled(target, Qt::KeepAspectRatio, transform_mode);
   pix.setDevicePixelRatio(dpr);
   frame_label_->setPixmap(pix);
 }
@@ -725,5 +729,13 @@ void CinematicPlayerWidget::enqueue_audio(const QByteArray& pcm) {
     audio_device_->enqueue(u8_pcm_to_s16le(pcm));
   } else {
     audio_device_->enqueue(pcm);
+  }
+}
+
+void CinematicPlayerWidget::set_texture_smoothing(bool enabled) {
+  texture_smoothing_ = enabled;
+  // Re-render the current frame with the new setting.
+  if (!current_frame_image_.isNull()) {
+    update_scaled_frame();
   }
 }

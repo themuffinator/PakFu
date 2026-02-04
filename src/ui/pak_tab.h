@@ -63,6 +63,7 @@ public:
   QString default_directory() const { return default_directory_; }
 
   void set_model_texture_smoothing(bool enabled);
+  void set_image_texture_smoothing(bool enabled);
   void set_pure_pak_protector(bool enabled, bool is_official);
   bool is_editable() const;
   bool is_pure_protected() const;

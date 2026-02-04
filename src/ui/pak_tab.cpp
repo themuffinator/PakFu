@@ -1020,6 +1020,12 @@ void PakTab::set_model_texture_smoothing(bool enabled) {
   }
 }
 
+void PakTab::set_image_texture_smoothing(bool enabled) {
+  if (preview_) {
+    preview_->set_image_texture_smoothing(enabled);
+  }
+}
+
 void PakTab::set_pure_pak_protector(bool enabled, bool is_official) {
   pure_pak_protector_enabled_ = enabled;
   official_archive_ = is_official;

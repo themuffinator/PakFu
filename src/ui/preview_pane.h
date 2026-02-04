@@ -44,6 +44,7 @@ public:
 	~PreviewPane() override;
 
 	void set_model_texture_smoothing(bool enabled);
+	void set_image_texture_smoothing(bool enabled);
 	void set_model_palettes(const QVector<QRgb>& quake1_palette, const QVector<QRgb>& quake2_palette);
 
 	void show_placeholder();
@@ -106,6 +107,7 @@ private:
 	QToolButton* image_bg_color_button_ = nullptr;
 	QColor image_bg_color_;
 	bool image_bg_checkerboard_ = true;
+	bool image_texture_smoothing_ = false;
 	QImage image_original_;
 	QPixmap image_source_pixmap_;
 
