@@ -94,9 +94,6 @@ QImage decode_miptex_image(const QByteArray& bytes, const QVector<QRgb>* externa
     return {};
   }
 
-  const QString tex_name = read_name16(bytes);
-  const bool transparent = (!tex_name.isEmpty() && tex_name.startsWith('{'));
-
   const quint32 width_u = read_u32_le_from(bytes.constData() + 16);
   const quint32 height_u = read_u32_le_from(bytes.constData() + 20);
   if (width_u == 0 || height_u == 0 || width_u > 8192 || height_u > 8192) {
@@ -150,7 +147,7 @@ QImage decode_miptex_image(const QByteArray& bytes, const QVector<QRgb>* externa
     for (int x = 0; x < width; ++x) {
       const int idx = static_cast<int>(src[row + x]);
       const QRgb c = (idx >= 0 && idx < palette.size()) ? palette[idx] : qRgba(0, 0, 0, 255);
-      if (transparent && idx == 255) {
+      if (idx == 255) {
         dst[x] = qRgba(qRed(c), qGreen(c), qBlue(c), 0);
       } else {
         dst[x] = c;
@@ -160,4 +157,3 @@ QImage decode_miptex_image(const QByteArray& bytes, const QVector<QRgb>* externa
 
   return img;
 }
-

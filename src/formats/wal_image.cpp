@@ -84,7 +84,7 @@ constexpr int kWalHeaderSize = 100;
 		dst[0] = static_cast<uchar>(qRed(c));
 		dst[1] = static_cast<uchar>(qGreen(c));
 		dst[2] = static_cast<uchar>(qBlue(c));
-		dst[3] = 255;
+		dst[3] = (idx == 255) ? 0 : 255;
 	}
 
 	*out = std::move(img);

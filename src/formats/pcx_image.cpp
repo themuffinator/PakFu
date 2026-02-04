@@ -268,7 +268,7 @@ QImage decode_pcx_image(const QByteArray& bytes, QString* error) {
 				dst[x * 4 + 0] = static_cast<uchar>(qRed(c));
 				dst[x * 4 + 1] = static_cast<uchar>(qGreen(c));
 				dst[x * 4 + 2] = static_cast<uchar>(qBlue(c));
-				dst[x * 4 + 3] = 255;
+				dst[x * 4 + 3] = (idx == 255) ? 0 : 255;
 			}
 		}
 		return image;
