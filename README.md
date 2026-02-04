@@ -18,7 +18,7 @@ This project is still training under the waterfall 💦🥋 (early development).
 - Understand and preview common PAK-adjacent file types 👁️‍🗨️📁
   - Images: `pcx`, `wal`, `mip`, `dds`, `lmp`, `png`, `tga`, `jpg` 🖼️🎨
   - Audio: `wav`, `ogg`, `mp3` 🔊🎶
-  - Video: `cin`, `roq` 🎞️🍿
+  - Video: `cin`, `roq`, `ogv` 🎞️🍿
   - Models: `mdl`, `md2`, `md3`, `iqm`, `md5mesh`, `lwo`, `obj` 🧊🧩
   - Maps: `bsp` (Quake/Quake II/Quake III/Quake Live) 🗺️🧭
   - Text/config: `cfg` and similar plain-text formats 🧾🖋️

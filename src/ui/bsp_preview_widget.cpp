@@ -5,6 +5,7 @@
 #include <cstddef>
 
 #include <QMatrix4x4>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPalette>
 #include <QSurfaceFormat>
@@ -130,6 +131,7 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       uniform mediump vec3 uLightDir;
       uniform mediump vec3 uFillDir;
       uniform mediump vec3 uAmbient;
+      uniform mediump float uLightmapStrength;
       uniform sampler2D uTex;
       uniform int uHasTexture;
 
@@ -141,7 +143,8 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
         float ndl = abs(dot(n, normalize(uLightDir)));
         float ndl2 = abs(dot(n, normalize(uFillDir)));
         vec3 tex = (uHasTexture == 1) ? texture2D(uTex, vUV).rgb : vec3(1.0);
-        vec3 base = toLinear(vColor) * toLinear(tex);
+        vec3 lm = mix(vec3(1.0), vColor, uLightmapStrength);
+        vec3 base = toLinear(lm) * toLinear(tex);
         vec3 lit = base * (uAmbient + ndl * 0.8 + ndl2 * 0.4);
         lit = min(lit, vec3(1.0));
         gl_FragColor = vec4(toSrgb(lit), 1.0);
@@ -163,6 +166,7 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       uniform vec3 uLightDir;
       uniform vec3 uFillDir;
       uniform vec3 uAmbient;
+      uniform float uLightmapStrength;
       uniform sampler2D uTex;
       uniform int uHasTexture;
       out vec4 fragColor;
@@ -175,7 +179,8 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
         float ndl = abs(dot(n, normalize(uLightDir)));
         float ndl2 = abs(dot(n, normalize(uFillDir)));
         vec3 tex = (uHasTexture == 1) ? texture(uTex, vUV).rgb : vec3(1.0);
-        vec3 base = toLinear(vColor) * toLinear(tex);
+        vec3 lm = mix(vec3(1.0), vColor, uLightmapStrength);
+        vec3 base = toLinear(lm) * toLinear(tex);
         vec3 lit = base * (uAmbient + ndl * 0.8 + ndl2 * 0.4);
         lit = min(lit, vec3(1.0));
         fragColor = vec4(toSrgb(lit), 1.0);
@@ -192,6 +197,7 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       uniform vec3 uLightDir;
       uniform vec3 uFillDir;
       uniform vec3 uAmbient;
+      uniform float uLightmapStrength;
       uniform sampler2D uTex;
       uniform int uHasTexture;
       out vec4 fragColor;
@@ -204,7 +210,8 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
         float ndl = abs(dot(n, normalize(uLightDir)));
         float ndl2 = abs(dot(n, normalize(uFillDir)));
         vec3 tex = (uHasTexture == 1) ? texture(uTex, vUV).rgb : vec3(1.0);
-        vec3 base = toLinear(vColor) * toLinear(tex);
+        vec3 lm = mix(vec3(1.0), vColor, uLightmapStrength);
+        vec3 base = toLinear(lm) * toLinear(tex);
         vec3 lit = base * (uAmbient + ndl * 0.8 + ndl2 * 0.4);
         lit = min(lit, vec3(1.0));
         fragColor = vec4(toSrgb(lit), 1.0);
@@ -220,6 +227,7 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
     uniform vec3 uLightDir;
     uniform vec3 uFillDir;
     uniform vec3 uAmbient;
+    uniform float uLightmapStrength;
     uniform sampler2D uTex;
     uniform int uHasTexture;
 
@@ -231,7 +239,8 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       float ndl = abs(dot(n, normalize(uLightDir)));
       float ndl2 = abs(dot(n, normalize(uFillDir)));
       vec3 tex = (uHasTexture == 1) ? texture2D(uTex, vUV).rgb : vec3(1.0);
-      vec3 base = toLinear(vColor) * toLinear(tex);
+      vec3 lm = mix(vec3(1.0), vColor, uLightmapStrength);
+      vec3 base = toLinear(lm) * toLinear(tex);
       vec3 lit = base * (uAmbient + ndl * 0.8 + ndl2 * 0.4);
       lit = min(lit, vec3(1.0));
       gl_FragColor = vec4(toSrgb(lit), 1.0);
@@ -243,6 +252,13 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
 BspPreviewWidget::BspPreviewWidget(QWidget* parent) : QOpenGLWidget(parent) {
   setMinimumHeight(240);
   setFocusPolicy(Qt::StrongFocus);
+  setToolTip(
+    "3D Controls:\n"
+    "- Orbit: Left-drag\n"
+    "- Pan: Shift+Left-drag / Middle-drag / Right-drag\n"
+    "- Zoom: Mouse wheel\n"
+    "- Frame: F\n"
+    "- Reset: R");
 }
 
 BspPreviewWidget::~BspPreviewWidget() {
@@ -282,6 +298,14 @@ void BspPreviewWidget::set_mesh(BspMesh mesh, QHash<QString, QImage> textures) {
   pending_upload_ = has_mesh_;
   pending_texture_upload_ = has_mesh_;
   reset_camera_from_mesh();
+  update();
+}
+
+void BspPreviewWidget::set_lightmap_enabled(bool enabled) {
+  if (lightmap_enabled_ == enabled) {
+    return;
+  }
+  lightmap_enabled_ = enabled;
   update();
 }
 
@@ -358,6 +382,7 @@ void BspPreviewWidget::paintGL() {
   program_.setUniformValue("uLightDir", QVector3D(-0.35f, -0.6f, 0.75f));
   program_.setUniformValue("uFillDir", QVector3D(0.75f, 0.2f, 0.45f));
   program_.setUniformValue("uAmbient", QVector3D(0.35f, 0.35f, 0.35f));
+  program_.setUniformValue("uLightmapStrength", lightmap_enabled_ ? 1.0f : 0.0f);
 
   vao_.bind();
   glActiveTexture(GL_TEXTURE0);
@@ -388,16 +413,33 @@ void BspPreviewWidget::resizeGL(int, int) {
 }
 
 void BspPreviewWidget::mousePressEvent(QMouseEvent* event) {
-  if (event && event->button() == Qt::LeftButton) {
+  if (!event) {
+    QOpenGLWidget::mousePressEvent(event);
+    return;
+  }
+
+  if (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton || event->button() == Qt::RightButton) {
+    setFocus(Qt::MouseFocusReason);
     last_mouse_pos_ = event->pos();
+    drag_button_ = event->button();
+
+    if (event->button() == Qt::LeftButton) {
+      drag_mode_ = (event->modifiers() & Qt::ShiftModifier) ? DragMode::Pan : DragMode::Orbit;
+    } else {
+      drag_mode_ = DragMode::Pan;
+    }
+
     event->accept();
     return;
   }
+
   QOpenGLWidget::mousePressEvent(event);
 }
 
 void BspPreviewWidget::mouseMoveEvent(QMouseEvent* event) {
-  if (!event || !(event->buttons() & Qt::LeftButton)) {
+  if (!event || drag_mode_ == DragMode::None || drag_button_ == Qt::NoButton || !(event->buttons() & drag_button_)) {
+    drag_mode_ = DragMode::None;
+    drag_button_ = Qt::NoButton;
     QOpenGLWidget::mouseMoveEvent(event);
     return;
   }
@@ -405,12 +447,26 @@ void BspPreviewWidget::mouseMoveEvent(QMouseEvent* event) {
   const QPoint delta = event->pos() - last_mouse_pos_;
   last_mouse_pos_ = event->pos();
 
-  yaw_deg_ += static_cast<float>(delta.x()) * 0.6f;
-  pitch_deg_ += static_cast<float>(-delta.y()) * 0.6f;
-  pitch_deg_ = std::clamp(pitch_deg_, -89.0f, 89.0f);
+  if (drag_mode_ == DragMode::Orbit) {
+    yaw_deg_ += static_cast<float>(delta.x()) * 0.6f;
+    pitch_deg_ += static_cast<float>(-delta.y()) * 0.6f;
+    pitch_deg_ = std::clamp(pitch_deg_, -89.0f, 89.0f);
+  } else if (drag_mode_ == DragMode::Pan) {
+    pan_by_pixels(delta);
+  }
 
   update();
   event->accept();
+}
+
+void BspPreviewWidget::mouseReleaseEvent(QMouseEvent* event) {
+  if (event && event->button() == drag_button_) {
+    drag_mode_ = DragMode::None;
+    drag_button_ = Qt::NoButton;
+    event->accept();
+    return;
+  }
+  QOpenGLWidget::mouseReleaseEvent(event);
 }
 
 void BspPreviewWidget::wheelEvent(QWheelEvent* event) {
@@ -431,12 +487,39 @@ void BspPreviewWidget::wheelEvent(QWheelEvent* event) {
 }
 
 void BspPreviewWidget::reset_camera_from_mesh() {
+  frame_mesh();
+  yaw_deg_ = 45.0f;
+  pitch_deg_ = 55.0f;
+}
+
+void BspPreviewWidget::keyPressEvent(QKeyEvent* event) {
+  if (!event) {
+    QOpenGLWidget::keyPressEvent(event);
+    return;
+  }
+
+  if (event->key() == Qt::Key_R) {
+    reset_camera_from_mesh();
+    update();
+    event->accept();
+    return;
+  }
+
+  if (event->key() == Qt::Key_F) {
+    frame_mesh();
+    update();
+    event->accept();
+    return;
+  }
+
+  QOpenGLWidget::keyPressEvent(event);
+}
+
+void BspPreviewWidget::frame_mesh() {
   if (!has_mesh_) {
     center_ = QVector3D(0, 0, 0);
     radius_ = 1.0f;
     distance_ = 3.0f;
-    yaw_deg_ = 45.0f;
-    pitch_deg_ = 55.0f;
     return;
   }
   const QVector3D mins = mesh_.mins;
@@ -444,8 +527,32 @@ void BspPreviewWidget::reset_camera_from_mesh() {
   center_ = (mins + maxs) * 0.5f;
   radius_ = std::max(0.001f, (maxs - mins).length() * 0.5f);
   distance_ = std::max(radius_ * 2.8f, 1.0f);
-  yaw_deg_ = 45.0f;
-  pitch_deg_ = 55.0f;
+}
+
+void BspPreviewWidget::pan_by_pixels(const QPoint& delta) {
+  if (height() <= 0) {
+    return;
+  }
+
+  constexpr float kPi = 3.14159265358979323846f;
+  constexpr float fov_deg = 45.0f;
+  const float fov_rad = fov_deg * kPi / 180.0f;
+  const float units_per_px =
+      (2.0f * distance_ * std::tan(fov_rad * 0.5f)) / std::max(1.0f, static_cast<float>(height()));
+
+  const QVector3D dir = spherical_dir(yaw_deg_, pitch_deg_).normalized();
+  const QVector3D forward = (-dir).normalized();
+  const QVector3D world_up(0.0f, 0.0f, 1.0f);
+
+  QVector3D right = QVector3D::crossProduct(forward, world_up);
+  if (right.lengthSquared() < 1e-6f) {
+    right = QVector3D(1.0f, 0.0f, 0.0f);
+  } else {
+    right.normalize();
+  }
+
+  const QVector3D up = QVector3D::crossProduct(right, forward).normalized();
+  center_ += (-right * static_cast<float>(delta.x()) + up * static_cast<float>(delta.y())) * units_per_px;
 }
 
 void BspPreviewWidget::upload_mesh_if_possible() {

@@ -14,8 +14,10 @@
 
 #include "formats/model.h"
 
+class QKeyEvent;
+
 class ModelViewerWidget final : public QOpenGLWidget, protected QOpenGLFunctions {
-public:
+ public:
   explicit ModelViewerWidget(QWidget* parent = nullptr);
   ~ModelViewerWidget() override;
 
@@ -37,9 +39,11 @@ protected:
 
   void mousePressEvent(QMouseEvent* event) override;
   void mouseMoveEvent(QMouseEvent* event) override;
+  void mouseReleaseEvent(QMouseEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
+  void keyPressEvent(QKeyEvent* event) override;
 
-private:
+ private:
   struct GpuVertex {
     float px, py, pz;
     float nx, ny, nz;
@@ -58,11 +62,19 @@ private:
   };
 
   void reset_camera_from_mesh();
+  void frame_mesh();
+  void pan_by_pixels(const QPoint& delta);
   void upload_mesh_if_possible();
   void upload_textures_if_possible();
   void destroy_gl_resources();
   void ensure_program();
   void update_ground_mesh_if_needed();
+
+  enum class DragMode {
+    None,
+    Orbit,
+    Pan,
+  };
 
   std::optional<LoadedModel> model_;
   bool pending_upload_ = false;
@@ -92,6 +104,8 @@ private:
   float distance_ = 3.0f;
 
   QPoint last_mouse_pos_;
+  DragMode drag_mode_ = DragMode::None;
+  Qt::MouseButton drag_button_ = Qt::NoButton;
 
   bool texture_smoothing_ = false;
   QVector<QRgb> quake1_palette_;

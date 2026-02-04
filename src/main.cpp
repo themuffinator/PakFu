@@ -52,6 +52,41 @@ void set_app_metadata(QCoreApplication& app) {
   app.setApplicationVersion(PAKFU_VERSION);
 }
 
+bool dir_contains_ffmpeg_media_plugin(const QString& dir_path) {
+  if (dir_path.isEmpty()) {
+    return false;
+  }
+  const QDir d(dir_path);
+  if (!d.exists()) {
+    return false;
+  }
+  const QStringList matches = d.entryList(QStringList() << "*ffmpegmediaplugin*", QDir::Files);
+  return !matches.isEmpty();
+}
+
+void prefer_qt_ffmpeg_backend_if_available() {
+  // Respect explicit user/system choice.
+  if (qEnvironmentVariableIsSet("QT_MEDIA_BACKEND")) {
+    return;
+  }
+
+  // Try to detect availability of the Qt FFmpeg multimedia backend plugin.
+  // If it's present, prefer it so formats like OGV (Theora/Vorbis) work on platforms where
+  // the native backend may not support them.
+  const QStringList roots = QCoreApplication::libraryPaths();
+  for (const QString& root : roots) {
+    const QString multimedia_dir = QDir(root).filePath("multimedia");
+    const QString plugins_multimedia_dir = QDir(root).filePath("plugins/multimedia");
+    const QString plug_ins_multimedia_dir = QDir(root).filePath("PlugIns/multimedia");
+    if (dir_contains_ffmpeg_media_plugin(multimedia_dir) ||
+        dir_contains_ffmpeg_media_plugin(plugins_multimedia_dir) ||
+        dir_contains_ffmpeg_media_plugin(plug_ins_multimedia_dir)) {
+      qputenv("QT_MEDIA_BACKEND", "ffmpeg");
+      return;
+    }
+  }
+}
+
 #ifdef Q_OS_WIN
 QString resolve_executable_dir_winapi() {
   DWORD cap = MAX_PATH;
@@ -358,6 +393,7 @@ int main(int argc, char** argv) {
 
   QApplication app(argc, argv);
   set_app_metadata(app);
+  prefer_qt_ffmpeg_backend_if_available();
   const QString server_name = single_instance_server_name();
   const QStringList initial_archives = find_initial_archives(argc, argv);
 

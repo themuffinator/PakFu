@@ -7,6 +7,7 @@
 #include <limits>
 
 #include <QMatrix4x4>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QDir>
 #include <QFileInfo>
@@ -363,6 +364,13 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
 ModelViewerWidget::ModelViewerWidget(QWidget* parent) : QOpenGLWidget(parent) {
   setMinimumHeight(240);
   setFocusPolicy(Qt::StrongFocus);
+  setToolTip(
+    "3D Controls:\n"
+    "- Orbit: Left-drag\n"
+    "- Pan: Shift+Left-drag / Middle-drag / Right-drag\n"
+    "- Zoom: Mouse wheel\n"
+    "- Frame: F\n"
+    "- Reset: R");
 
   QSettings settings;
   texture_smoothing_ = settings.value("preview/model/textureSmoothing", false).toBool();
@@ -735,16 +743,33 @@ void ModelViewerWidget::resizeGL(int, int) {
 }
 
 void ModelViewerWidget::mousePressEvent(QMouseEvent* event) {
-  if (event && event->button() == Qt::LeftButton) {
+  if (!event) {
+    QOpenGLWidget::mousePressEvent(event);
+    return;
+  }
+
+  if (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton || event->button() == Qt::RightButton) {
+    setFocus(Qt::MouseFocusReason);
     last_mouse_pos_ = event->pos();
+    drag_button_ = event->button();
+
+    if (event->button() == Qt::LeftButton) {
+      drag_mode_ = (event->modifiers() & Qt::ShiftModifier) ? DragMode::Pan : DragMode::Orbit;
+    } else {
+      drag_mode_ = DragMode::Pan;
+    }
+
     event->accept();
     return;
   }
+
   QOpenGLWidget::mousePressEvent(event);
 }
 
 void ModelViewerWidget::mouseMoveEvent(QMouseEvent* event) {
-  if (!event || !(event->buttons() & Qt::LeftButton)) {
+  if (!event || drag_mode_ == DragMode::None || drag_button_ == Qt::NoButton || !(event->buttons() & drag_button_)) {
+    drag_mode_ = DragMode::None;
+    drag_button_ = Qt::NoButton;
     QOpenGLWidget::mouseMoveEvent(event);
     return;
   }
@@ -752,12 +777,26 @@ void ModelViewerWidget::mouseMoveEvent(QMouseEvent* event) {
   const QPoint delta = event->pos() - last_mouse_pos_;
   last_mouse_pos_ = event->pos();
 
-  yaw_deg_ += static_cast<float>(delta.x()) * 0.6f;
-  pitch_deg_ += static_cast<float>(-delta.y()) * 0.6f;
-  pitch_deg_ = std::clamp(pitch_deg_, -89.0f, 89.0f);
+  if (drag_mode_ == DragMode::Orbit) {
+    yaw_deg_ += static_cast<float>(delta.x()) * 0.6f;
+    pitch_deg_ += static_cast<float>(-delta.y()) * 0.6f;
+    pitch_deg_ = std::clamp(pitch_deg_, -89.0f, 89.0f);
+  } else if (drag_mode_ == DragMode::Pan) {
+    pan_by_pixels(delta);
+  }
 
   update();
   event->accept();
+}
+
+void ModelViewerWidget::mouseReleaseEvent(QMouseEvent* event) {
+  if (event && event->button() == drag_button_) {
+    drag_mode_ = DragMode::None;
+    drag_button_ = Qt::NoButton;
+    event->accept();
+    return;
+  }
+  QOpenGLWidget::mouseReleaseEvent(event);
 }
 
 void ModelViewerWidget::wheelEvent(QWheelEvent* event) {
@@ -777,7 +816,36 @@ void ModelViewerWidget::wheelEvent(QWheelEvent* event) {
   QOpenGLWidget::wheelEvent(event);
 }
 
+void ModelViewerWidget::keyPressEvent(QKeyEvent* event) {
+  if (!event) {
+    QOpenGLWidget::keyPressEvent(event);
+    return;
+  }
+
+  if (event->key() == Qt::Key_R) {
+    reset_camera_from_mesh();
+    update();
+    event->accept();
+    return;
+  }
+
+  if (event->key() == Qt::Key_F) {
+    frame_mesh();
+    update();
+    event->accept();
+    return;
+  }
+
+  QOpenGLWidget::keyPressEvent(event);
+}
+
 void ModelViewerWidget::reset_camera_from_mesh() {
+  frame_mesh();
+  yaw_deg_ = 45.0f;
+  pitch_deg_ = 20.0f;
+}
+
+void ModelViewerWidget::frame_mesh() {
   if (!model_) {
     center_ = QVector3D(0, 0, 0);
     radius_ = 1.0f;
@@ -793,6 +861,33 @@ void ModelViewerWidget::reset_camera_from_mesh() {
   distance_ = std::max(radius_ * 2.6f, 1.0f);
   ground_z_ = mins.z() - radius_ * 0.02f;
   ground_extent_ = 0.0f;
+}
+
+void ModelViewerWidget::pan_by_pixels(const QPoint& delta) {
+  if (height() <= 0) {
+    return;
+  }
+
+  constexpr float kPi = 3.14159265358979323846f;
+  constexpr float fov_deg = 45.0f;
+  const float fov_rad = fov_deg * kPi / 180.0f;
+  const float units_per_px =
+      (2.0f * distance_ * std::tan(fov_rad * 0.5f)) / std::max(1.0f, static_cast<float>(height()));
+
+  const QVector3D dir = spherical_dir(yaw_deg_, pitch_deg_).normalized();
+  const QVector3D forward = (-dir).normalized();
+  const QVector3D world_up(0.0f, 0.0f, 1.0f);
+
+  QVector3D right = QVector3D::crossProduct(forward, world_up);
+  if (right.lengthSquared() < 1e-6f) {
+    right = QVector3D(1.0f, 0.0f, 0.0f);
+  } else {
+    right.normalize();
+  }
+
+  const QVector3D up = QVector3D::crossProduct(right, forward).normalized();
+  center_ += (-right * static_cast<float>(delta.x()) + up * static_cast<float>(delta.y())) * units_per_px;
+  ground_extent_ = 0.0f;  // ensure the ground mesh recenters during pan
 }
 
 void ModelViewerWidget::ensure_program() {

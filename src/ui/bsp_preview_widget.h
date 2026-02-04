@@ -13,23 +13,28 @@
 
 #include "formats/bsp_preview.h"
 
+class QKeyEvent;
+
 class BspPreviewWidget final : public QOpenGLWidget, protected QOpenGLFunctions {
-public:
+ public:
   explicit BspPreviewWidget(QWidget* parent = nullptr);
   ~BspPreviewWidget() override;
 
   void set_mesh(BspMesh mesh, QHash<QString, QImage> textures = {});
+  void set_lightmap_enabled(bool enabled);
   void clear();
 
-protected:
+ protected:
   void mousePressEvent(QMouseEvent* event) override;
   void mouseMoveEvent(QMouseEvent* event) override;
+  void mouseReleaseEvent(QMouseEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
+  void keyPressEvent(QKeyEvent* event) override;
   void initializeGL() override;
   void paintGL() override;
   void resizeGL(int w, int h) override;
 
-private:
+ private:
   struct GpuVertex {
     float px, py, pz;
     float nx, ny, nz;
@@ -49,10 +54,18 @@ private:
   };
 
   void reset_camera_from_mesh();
+  void frame_mesh();
+  void pan_by_pixels(const QPoint& delta);
   void upload_mesh_if_possible();
   void upload_textures_if_possible();
   void destroy_gl_resources();
   void ensure_program();
+
+  enum class DragMode {
+    None,
+    Orbit,
+    Pan,
+  };
 
   BspMesh mesh_;
   bool has_mesh_ = false;
@@ -68,6 +81,7 @@ private:
   QVector<DrawSurface> surfaces_;
   QHash<QString, QImage> textures_;
 
+  bool lightmap_enabled_ = true;
   QVector3D center_ = QVector3D(0, 0, 0);
   float radius_ = 1.0f;
   float yaw_deg_ = 45.0f;
@@ -75,4 +89,6 @@ private:
   float distance_ = 3.0f;
 
   QPoint last_mouse_pos_;
+  DragMode drag_mode_ = DragMode::None;
+  Qt::MouseButton drag_button_ = Qt::NoButton;
 };

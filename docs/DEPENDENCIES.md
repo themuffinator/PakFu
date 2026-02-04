@@ -10,15 +10,22 @@
   - Widgets
   - OpenGL (Qt OpenGL helpers)
   - OpenGLWidgets (model preview: MDL/MD2/MD3/IQM/MD5/LWO/OBJ)
-  - Multimedia (audio playback: WAV/MP3/Ogg Vorbis, via platform codecs)
+  - Multimedia (audio/video playback via available backend codecs; prefers FFmpeg when available)
+  - MultimediaWidgets (video output: QVideoWidget)
 
 ## Planned / Optional
-- Qt 6 Multimedia (video playback, waveform preview)
 - OGG (if not handled by Qt Multimedia on a platform)
 - Third-party decoding libraries as needed, scoped to formats that Qt does not
   cover on all platforms
 
 ## Implemented
+- Multimedia playback:
+  - Qt 6 Multimedia + MultimediaWidgets (codec support depends on backend; prefers FFmpeg when available):
+    - Audio: WAV, MP3, Ogg Vorbis
+    - Video: formats supported by the installed backend (e.g. OGV/Theora when FFmpeg is available)
+  - Built-in cinematic playback:
+    - CIN, ROQ
+
 - Image loaders:
   - PNG, JPEG: Qt 6 (QtGui)
   - TGA: built-in decoder (uncompressed + RLE; true-color, grayscale, color-mapped)
@@ -34,6 +41,6 @@
   - PK3/PK4/PKZ/ZIP: built-in reader/writer via vendored miniz
   - Quake Live Beta encrypted PK3: built-in decrypt/encrypt (XOR) loader/writer
 
-- Cinematics (built-in decoders + preview playback):
+- Cinematics (built-in decoders; used for thumbnails + playback widget):
   - CIN: id Quake II cinematic (PAL8 + optional PCM audio)
   - ROQ: id RoQ (vector quantized video + optional RoQ DPCM audio)

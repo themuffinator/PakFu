@@ -14,7 +14,7 @@ project(
   ],
 )
 
-qt6_modules = ['Core', 'Gui', 'Widgets', 'OpenGL', 'OpenGLWidgets', 'Network', 'Multimedia']
+qt6_modules = ['Core', 'Gui', 'Widgets', 'OpenGL', 'OpenGLWidgets', 'Network', 'Multimedia', 'MultimediaWidgets']
 qt6 = import('qt6')
 qt6_dep = dependency('qt6', modules: qt6_modules, method: 'config-tool', required: false)
 if not qt6_dep.found()

@@ -2,16 +2,21 @@
 
 #include <QAudioOutput>
 #include <QColorDialog>
+#include <QComboBox>
 #include <QFileInfo>
+#include <QDateTime>
+#include <QTimeZone>
 #include <QFontDatabase>
 #include <QFrame>
 #include <QFont>
+#include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMediaMetaData>
 #include <QMediaPlayer>
 #include <QPalette>
 #include <QIcon>
+#include <QLayoutItem>
 #include <QPlainTextEdit>
 #include <QSettings>
 #include <QPainter>
@@ -31,6 +36,7 @@
 #include "ui/bsp_preview_widget.h"
 #include "ui/cfg_syntax_highlighter.h"
 #include "ui/cinematic_player_widget.h"
+#include "ui/video_player_widget.h"
 #include "ui/model_viewer_widget.h"
 #include "ui/simple_syntax_highlighter.h"
 
@@ -100,6 +106,33 @@ QString format_duration(qint64 millis) {
 		.arg(minutes, 2, 10, QLatin1Char('0'))
 		.arg(seconds, 2, 10, QLatin1Char('0'));
 }
+
+QString format_size(qint64 bytes) {
+	constexpr qint64 kKiB = 1024;
+	constexpr qint64 kMiB = 1024 * 1024;
+	constexpr qint64 kGiB = 1024 * 1024 * 1024;
+	if (bytes < 0) {
+		return {};
+	}
+	if (bytes >= kGiB) {
+		return QString("%1 GiB").arg(QString::number(static_cast<double>(bytes) / static_cast<double>(kGiB), 'f', 1));
+	}
+	if (bytes >= kMiB) {
+		return QString("%1 MiB").arg(QString::number(static_cast<double>(bytes) / static_cast<double>(kMiB), 'f', 1));
+	}
+	if (bytes >= kKiB) {
+		return QString("%1 KiB").arg(QString::number(static_cast<double>(bytes) / static_cast<double>(kKiB), 'f', 1));
+	}
+	return QString("%1 B").arg(bytes);
+}
+
+QString format_mtime(qint64 utc_secs) {
+	if (utc_secs <= 0) {
+		return {};
+	}
+	const QDateTime dt = QDateTime::fromSecsSinceEpoch(utc_secs, QTimeZone::utc()).toLocalTime();
+	return dt.toString("yyyy-MM-dd HH:mm:ss");
+}
 }  // namespace
 
 /*
@@ -116,6 +149,12 @@ PreviewPane::PreviewPane(QWidget* parent) : QWidget(parent) {
 
 PreviewPane::~PreviewPane() = default;
 
+void PreviewPane::set_current_file_info(const QString& pak_path, qint64 size, qint64 mtime_utc_secs) {
+	current_pak_path_ = pak_path;
+	current_file_size_ = size;
+	current_mtime_utc_secs_ = mtime_utc_secs;
+}
+
 /*
 =============
 PreviewPane::resizeEvent
@@ -125,7 +164,7 @@ Reflow the current preview when the pane size changes.
 */
 void PreviewPane::resizeEvent(QResizeEvent* event) {
 	QWidget::resizeEvent(event);
-	if (stack_ && stack_->currentWidget() == image_page_ && !image_source_pixmap_.isNull()) {
+	if (image_card_ && image_card_->isVisible() && !image_source_pixmap_.isNull()) {
 		set_image_pixmap(image_source_pixmap_);
 	}
 }
@@ -169,15 +208,153 @@ void PreviewPane::build_ui() {
 		"}");
 	layout->addWidget(header, 0);
 
-	stack_ = new QStackedWidget(this);
-	layout->addWidget(stack_, 1);
+	insights_scroll_ = new QScrollArea(this);
+	insights_scroll_->setWidgetResizable(true);
+	insights_scroll_->setFrameShape(QFrame::NoFrame);
+	layout->addWidget(insights_scroll_, 1);
+
+	insights_page_ = new QWidget(insights_scroll_);
+	auto* insights_layout = new QVBoxLayout(insights_page_);
+	insights_layout->setContentsMargins(0, 0, 0, 0);
+	insights_layout->setSpacing(10);
+	insights_scroll_->setWidget(insights_page_);
+
+	QFont card_title_font = title_label_->font();
+	card_title_font.setWeight(QFont::DemiBold);
+
+	overview_card_ = new QFrame(insights_page_);
+	overview_card_->setObjectName("insightsOverviewCard");
+	overview_card_->setStyleSheet(
+		"#insightsOverviewCard {"
+		"  border: 1px solid rgba(120, 120, 120, 70);"
+		"  border-radius: 10px;"
+		"  background-color: rgba(255, 255, 255, 16);"
+		"}");
+	auto* overview_layout = new QVBoxLayout(overview_card_);
+	overview_layout->setContentsMargins(12, 12, 12, 12);
+	overview_layout->setSpacing(8);
+
+	auto* overview_title = new QLabel("File Overview", overview_card_);
+	overview_title->setFont(card_title_font);
+	overview_layout->addWidget(overview_title, 0);
+
+	image_card_ = new QFrame(insights_page_);
+	image_card_->setObjectName("insightsImageCard");
+	image_card_->setStyleSheet(
+		"#insightsImageCard {"
+		"  border: 1px solid rgba(120, 120, 120, 70);"
+		"  border-radius: 10px;"
+		"  background-color: rgba(255, 255, 255, 16);"
+		"}");
+	image_card_->setVisible(false);
+	auto* image_layout = new QVBoxLayout(image_card_);
+	image_layout->setContentsMargins(12, 12, 12, 12);
+	image_layout->setSpacing(8);
+
+	auto* image_title = new QLabel("Image", image_card_);
+	image_title->setFont(card_title_font);
+	image_layout->addWidget(image_title, 0);
+
+	overview_image_container_ = new QWidget(image_card_);
+	auto* overview_image_layout = new QVBoxLayout(overview_image_container_);
+	overview_image_layout->setContentsMargins(0, 0, 0, 0);
+	overview_image_layout->setSpacing(6);
+
+	auto* img_controls = new QWidget(overview_image_container_);
+	auto* img_controls_layout = new QHBoxLayout(img_controls);
+	img_controls_layout->setContentsMargins(6, 4, 6, 4);
+	img_controls_layout->setSpacing(8);
+
+	auto* bg_label = new QLabel("Background", img_controls);
+	bg_label->setStyleSheet("color: rgba(190, 190, 190, 220);");
+	img_controls_layout->addWidget(bg_label);
+
+	image_bg_mode_combo_ = new QComboBox(img_controls);
+	image_bg_mode_combo_->addItem("Transparent", "transparent");
+	image_bg_mode_combo_->addItem("Checkerboard", "checkerboard");
+	image_bg_mode_combo_->addItem("Solid", "solid");
+	image_bg_mode_combo_->setToolTip("Background shown behind transparent pixels.");
+	img_controls_layout->addWidget(image_bg_mode_combo_);
+
+	image_bg_color_button_ = new QToolButton(img_controls);
+	image_bg_color_button_->setText("Color…");
+	image_bg_color_button_->setToolTip("Choose the background color behind transparent pixels.");
+	img_controls_layout->addWidget(image_bg_color_button_);
+
+	auto* layout_label = new QLabel("Layout", img_controls);
+	layout_label->setStyleSheet("color: rgba(190, 190, 190, 220);");
+	img_controls_layout->addWidget(layout_label);
+
+	image_layout_combo_ = new QComboBox(img_controls);
+	image_layout_combo_->addItem("Fit", "fit");
+	image_layout_combo_->addItem("Tile", "tile");
+	image_layout_combo_->setToolTip("Choose whether to fit the image or tile it across the preview area.");
+	img_controls_layout->addWidget(image_layout_combo_);
+
+	img_controls_layout->addStretch();
+
+	image_reveal_transparency_button_ = new QToolButton(img_controls);
+	image_reveal_transparency_button_->setText("Reveal hidden pixels");
+	image_reveal_transparency_button_->setCheckable(true);
+	image_reveal_transparency_button_->setAutoRaise(true);
+	image_reveal_transparency_button_->setCursor(Qt::PointingHandCursor);
+	image_reveal_transparency_button_->setToolTip("Show the RGB values of fully transparent pixels.");
+	img_controls_layout->addWidget(image_reveal_transparency_button_);
+
+	overview_image_layout->addWidget(img_controls, 0);
+
+	image_scroll_ = new QScrollArea(overview_image_container_);
+	image_scroll_->setWidgetResizable(true);
+	image_scroll_->setFrameShape(QFrame::NoFrame);
+	image_scroll_->setMinimumHeight(240);
+	if (QWidget* vp = image_scroll_->viewport()) {
+		vp->setAutoFillBackground(true);
+	}
+	image_label_ = new QLabel(image_scroll_);
+	image_label_->setAlignment(Qt::AlignCenter);
+	image_label_->setScaledContents(false);
+	image_label_->setStyleSheet("background: transparent;");
+	image_scroll_->setWidget(image_label_);
+	overview_image_layout->addWidget(image_scroll_, 1);
+
+	auto* overview_fields = new QWidget(overview_card_);
+	overview_form_ = new QFormLayout(overview_fields);
+	overview_form_->setContentsMargins(0, 0, 0, 0);
+	overview_form_->setHorizontalSpacing(12);
+	overview_form_->setVerticalSpacing(4);
+	overview_layout->addWidget(overview_fields, 0);
+
+	insights_layout->addWidget(overview_card_, 0);
+	image_layout->addWidget(overview_image_container_, 1);
+	insights_layout->addWidget(image_card_, 0);
+
+	content_card_ = new QFrame(insights_page_);
+	content_card_->setObjectName("insightsContentCard");
+	content_card_->setStyleSheet(
+		"#insightsContentCard {"
+		"  border: 1px solid rgba(120, 120, 120, 70);"
+		"  border-radius: 10px;"
+		"  background-color: rgba(255, 255, 255, 16);"
+		"}");
+	auto* content_layout = new QVBoxLayout(content_card_);
+	content_layout->setContentsMargins(12, 12, 12, 12);
+	content_layout->setSpacing(8);
+
+	content_title_label_ = new QLabel(content_card_);
+	content_title_label_->setFont(card_title_font);
+	content_layout->addWidget(content_title_label_, 0);
+
+	stack_ = new QStackedWidget(content_card_);
+	content_layout->addWidget(stack_, 1);
+
+	insights_layout->addWidget(content_card_, 1);
 
 	// Placeholder.
 	placeholder_page_ = new QWidget(stack_);
 	auto* ph_layout = new QVBoxLayout(placeholder_page_);
 	ph_layout->setContentsMargins(18, 18, 18, 18);
 	ph_layout->addStretch();
-	placeholder_label_ = new QLabel("Select a file to preview.", placeholder_page_);
+	placeholder_label_ = new QLabel("Select a file to view insights.", placeholder_page_);
 	placeholder_label_->setAlignment(Qt::AlignCenter);
 	placeholder_label_->setWordWrap(true);
 	placeholder_label_->setStyleSheet("color: rgba(200, 200, 200, 190);");
@@ -196,48 +373,6 @@ void PreviewPane::build_ui() {
 	msg_layout->addWidget(message_label_);
 	msg_layout->addStretch();
 	stack_->addWidget(message_page_);
-
-	// Image page.
-	image_page_ = new QWidget(stack_);
-	auto* img_layout = new QVBoxLayout(image_page_);
-	img_layout->setContentsMargins(0, 0, 0, 0);
-
-	auto* img_controls = new QWidget(image_page_);
-	auto* img_controls_layout = new QHBoxLayout(img_controls);
-	img_controls_layout->setContentsMargins(6, 4, 6, 4);
-	img_controls_layout->setSpacing(8);
-
-	auto* bg_label = new QLabel("Transparency", img_controls);
-	bg_label->setStyleSheet("color: rgba(190, 190, 190, 220);");
-	img_controls_layout->addWidget(bg_label);
-
-	image_checkerboard_button_ = new QToolButton(img_controls);
-	image_checkerboard_button_->setText("Checkerboard");
-	image_checkerboard_button_->setCheckable(true);
-	image_checkerboard_button_->setToolTip("Toggle checkerboard background behind transparent pixels.");
-	img_controls_layout->addWidget(image_checkerboard_button_);
-
-	image_bg_color_button_ = new QToolButton(img_controls);
-	image_bg_color_button_->setText("Color…");
-	image_bg_color_button_->setToolTip("Choose background color behind transparent pixels.");
-	img_controls_layout->addWidget(image_bg_color_button_);
-
-	img_controls_layout->addStretch();
-	img_layout->addWidget(img_controls, 0);
-
-	image_scroll_ = new QScrollArea(image_page_);
-	image_scroll_->setWidgetResizable(true);
-	image_scroll_->setFrameShape(QFrame::NoFrame);
-	if (QWidget* vp = image_scroll_->viewport()) {
-		vp->setAutoFillBackground(true);
-	}
-	image_label_ = new QLabel(image_scroll_);
-	image_label_->setAlignment(Qt::AlignCenter);
-	image_label_->setScaledContents(false);
-	image_label_->setStyleSheet("background: transparent;");
-	image_scroll_->setWidget(image_label_);
-	img_layout->addWidget(image_scroll_);
-	stack_->addWidget(image_page_);
 
 	// Text/binary page (shared).
 	text_page_ = new QWidget(stack_);
@@ -276,6 +411,13 @@ void PreviewPane::build_ui() {
 	audio_play_button_->setIconSize(QSize(18, 18));
 	audio_play_button_->setToolTip("Play/Pause");
 
+	audio_stop_button_ = new QToolButton(audio_page_);
+	audio_stop_button_->setAutoRaise(true);
+	audio_stop_button_->setCursor(Qt::PointingHandCursor);
+	audio_stop_button_->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
+	audio_stop_button_->setIconSize(QSize(18, 18));
+	audio_stop_button_->setToolTip("Stop");
+
 	audio_next_button_ = new QToolButton(audio_page_);
 	audio_next_button_->setAutoRaise(true);
 	audio_next_button_->setCursor(Qt::PointingHandCursor);
@@ -291,6 +433,7 @@ void PreviewPane::build_ui() {
 
 	controls_layout->addWidget(audio_prev_button_);
 	controls_layout->addWidget(audio_play_button_);
+	controls_layout->addWidget(audio_stop_button_);
 	controls_layout->addWidget(audio_next_button_);
 	controls_layout->addStretch();
 	controls_layout->addWidget(audio_info_button_);
@@ -316,6 +459,10 @@ void PreviewPane::build_ui() {
 	audio_position_slider_->setToolTip("Seek");
 	audio_layout->addWidget(audio_position_slider_);
 
+	audio_status_label_ = new QLabel(audio_page_);
+	audio_status_label_->setStyleSheet("color: rgba(180, 180, 180, 220);");
+	audio_layout->addWidget(audio_status_label_);
+
 	audio_player_ = new QMediaPlayer(this);
 	audio_output_ = new QAudioOutput(this);
 	audio_output_->setVolume(static_cast<float>(audio_volume_scroll_->value()) / 100.0f);
@@ -332,6 +479,14 @@ void PreviewPane::build_ui() {
 		} else {
 			audio_player_->play();
 		}
+	});
+	connect(audio_stop_button_, &QToolButton::clicked, this, [this]() {
+		if (!audio_player_) {
+			return;
+		}
+		audio_player_->stop();
+		audio_player_->setPosition(0);
+		update_audio_status_label();
 	});
 	connect(audio_volume_scroll_, &QScrollBar::valueChanged, this, [this](int value) {
 		if (audio_output_) {
@@ -357,14 +512,19 @@ void PreviewPane::build_ui() {
 			audio_position_slider_->setRange(0, static_cast<int>(duration));
 		}
 		update_audio_tooltip();
+		update_audio_overview();
+		update_audio_status_label();
 	});
 	connect(audio_player_, &QMediaPlayer::positionChanged, this, [this](qint64 position) {
 		if (!audio_user_scrubbing_ && audio_position_slider_) {
 			audio_position_slider_->setValue(static_cast<int>(position));
 		}
+		update_audio_status_label();
 	});
 	connect(audio_player_, &QMediaPlayer::metaDataChanged, this, [this]() {
 		update_audio_tooltip();
+		update_audio_overview();
+		update_audio_status_label();
 	});
 	connect(audio_player_, &QMediaPlayer::playbackStateChanged, this, [this](QMediaPlayer::PlaybackState state) {
 		if (!audio_play_button_) {
@@ -386,10 +546,43 @@ void PreviewPane::build_ui() {
 	connect(cinematic_widget_, &CinematicPlayerWidget::request_previous_media, this, &PreviewPane::request_previous_video);
 	connect(cinematic_widget_, &CinematicPlayerWidget::request_next_media, this, &PreviewPane::request_next_video);
 
+	// Video page (Qt Multimedia).
+	video_page_ = new QWidget(stack_);
+	auto* video_layout = new QVBoxLayout(video_page_);
+	video_layout->setContentsMargins(0, 0, 0, 0);
+	video_widget_ = new VideoPlayerWidget(video_page_);
+	video_layout->addWidget(video_widget_, 1);
+	stack_->addWidget(video_page_);
+
+	connect(video_widget_, &VideoPlayerWidget::request_previous_media, this, &PreviewPane::request_previous_video);
+	connect(video_widget_, &VideoPlayerWidget::request_next_media, this, &PreviewPane::request_next_video);
+	connect(video_widget_, &VideoPlayerWidget::media_info_changed, this, &PreviewPane::update_video_overview);
+
 	// BSP/map page.
 	bsp_page_ = new QWidget(stack_);
 	auto* bsp_layout = new QVBoxLayout(bsp_page_);
 	bsp_layout->setContentsMargins(0, 0, 0, 0);
+	bsp_layout->setSpacing(6);
+
+	bsp_controls_ = new QWidget(bsp_page_);
+	auto* bsp_controls_layout = new QHBoxLayout(bsp_controls_);
+	bsp_controls_layout->setContentsMargins(6, 4, 6, 4);
+	bsp_controls_layout->setSpacing(8);
+
+	auto* lighting_label = new QLabel("Lighting", bsp_controls_);
+	lighting_label->setStyleSheet("color: rgba(190, 190, 190, 220);");
+	bsp_controls_layout->addWidget(lighting_label);
+
+	bsp_lightmap_button_ = new QToolButton(bsp_controls_);
+	bsp_lightmap_button_->setText("Lightmap");
+	bsp_lightmap_button_->setCheckable(true);
+	bsp_lightmap_button_->setAutoRaise(true);
+	bsp_lightmap_button_->setCursor(Qt::PointingHandCursor);
+	bsp_lightmap_button_->setToolTip("Apply baked lightmaps when rendering BSP previews.");
+	bsp_controls_layout->addWidget(bsp_lightmap_button_);
+	bsp_controls_layout->addStretch();
+
+	bsp_layout->addWidget(bsp_controls_, 0);
 	bsp_widget_ = new BspPreviewWidget(bsp_page_);
 	bsp_layout->addWidget(bsp_widget_, 1);
 	stack_->addWidget(bsp_page_);
@@ -403,8 +596,22 @@ void PreviewPane::build_ui() {
 	stack_->addWidget(model_page_);
 
 	QSettings settings;
-	image_bg_checkerboard_ = settings.value("preview/image/checkerboard", true).toBool();
+	const QString bg_mode = settings.value("preview/image/backgroundMode").toString().trimmed().toLower();
+	if (bg_mode == "solid") {
+		image_bg_mode_ = ImageBackgroundMode::Solid;
+	} else if (bg_mode == "transparent") {
+		image_bg_mode_ = ImageBackgroundMode::Transparent;
+	} else if (bg_mode == "checkerboard") {
+		image_bg_mode_ = ImageBackgroundMode::Checkerboard;
+	} else {
+		const bool checker = settings.value("preview/image/checkerboard", true).toBool();
+		image_bg_mode_ = checker ? ImageBackgroundMode::Checkerboard : ImageBackgroundMode::Solid;
+	}
+	const QString layout_mode = settings.value("preview/image/layout").toString().trimmed().toLower();
+	image_layout_mode_ = (layout_mode == "tile") ? ImageLayoutMode::Tile : ImageLayoutMode::Fit;
+	image_reveal_transparency_ = settings.value("preview/image/revealTransparent", false).toBool();
 	image_texture_smoothing_ = settings.value("preview/image/textureSmoothing", false).toBool();
+	bsp_lightmapping_enabled_ = settings.value("preview/bsp/lightmapping", true).toBool();
 
 	{
 		QVariant bg = settings.value("preview/image/backgroundColor");
@@ -422,13 +629,46 @@ void PreviewPane::build_ui() {
 		image_bg_color_ = c;
 	}
 
-	if (image_checkerboard_button_) {
-		image_checkerboard_button_->setChecked(image_bg_checkerboard_);
-		connect(image_checkerboard_button_, &QToolButton::toggled, this, [this](bool checked) {
-			image_bg_checkerboard_ = checked;
+	if (image_bg_mode_combo_) {
+		const QString want = (image_bg_mode_ == ImageBackgroundMode::Solid) ? "solid"
+			: (image_bg_mode_ == ImageBackgroundMode::Transparent) ? "transparent" : "checkerboard";
+		const int idx = image_bg_mode_combo_->findData(want);
+		if (idx >= 0) {
+			image_bg_mode_combo_->setCurrentIndex(idx);
+		}
+		connect(image_bg_mode_combo_, &QComboBox::currentIndexChanged, this, [this](int index) {
+			if (!image_bg_mode_combo_) {
+				return;
+			}
+			const QString data = image_bg_mode_combo_->itemData(index).toString().trimmed().toLower();
+			if (data == "solid") {
+				image_bg_mode_ = ImageBackgroundMode::Solid;
+			} else if (data == "transparent") {
+				image_bg_mode_ = ImageBackgroundMode::Transparent;
+			} else {
+				image_bg_mode_ = ImageBackgroundMode::Checkerboard;
+			}
 			QSettings s;
-			s.setValue("preview/image/checkerboard", image_bg_checkerboard_);
+			s.setValue("preview/image/backgroundMode", data.isEmpty() ? "transparent" : data);
 			apply_image_background();
+		});
+	}
+
+	if (image_layout_combo_) {
+		const QString want = (image_layout_mode_ == ImageLayoutMode::Tile) ? "tile" : "fit";
+		const int idx = image_layout_combo_->findData(want);
+		if (idx >= 0) {
+			image_layout_combo_->setCurrentIndex(idx);
+		}
+		connect(image_layout_combo_, &QComboBox::currentIndexChanged, this, [this](int index) {
+			if (!image_layout_combo_) {
+				return;
+			}
+			const QString data = image_layout_combo_->itemData(index).toString().trimmed().toLower();
+			image_layout_mode_ = (data == "tile") ? ImageLayoutMode::Tile : ImageLayoutMode::Fit;
+			QSettings s;
+			s.setValue("preview/image/layout", data.isEmpty() ? "fit" : data);
+			apply_image_transparency_mode();
 		});
 	}
 
@@ -445,6 +685,34 @@ void PreviewPane::build_ui() {
 			update_image_bg_button();
 			apply_image_background();
 		});
+	}
+
+	if (image_reveal_transparency_button_) {
+		image_reveal_transparency_button_->setChecked(image_reveal_transparency_);
+		connect(image_reveal_transparency_button_, &QToolButton::toggled, this, [this](bool checked) {
+			image_reveal_transparency_ = checked;
+			QSettings s;
+			s.setValue("preview/image/revealTransparent", image_reveal_transparency_);
+			apply_image_transparency_mode();
+		});
+	}
+
+	if (bsp_lightmap_button_) {
+		bsp_lightmap_button_->blockSignals(true);
+		bsp_lightmap_button_->setChecked(bsp_lightmapping_enabled_);
+		bsp_lightmap_button_->blockSignals(false);
+		connect(bsp_lightmap_button_, &QToolButton::toggled, this, [this](bool checked) {
+			bsp_lightmapping_enabled_ = checked;
+			QSettings s;
+			s.setValue("preview/bsp/lightmapping", bsp_lightmapping_enabled_);
+			if (bsp_widget_) {
+				bsp_widget_->set_lightmap_enabled(bsp_lightmapping_enabled_);
+			}
+		});
+	}
+
+	if (bsp_widget_) {
+		bsp_widget_->set_lightmap_enabled(bsp_lightmapping_enabled_);
 	}
 
 	apply_image_background();
@@ -476,11 +744,22 @@ Show the default placeholder panel when no item is selected.
 void PreviewPane::show_placeholder() {
 	stop_audio_playback();
 	stop_cinematic_playback();
+	stop_video_playback();
 	stop_model_preview();
-	set_header("Preview", "Select a file from the list.");
-	if (stack_ && placeholder_page_) {
-		stack_->setCurrentWidget(placeholder_page_);
+	current_content_kind_ = ContentKind::None;
+	current_pak_path_.clear();
+	current_file_size_ = -1;
+	current_mtime_utc_secs_ = -1;
+
+	clear_overview_fields();
+	show_overview_block(false);
+	if (image_card_) {
+		image_card_->setVisible(false);
 	}
+	set_image_qimage({});
+
+	set_header("Insights", "Select a file from the list.");
+	show_content_block("Insights", placeholder_page_);
 }
 
 /*
@@ -493,15 +772,26 @@ Show a centered message panel with a title and body text.
 void PreviewPane::show_message(const QString& title, const QString& body) {
 	stop_audio_playback();
 	stop_cinematic_playback();
+	stop_video_playback();
 	stop_model_preview();
+	current_content_kind_ = ContentKind::Message;
 	set_header(title, QString());
 	if (message_label_) {
 		message_label_->setText(body);
 		message_label_->setStyleSheet("color: rgba(220, 220, 220, 210);");
 	}
-	if (stack_ && message_page_) {
-		stack_->setCurrentWidget(message_page_);
+
+	const bool have_file_info = !current_pak_path_.isEmpty() || current_file_size_ >= 0 || current_mtime_utc_secs_ >= 0;
+	if (image_card_) {
+		image_card_->setVisible(false);
 	}
+	clear_overview_fields();
+	show_overview_block(have_file_info);
+	if (have_file_info) {
+		populate_basic_overview();
+	}
+
+	show_content_block("Insights", message_page_);
 }
 
 /*
@@ -514,57 +804,85 @@ Show a plain-text preview panel.
 void PreviewPane::show_text(const QString& title, const QString& subtitle, const QString& text) {
 	stop_audio_playback();
 	stop_cinematic_playback();
+	stop_video_playback();
 	stop_model_preview();
+	current_content_kind_ = ContentKind::Text;
 	set_text_highlighter(TextSyntax::None);
 	set_header(title, subtitle);
+	if (image_card_) {
+		image_card_->setVisible(false);
+	}
+	clear_overview_fields();
+	show_overview_block(true);
+	populate_basic_overview();
+	set_overview_value("Type", "Text");
 	if (text_view_) {
 		text_view_->setPlainText(text);
 	}
-	if (stack_ && text_page_) {
-		stack_->setCurrentWidget(text_page_);
-	}
+	show_content_block("Text View", text_page_);
 }
 
 void PreviewPane::show_c(const QString& title, const QString& subtitle, const QString& text) {
 	stop_audio_playback();
 	stop_cinematic_playback();
+	stop_video_playback();
 	stop_model_preview();
+	current_content_kind_ = ContentKind::Text;
 	set_text_highlighter(TextSyntax::C);
 	set_header(title, subtitle);
+	if (image_card_) {
+		image_card_->setVisible(false);
+	}
+	clear_overview_fields();
+	show_overview_block(true);
+	populate_basic_overview();
+	set_overview_value("Type", "C");
 	if (text_view_) {
 		text_view_->setPlainText(text);
 	}
-	if (stack_ && text_page_) {
-		stack_->setCurrentWidget(text_page_);
-	}
+	show_content_block("Text View", text_page_);
 }
 
 void PreviewPane::show_txt(const QString& title, const QString& subtitle, const QString& text) {
 	stop_audio_playback();
 	stop_cinematic_playback();
+	stop_video_playback();
 	stop_model_preview();
+	current_content_kind_ = ContentKind::Text;
 	set_text_highlighter(TextSyntax::QuakeTxtBlocks);
 	set_header(title, subtitle);
+	if (image_card_) {
+		image_card_->setVisible(false);
+	}
+	clear_overview_fields();
+	show_overview_block(true);
+	populate_basic_overview();
+	set_overview_value("Type", "Text");
 	if (text_view_) {
 		text_view_->setPlainText(text);
 	}
-	if (stack_ && text_page_) {
-		stack_->setCurrentWidget(text_page_);
-	}
+	show_content_block("Text View", text_page_);
 }
 
 void PreviewPane::show_cfg(const QString& title, const QString& subtitle, const QString& text) {
 	stop_audio_playback();
 	stop_cinematic_playback();
+	stop_video_playback();
 	stop_model_preview();
+	current_content_kind_ = ContentKind::Text;
 	set_text_highlighter(TextSyntax::Cfg);
 	set_header(title, subtitle);
+	if (image_card_) {
+		image_card_->setVisible(false);
+	}
+	clear_overview_fields();
+	show_overview_block(true);
+	populate_basic_overview();
+	set_overview_value("Type", "CFG");
 	if (text_view_) {
 		text_view_->setPlainText(text);
 	}
-	if (stack_ && text_page_) {
-		stack_->setCurrentWidget(text_page_);
-	}
+	show_content_block("Text View", text_page_);
 }
 
 /*
@@ -580,32 +898,52 @@ void PreviewPane::show_binary(const QString& title,
 								bool truncated) {
 	stop_audio_playback();
 	stop_cinematic_playback();
+	stop_video_playback();
 	stop_model_preview();
+	current_content_kind_ = ContentKind::Text;
 	set_text_highlighter(TextSyntax::None);
 	QString sub = subtitle;
 	if (truncated) {
-		sub = sub.isEmpty() ? "Preview truncated." : (sub + "  (Preview truncated)");
+		sub = sub.isEmpty() ? "Content truncated." : (sub + "  (Content truncated)");
 	}
 	set_header(title, sub);
+	if (image_card_) {
+		image_card_->setVisible(false);
+	}
+	clear_overview_fields();
+	show_overview_block(true);
+	populate_basic_overview();
+	set_overview_value("Type", "Binary");
+	set_overview_value("Bytes shown", format_size(bytes.size()));
 	if (text_view_) {
 		text_view_->setPlainText(hex_dump(bytes, 256));
 	}
-	if (stack_ && text_page_) {
-		stack_->setCurrentWidget(text_page_);
-	}
+	show_content_block("Text View", text_page_);
 }
 
 void PreviewPane::show_image(const QString& title, const QString& subtitle, const QImage& image) {
 	stop_audio_playback();
 	stop_cinematic_playback();
+	stop_video_playback();
 	stop_model_preview();
+	current_content_kind_ = ContentKind::Image;
 	set_header(title, subtitle);
-	if (stack_ && image_page_) {
-		stack_->setCurrentWidget(image_page_);
+	clear_overview_fields();
+	show_overview_block(true);
+	populate_basic_overview();
+	set_overview_value("Type", "Image");
+	if (!image.isNull()) {
+		set_overview_value("Dimensions", QString("%1x%2").arg(image.width()).arg(image.height()));
 	}
+
+	if (image_card_) {
+		image_card_->setVisible(true);
+	}
+	hide_content_block();
+
 	set_image_qimage(image);
 	QTimer::singleShot(0, this, [this]() {
-		if (!stack_ || stack_->currentWidget() != image_page_ || image_source_pixmap_.isNull()) {
+		if (!image_card_ || !image_card_->isVisible() || image_source_pixmap_.isNull()) {
 			return;
 		}
 		set_image_pixmap(image_source_pixmap_);
@@ -615,12 +953,24 @@ void PreviewPane::show_image(const QString& title, const QString& subtitle, cons
 void PreviewPane::show_bsp(const QString& title, const QString& subtitle, BspMesh mesh, QHash<QString, QImage> textures) {
 	stop_audio_playback();
 	stop_cinematic_playback();
+	stop_video_playback();
 	stop_model_preview();
+	current_content_kind_ = ContentKind::Bsp;
 	set_header(title, subtitle);
-	if (stack_ && bsp_page_) {
-		stack_->setCurrentWidget(bsp_page_);
+	if (image_card_) {
+		image_card_->setVisible(false);
 	}
+	clear_overview_fields();
+	show_overview_block(true);
+	populate_basic_overview();
+	set_overview_value("Type", "BSP");
+	set_overview_value("Vertices", QString::number(mesh.vertices.size()));
+	set_overview_value("Triangles", QString::number(mesh.indices.size() / 3));
+	set_overview_value("Surfaces", QString::number(mesh.surfaces.size()));
+
+	show_content_block("3D Panel", bsp_page_);
 	if (bsp_widget_) {
+		bsp_widget_->set_lightmap_enabled(bsp_lightmapping_enabled_);
 		bsp_widget_->set_mesh(std::move(mesh), std::move(textures));
 	}
 }
@@ -661,6 +1011,194 @@ void PreviewPane::set_text_highlighter(TextSyntax syntax) {
 	}
 }
 
+void PreviewPane::show_overview_block(bool show) {
+	if (overview_card_) {
+		overview_card_->setVisible(show);
+	}
+}
+
+void PreviewPane::show_content_block(const QString& title, QWidget* page) {
+	if (content_title_label_) {
+		content_title_label_->setText(title);
+	}
+	if (content_card_) {
+		content_card_->setVisible(true);
+	}
+	if (stack_ && page) {
+		stack_->setCurrentWidget(page);
+	}
+}
+
+void PreviewPane::hide_content_block() {
+	if (content_card_) {
+		content_card_->setVisible(false);
+	}
+}
+
+void PreviewPane::clear_overview_fields() {
+	if (!overview_form_) {
+		return;
+	}
+	auto delete_item_widget = [](QLayoutItem* item) {
+		if (!item) {
+			return;
+		}
+		if (QWidget* widget = item->widget()) {
+			delete widget;
+		} else if (QLayout* layout = item->layout()) {
+			delete layout;
+		}
+		delete item;
+	};
+
+	for (auto it = overview_values_.begin(); it != overview_values_.end(); ++it) {
+		QLabel* value = it.value();
+		if (!value) {
+			continue;
+		}
+
+		const QFormLayout::TakeRowResult row = overview_form_->takeRow(value);
+		delete_item_widget(row.labelItem);
+		delete_item_widget(row.fieldItem);
+	}
+	overview_values_.clear();
+}
+
+void PreviewPane::populate_basic_overview() {
+	if (!current_pak_path_.isEmpty()) {
+		set_overview_value("Path", current_pak_path_);
+	}
+	if (current_file_size_ >= 0) {
+		set_overview_value("Size", format_size(current_file_size_));
+	}
+	const QString mtime = format_mtime(current_mtime_utc_secs_);
+	if (!mtime.isEmpty()) {
+		set_overview_value("Modified", mtime);
+	}
+}
+
+void PreviewPane::set_overview_value(const QString& label, const QString& value) {
+	if (!overview_form_) {
+		return;
+	}
+
+	QLabel* value_label = overview_values_.value(label, nullptr);
+	if (!value_label) {
+		QWidget* parent = overview_form_->parentWidget();
+		if (!parent) {
+			parent = overview_card_;
+		}
+
+		auto* key_label = new QLabel(label + ":", parent);
+		key_label->setStyleSheet("color: rgba(180, 180, 180, 220);");
+		key_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+		value_label = new QLabel(parent);
+		value_label->setWordWrap(true);
+		value_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+		value_label->setStyleSheet("color: rgba(220, 220, 220, 230);");
+
+		overview_form_->addRow(key_label, value_label);
+		overview_values_.insert(label, value_label);
+	}
+
+	value_label->setText(value);
+}
+
+void PreviewPane::update_audio_overview() {
+	if (current_content_kind_ != ContentKind::Audio || !audio_player_) {
+		return;
+	}
+
+	const qint64 duration = audio_player_->duration();
+	if (duration > 0) {
+		set_overview_value("Duration", format_duration(duration));
+	}
+
+	const QMediaMetaData md = audio_player_->metaData();
+	const QString fmt = md.stringValue(QMediaMetaData::FileFormat).trimmed();
+	if (!fmt.isEmpty()) {
+		set_overview_value("Format", fmt);
+	}
+	const QString codec = md.value(QMediaMetaData::AudioCodec).toString().trimmed();
+	if (!codec.isEmpty()) {
+		set_overview_value("Audio codec", codec);
+	}
+	const int bitrate = md.value(QMediaMetaData::AudioBitRate).toInt();
+	if (bitrate > 0) {
+		set_overview_value("Bitrate", QString("%1 kbps").arg(bitrate / 1000));
+	}
+}
+
+void PreviewPane::update_cinematic_overview() {
+	if (current_content_kind_ != ContentKind::Cinematic || !cinematic_widget_ || !cinematic_widget_->has_cinematic()) {
+		return;
+	}
+
+	const CinematicInfo info = cinematic_widget_->cinematic_info();
+	if (!info.format.isEmpty()) {
+		set_overview_value("Format", info.format.toUpper());
+	}
+	if (info.width > 0 && info.height > 0) {
+		set_overview_value("Dimensions", QString("%1x%2").arg(info.width).arg(info.height));
+	}
+	if (info.fps > 0.0) {
+		set_overview_value("FPS", QString::number(info.fps, 'f', 2));
+	}
+	if (info.frame_count > 0) {
+		set_overview_value("Frames", QString::number(info.frame_count));
+		if (info.fps > 0.0) {
+			const qint64 duration_ms = static_cast<qint64>((static_cast<double>(info.frame_count) / info.fps) * 1000.0);
+			if (duration_ms > 0) {
+				set_overview_value("Duration", format_duration(duration_ms));
+			}
+		}
+	}
+	if (info.has_audio) {
+		set_overview_value("Has audio", "Yes");
+		if (info.audio_sample_rate > 0) {
+			set_overview_value("Sample rate", QString("%1 Hz").arg(info.audio_sample_rate));
+		}
+		if (info.audio_channels > 0) {
+			set_overview_value("Channels", QString::number(info.audio_channels));
+		}
+	}
+}
+
+void PreviewPane::update_video_overview() {
+	if (current_content_kind_ != ContentKind::Video || !video_widget_ || !video_widget_->has_media()) {
+		return;
+	}
+
+	const qint64 duration = video_widget_->duration_ms();
+	if (duration > 0) {
+		set_overview_value("Duration", format_duration(duration));
+	}
+
+	const QSize sz = video_widget_->video_size();
+	if (sz.isValid() && !sz.isEmpty()) {
+		set_overview_value("Resolution", QString("%1x%2").arg(sz.width()).arg(sz.height()));
+	}
+
+	const QMediaMetaData md = video_widget_->meta_data();
+	const QString fmt = md.stringValue(QMediaMetaData::FileFormat).trimmed();
+	if (!fmt.isEmpty()) {
+		set_overview_value("Format", fmt);
+	}
+	const QString vcodec = md.value(QMediaMetaData::VideoCodec).toString().trimmed();
+	if (!vcodec.isEmpty()) {
+		set_overview_value("Video codec", vcodec);
+	}
+	const QString acodec = md.value(QMediaMetaData::AudioCodec).toString().trimmed();
+	if (!acodec.isEmpty()) {
+		set_overview_value("Audio codec", acodec);
+	}
+	const double fps = md.value(QMediaMetaData::VideoFrameRate).toDouble();
+	if (fps > 0.0) {
+		set_overview_value("FPS", QString::number(fps, 'f', 2));
+	}
+}
+
 /*
 =============
 PreviewPane::set_image_pixmap
@@ -678,20 +1216,81 @@ void PreviewPane::set_image_pixmap(const QPixmap& pixmap) {
 		return;
 	}
 
-	// Fit to available viewport while keeping aspect ratio.
+	// Adjust to the available viewport (fit or tile).
 	const QSize avail =
 		image_scroll_ ? image_scroll_->viewport()->size() : QSize();
-	if (avail.isValid()) {
+	QPixmap source = pixmap;
+	if (image_layout_mode_ == ImageLayoutMode::Fit && avail.isValid()) {
 		const auto transform_mode = image_texture_smoothing_ ? Qt::SmoothTransformation : Qt::FastTransformation;
-		image_label_->setPixmap(pixmap.scaled(avail, Qt::KeepAspectRatio, transform_mode));
-	} else {
-		image_label_->setPixmap(pixmap);
+		source = pixmap.scaled(avail, Qt::KeepAspectRatio, transform_mode);
 	}
+
+	if (source.isNull()) {
+		image_label_->setPixmap(QPixmap());
+		return;
+	}
+
+	QPixmap base = source;
+	if (image_bg_mode_ != ImageBackgroundMode::Transparent) {
+		QPixmap composite(source.size());
+		composite.setDevicePixelRatio(source.devicePixelRatio());
+		if (image_bg_mode_ == ImageBackgroundMode::Solid) {
+			QColor solid = image_bg_color_;
+			if (!solid.isValid()) {
+				solid = QColor(64, 64, 64);
+			}
+			composite.fill(solid);
+		} else {
+			const int square = 14;
+			QColor a = image_bg_color_.lighter(120);
+			QColor b = image_bg_color_.darker(120);
+			if (!a.isValid()) {
+				a = QColor(160, 160, 160);
+			}
+			if (!b.isValid()) {
+				b = QColor(96, 96, 96);
+			}
+
+			QPixmap pattern(square * 2, square * 2);
+			pattern.fill(a);
+			{
+				QPainter p(&pattern);
+				p.fillRect(0, 0, square, square, b);
+				p.fillRect(square, square, square, square, b);
+			}
+
+			composite.fill(a);
+			{
+				QPainter p(&composite);
+				p.fillRect(composite.rect(), QBrush(pattern));
+			}
+		}
+
+		{
+			QPainter p(&composite);
+			p.drawPixmap(0, 0, source);
+		}
+		base = composite;
+	}
+
+	if (image_layout_mode_ == ImageLayoutMode::Tile && avail.isValid()) {
+		QPixmap tiled(avail);
+		tiled.fill(Qt::transparent);
+		{
+			QPainter p(&tiled);
+			p.fillRect(tiled.rect(), QBrush(base));
+		}
+		image_label_->setPixmap(tiled);
+		return;
+	}
+
+	image_label_->setPixmap(base);
 }
 
 void PreviewPane::set_image_qimage(const QImage& image) {
 	image_original_ = image;
-	set_image_pixmap(image_original_.isNull() ? QPixmap() : QPixmap::fromImage(image_original_));
+	update_image_transparency_controls();
+	apply_image_transparency_mode();
 }
 
 void PreviewPane::apply_image_background() {
@@ -704,30 +1303,53 @@ void PreviewPane::apply_image_background() {
 	}
 
 	QPalette pal = vp->palette();
-	if (!image_bg_checkerboard_) {
-		pal.setColor(QPalette::Window, image_bg_color_);
-	} else {
-		const int square = 14;
-		QColor a = image_bg_color_.lighter(120);
-		QColor b = image_bg_color_.darker(120);
-		if (!a.isValid()) {
-			a = QColor(160, 160, 160);
-		}
-		if (!b.isValid()) {
-			b = QColor(96, 96, 96);
-		}
-
-		QPixmap pattern(square * 2, square * 2);
-		pattern.fill(a);
-		{
-			QPainter p(&pattern);
-			p.fillRect(0, 0, square, square, b);
-			p.fillRect(square, square, square, square, b);
-		}
-		pal.setBrush(QPalette::Window, QBrush(pattern));
+	if (image_bg_color_button_) {
+		image_bg_color_button_->setEnabled(image_bg_mode_ != ImageBackgroundMode::Transparent);
 	}
+	if (image_bg_mode_ == ImageBackgroundMode::Transparent) {
+		vp->setAutoFillBackground(false);
+		pal.setColor(QPalette::Window, Qt::transparent);
+		pal.setBrush(QPalette::Window, Qt::NoBrush);
+		vp->setPalette(pal);
+		vp->update();
+		apply_image_transparency_mode();
+		return;
+	}
+
+	vp->setAutoFillBackground(true);
+	const QColor base = palette().color(QPalette::Window);
+	pal.setColor(QPalette::Window, base.isValid() ? base : QColor(32, 32, 32));
+	pal.setBrush(QPalette::Window, Qt::NoBrush);
 	vp->setPalette(pal);
 	vp->update();
+	apply_image_transparency_mode();
+}
+
+void PreviewPane::apply_image_transparency_mode() {
+	if (image_original_.isNull()) {
+		set_image_pixmap(QPixmap());
+		return;
+	}
+
+	QImage display = image_original_;
+	if (image_reveal_transparency_ && image_original_.hasAlphaChannel()) {
+		display = image_original_.convertToFormat(QImage::Format_RGBA8888);
+		uchar* bits = display.bits();
+		const int stride = display.bytesPerLine();
+		const int width = display.width();
+		const int height = display.height();
+		for (int y = 0; y < height; ++y) {
+			uchar* row = bits + y * stride;
+			for (int x = 0; x < width; ++x) {
+				uchar* px = row + x * 4;
+				if (px[3] == 0) {
+					px[3] = 255;
+				}
+			}
+		}
+	}
+
+	set_image_pixmap(display.isNull() ? QPixmap() : QPixmap::fromImage(display));
 }
 
 void PreviewPane::update_image_bg_button() {
@@ -737,7 +1359,15 @@ void PreviewPane::update_image_bg_button() {
 	QPixmap swatch(14, 14);
 	swatch.fill(image_bg_color_);
 	image_bg_color_button_->setIcon(QIcon(swatch));
-	image_bg_color_button_->setToolTip(QString("Choose background color behind transparent pixels.\nCurrent: %1").arg(image_bg_color_.name(QColor::HexArgb)));
+	image_bg_color_button_->setToolTip(QString("Choose the background color behind transparent pixels.\nCurrent: %1").arg(image_bg_color_.name(QColor::HexArgb)));
+}
+
+void PreviewPane::update_image_transparency_controls() {
+	if (!image_reveal_transparency_button_) {
+		return;
+	}
+	const bool has_alpha = !image_original_.isNull() && image_original_.hasAlphaChannel();
+	image_reveal_transparency_button_->setEnabled(has_alpha);
 }
 
 /*
@@ -753,23 +1383,14 @@ void PreviewPane::show_image_from_bytes(const QString& title,
 									   const ImageDecodeOptions& options) {
 	stop_audio_playback();
 	stop_cinematic_playback();
+	stop_video_playback();
 	stop_model_preview();
-	set_header(title, subtitle);
-	if (stack_ && image_page_) {
-		stack_->setCurrentWidget(image_page_);
-	}
 	const ImageDecodeResult decoded = decode_image_bytes(bytes, title, options);
 	if (!decoded.ok()) {
 		show_message(title, decoded.error.isEmpty() ? "Unable to decode this image format." : decoded.error);
 		return;
 	}
-	set_image_qimage(decoded.image);
-	QTimer::singleShot(0, this, [this]() {
-		if (!stack_ || stack_->currentWidget() != image_page_ || image_source_pixmap_.isNull()) {
-			return;
-		}
-		set_image_pixmap(image_source_pixmap_);
-	});
+	show_image(title, subtitle, decoded.image);
 }
 
 /*
@@ -785,23 +1406,14 @@ void PreviewPane::show_image_from_file(const QString& title,
 								  const ImageDecodeOptions& options) {
 	stop_audio_playback();
 	stop_cinematic_playback();
+	stop_video_playback();
 	stop_model_preview();
-	set_header(title, subtitle);
-	if (stack_ && image_page_) {
-		stack_->setCurrentWidget(image_page_);
-	}
 	const ImageDecodeResult decoded = decode_image_file(file_path, options);
 	if (!decoded.ok()) {
 		show_message(title, decoded.error.isEmpty() ? "Unable to load this image file." : decoded.error);
 		return;
 	}
-	set_image_qimage(decoded.image);
-	QTimer::singleShot(0, this, [this]() {
-		if (!stack_ || stack_->currentWidget() != image_page_ || image_source_pixmap_.isNull()) {
-			return;
-		}
-		set_image_pixmap(image_source_pixmap_);
-	});
+	show_image(title, subtitle, decoded.image);
 }
 
 /*
@@ -815,53 +1427,107 @@ void PreviewPane::show_audio_from_file(const QString& title,
 								const QString& subtitle,
 								const QString& file_path) {
 	stop_cinematic_playback();
+	stop_video_playback();
 	stop_model_preview();
+	current_content_kind_ = ContentKind::Audio;
 	set_header(title, subtitle);
-	set_audio_source(file_path);
-	if (stack_ && audio_page_) {
-		stack_->setCurrentWidget(audio_page_);
+	if (image_card_) {
+		image_card_->setVisible(false);
 	}
+	clear_overview_fields();
+	show_overview_block(true);
+	populate_basic_overview();
+	set_overview_value("Type", "Audio");
+
+	set_audio_source(file_path);
+	update_audio_overview();
+	show_content_block("Multimedia Control", audio_page_);
 }
 
 void PreviewPane::show_cinematic_from_file(const QString& title, const QString& subtitle, const QString& file_path) {
 	stop_audio_playback();
 	stop_cinematic_playback();
+	stop_video_playback();
 	stop_model_preview();
+	current_content_kind_ = ContentKind::Cinematic;
 	set_header(title, subtitle);
+	if (image_card_) {
+		image_card_->setVisible(false);
+	}
+	clear_overview_fields();
+	show_overview_block(true);
+	populate_basic_overview();
+	set_overview_value("Type", "Cinematic");
 
 	if (!cinematic_widget_ || !cinematic_page_) {
 		show_message(title, "Cinematic preview is not available.");
 		return;
 	}
 
-	if (stack_) {
-		stack_->setCurrentWidget(cinematic_page_);
-	}
+	show_content_block("Multimedia Control", cinematic_page_);
 
 	QString err;
 	if (!cinematic_widget_->load_file(file_path, &err)) {
 		show_message(title, err.isEmpty() ? "Unable to load cinematic." : err);
 		return;
 	}
+	update_cinematic_overview();
+}
+
+void PreviewPane::show_video_from_file(const QString& title, const QString& subtitle, const QString& file_path) {
+	stop_audio_playback();
+	stop_cinematic_playback();
+	stop_video_playback();
+	stop_model_preview();
+	current_content_kind_ = ContentKind::Video;
+	set_header(title, subtitle);
+	if (image_card_) {
+		image_card_->setVisible(false);
+	}
+	clear_overview_fields();
+	show_overview_block(true);
+	populate_basic_overview();
+	set_overview_value("Type", "Video");
+
+	if (!video_widget_ || !video_page_) {
+		show_message(title, "Video preview is not available.");
+		return;
+	}
+
+	show_content_block("Multimedia Control", video_page_);
+
+	QString err;
+	if (!video_widget_->load_file(file_path, &err)) {
+		show_message(title, err.isEmpty() ? "Unable to load video." : err);
+		return;
+	}
+	update_video_overview();
 }
 
 void PreviewPane::show_model_from_file(const QString& title,
-                                       const QString& subtitle,
-                                       const QString& file_path,
-                                       const QString& skin_path) {
+                                        const QString& subtitle,
+                                        const QString& file_path,
+                                        const QString& skin_path) {
 	stop_audio_playback();
 	stop_cinematic_playback();
+	stop_video_playback();
 	stop_model_preview();
+	current_content_kind_ = ContentKind::Model;
 	set_header(title, subtitle);
+	if (image_card_) {
+		image_card_->setVisible(false);
+	}
+	clear_overview_fields();
+	show_overview_block(true);
+	populate_basic_overview();
+	set_overview_value("Type", "Model");
 
 	if (!model_widget_ || !model_page_) {
 		show_message(title, "Model preview is not available.");
 		return;
 	}
 
-	if (stack_) {
-		stack_->setCurrentWidget(model_page_);
-	}
+	show_content_block("3D Panel", model_page_);
 
 	QString err;
 	const bool ok = skin_path.isEmpty() ? model_widget_->load_file(file_path, &err)
@@ -870,6 +1536,14 @@ void PreviewPane::show_model_from_file(const QString& title,
 		show_message(title, err.isEmpty() ? "Unable to load model." : err);
 		return;
 	}
+
+	const QString fmt = model_widget_->model_format().toUpper();
+	if (!fmt.isEmpty()) {
+		set_overview_value("Format", fmt);
+	}
+	const ModelMesh mesh = model_widget_->mesh();
+	set_overview_value("Vertices", QString::number(mesh.vertices.size()));
+	set_overview_value("Triangles", QString::number(mesh.indices.size() / 3));
 }
 
 void PreviewPane::set_model_texture_smoothing(bool enabled) {
@@ -881,12 +1555,15 @@ void PreviewPane::set_model_texture_smoothing(bool enabled) {
 void PreviewPane::set_image_texture_smoothing(bool enabled) {
 	image_texture_smoothing_ = enabled;
 	// Re-render the current image with the new setting if one is displayed.
-	if (stack_ && stack_->currentWidget() == image_page_ && !image_source_pixmap_.isNull()) {
+	if (image_card_ && image_card_->isVisible() && !image_source_pixmap_.isNull()) {
 		set_image_pixmap(image_source_pixmap_);
 	}
 	// Also update the cinematic player widget.
 	if (cinematic_widget_) {
 		cinematic_widget_->set_texture_smoothing(enabled);
+	}
+	if (video_widget_) {
+		video_widget_->set_texture_smoothing(enabled);
 	}
 }
 
@@ -909,6 +1586,13 @@ void PreviewPane::start_playback_from_beginning() {
 	if (stack_ && cinematic_page_ && stack_->currentWidget() == cinematic_page_) {
 		if (cinematic_widget_) {
 			cinematic_widget_->play_from_start();
+		}
+		return;
+	}
+
+	if (stack_ && video_page_ && stack_->currentWidget() == video_page_) {
+		if (video_widget_) {
+			video_widget_->play_from_start();
 		}
 		return;
 	}
@@ -936,6 +1620,12 @@ void PreviewPane::stop_cinematic_playback() {
 	}
 }
 
+void PreviewPane::stop_video_playback() {
+	if (video_widget_) {
+		video_widget_->unload();
+	}
+}
+
 void PreviewPane::stop_model_preview() {
 	if (model_widget_) {
 		model_widget_->unload();
@@ -959,6 +1649,7 @@ void PreviewPane::set_audio_source(const QString& file_path) {
 	audio_file_path_ = file_path;
 	sync_audio_controls();
 	update_audio_tooltip();
+	update_audio_status_label();
 }
 
 /*
@@ -1029,44 +1720,91 @@ void PreviewPane::update_audio_tooltip() {
 	}
 	audio_info_button_->setToolTip(lines.join("\n"));
 }
+
+void PreviewPane::update_audio_status_label() {
+	if (!audio_status_label_) {
+		return;
+	}
+	if (!audio_player_ || audio_file_path_.isEmpty()) {
+		audio_status_label_->clear();
+		return;
+	}
+
+	const qint64 position = audio_player_->position();
+	const qint64 duration = audio_player_->duration();
+	QString text;
+	if (duration > 0) {
+		text = QString("%1 / %2").arg(format_duration(position), format_duration(duration));
+	} else if (position > 0) {
+		text = format_duration(position);
+	}
+
+	const QString name = QFileInfo(audio_file_path_).fileName();
+	if (!name.isEmpty()) {
+		text = text.isEmpty() ? name : (text + "  •  " + name);
+	}
+
+	audio_status_label_->setText(text);
+}
 void PreviewPane::show_json(const QString& title, const QString& subtitle, const QString& text) {
 	stop_audio_playback();
 	stop_cinematic_playback();
+	stop_video_playback();
 	stop_model_preview();
+	current_content_kind_ = ContentKind::Text;
 	set_text_highlighter(TextSyntax::Json);
 	set_header(title, subtitle);
+	if (image_card_) {
+		image_card_->setVisible(false);
+	}
+	clear_overview_fields();
+	show_overview_block(true);
+	populate_basic_overview();
+	set_overview_value("Type", "JSON");
 	if (text_view_) {
 		text_view_->setPlainText(text);
 	}
-	if (stack_ && text_page_) {
-		stack_->setCurrentWidget(text_page_);
-	}
+	show_content_block("Text View", text_page_);
 }
 
 void PreviewPane::show_menu(const QString& title, const QString& subtitle, const QString& text) {
 	stop_audio_playback();
 	stop_cinematic_playback();
+	stop_video_playback();
 	stop_model_preview();
+	current_content_kind_ = ContentKind::Text;
 	set_text_highlighter(TextSyntax::Quake3Menu);
 	set_header(title, subtitle);
+	if (image_card_) {
+		image_card_->setVisible(false);
+	}
+	clear_overview_fields();
+	show_overview_block(true);
+	populate_basic_overview();
+	set_overview_value("Type", "Menu");
 	if (text_view_) {
 		text_view_->setPlainText(text);
 	}
-	if (stack_ && text_page_) {
-		stack_->setCurrentWidget(text_page_);
-	}
+	show_content_block("Text View", text_page_);
 }
 
 void PreviewPane::show_shader(const QString& title, const QString& subtitle, const QString& text) {
 	stop_audio_playback();
 	stop_cinematic_playback();
+	stop_video_playback();
 	stop_model_preview();
+	current_content_kind_ = ContentKind::Text;
 	set_text_highlighter(TextSyntax::Quake3Shader);
 	set_header(title, subtitle);
+	if (image_card_) {
+		image_card_->setVisible(false);
+	}
+	clear_overview_fields();
+	show_overview_block(true);
+	populate_basic_overview();
+	set_overview_value("Type", "Shader");
 	if (text_view_) {
 		text_view_->setPlainText(text);
 	}
-	if (stack_ && text_page_) {
-		stack_->setCurrentWidget(text_page_);
-	}
+	show_content_block("Text View", text_page_);
 }

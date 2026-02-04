@@ -5002,7 +5002,8 @@ void PakTab::update_preview() {
   }
 
   if (!loaded_) {
-    preview_->show_message("Preview", load_error_.isEmpty() ? "PAK is not loaded." : load_error_);
+    preview_->set_current_file_info({}, -1, -1);
+    preview_->show_message("Insights", load_error_.isEmpty() ? "PAK is not loaded." : load_error_);
     return;
   }
 
@@ -5018,6 +5019,7 @@ void PakTab::update_preview() {
       return;
     }
     if (items.size() > 1) {
+      preview_->set_current_file_info({}, -1, -1);
       preview_->show_message("Multiple items",
                              QString("%1 items selected.").arg(items.size()));
       return;
@@ -5034,6 +5036,7 @@ void PakTab::update_preview() {
       return;
     }
     if (items.size() > 1) {
+      preview_->set_current_file_info({}, -1, -1);
       preview_->show_message("Multiple items",
                              QString("%1 items selected.").arg(items.size()));
       return;
@@ -5053,10 +5056,12 @@ void PakTab::update_preview() {
     return;
   }
 
+  preview_->set_current_file_info(pak_path, size, mtime);
+
   const QString leaf = pak_leaf_name(pak_path);
   const QString subtitle = (!is_dir && size >= 0)
                              ? QString("Size: %1  •  Modified: %2")
-                                 .arg(format_size(static_cast<quint32>(qMin<qint64>(size, std::numeric_limits<quint32>::max()))),
+                                  .arg(format_size(static_cast<quint32>(qMin<qint64>(size, std::numeric_limits<quint32>::max()))),
                                       format_mtime(mtime))
                              : QString("Modified: %1").arg(format_mtime(mtime));
 
@@ -5073,8 +5078,7 @@ void PakTab::update_preview() {
     return;
   }
   const bool is_audio = is_supported_audio_file(leaf);
-  const bool is_cinematic = (ext == "roq" || ext == "cin");
-  const bool is_video = (is_cinematic || ext == "mp4" || ext == "mkv");
+  const bool is_video = is_video_file_name(leaf);
   const bool is_model = is_model_file_name(leaf);
   const bool is_bsp = is_bsp_file_name(leaf);
 
@@ -5147,25 +5151,25 @@ void PakTab::update_preview() {
 	}
 
   if (is_video) {
-    if (!is_cinematic) {
-      preview_->show_message(leaf, "Video preview is not implemented yet.");
-      return;
-    }
-
     QString video_path = source_path;
     if (video_path.isEmpty()) {
       QString err;
       if (!export_path_to_temp(pak_path, false, &video_path, &err)) {
-        preview_->show_message(leaf, err.isEmpty() ? "Unable to export cinematic for preview." : err);
+        preview_->show_message(leaf, err.isEmpty() ? "Unable to export video for preview." : err);
         return;
       }
     }
     if (video_path.isEmpty()) {
-      preview_->show_message(leaf, "Unable to export cinematic for preview.");
+      preview_->show_message(leaf, "Unable to export video for preview.");
       return;
     }
 
-    preview_->show_cinematic_from_file(leaf, subtitle, video_path);
+    const bool is_cinematic = (ext == "cin" || ext == "roq");
+    if (is_cinematic) {
+      preview_->show_cinematic_from_file(leaf, subtitle, video_path);
+    } else {
+      preview_->show_video_from_file(leaf, subtitle, video_path);
+    }
     return;
   }
 
@@ -5813,7 +5817,7 @@ void PakTab::update_preview() {
       preview_->show_binary(leaf, subtitle, bytes.left(4096), truncated);
       return;
     }
-    const QString sub = truncated ? (subtitle + "  (Preview truncated)") : subtitle;
+    const QString sub = truncated ? (subtitle + "  (Content truncated)") : subtitle;
     if (ext == "cfg") {
       preview_->show_cfg(leaf, sub, text);
     } else if (ext == "json") {

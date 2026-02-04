@@ -16,12 +16,16 @@ class QLabel;
 class QPlainTextEdit;
 class QScrollArea;
 class QStackedWidget;
+class QFormLayout;
+class QFrame;
+class QComboBox;
 class QAudioOutput;
 class QMediaPlayer;
 class QSlider;
 class QScrollBar;
 class QToolButton;
 class CinematicPlayerWidget;
+class VideoPlayerWidget;
 class QSyntaxHighlighter;
 class ModelViewerWidget;
 class BspPreviewWidget;
@@ -47,6 +51,8 @@ public:
 	void set_image_texture_smoothing(bool enabled);
 	void set_model_palettes(const QVector<QRgb>& quake1_palette, const QVector<QRgb>& quake2_palette);
 
+	void set_current_file_info(const QString& pak_path, qint64 size, qint64 mtime_utc_secs);
+
 	void show_placeholder();
 	void show_message(const QString& title, const QString& body);
 	void show_text(const QString& title, const QString& subtitle, const QString& text);
@@ -63,6 +69,7 @@ public:
 	void show_image_from_file(const QString& title, const QString& subtitle, const QString& file_path, const ImageDecodeOptions& options = {});
 	void show_audio_from_file(const QString& title, const QString& subtitle, const QString& file_path);
 	void show_cinematic_from_file(const QString& title, const QString& subtitle, const QString& file_path);
+	void show_video_from_file(const QString& title, const QString& subtitle, const QString& file_path);
 	void show_model_from_file(const QString& title, const QString& subtitle, const QString& file_path, const QString& skin_path = {});
 	void start_playback_from_beginning();
 
@@ -81,18 +88,64 @@ private:
 	void set_image_pixmap(const QPixmap& pixmap);
 	void set_image_qimage(const QImage& image);
 	void apply_image_background();
+	void apply_image_transparency_mode();
 	void update_image_bg_button();
+	void update_image_transparency_controls();
 	void set_text_highlighter(TextSyntax syntax);
+	void clear_overview_fields();
+	void populate_basic_overview();
+	void set_overview_value(const QString& label, const QString& value);
+	void show_overview_block(bool show);
+	void show_content_block(const QString& title, QWidget* page);
+	void hide_content_block();
+	void update_audio_overview();
+	void update_cinematic_overview();
+	void update_video_overview();
 	void stop_audio_playback();
 	void stop_cinematic_playback();
+	void stop_video_playback();
 	void stop_model_preview();
 	void set_audio_source(const QString& file_path);
 	void sync_audio_controls();
 	void update_audio_tooltip();
+	void update_audio_status_label();
 
 	QLabel* title_label_ = nullptr;
 	QLabel* subtitle_label_ = nullptr;
+	QScrollArea* insights_scroll_ = nullptr;
+	QWidget* insights_page_ = nullptr;
+	QFrame* overview_card_ = nullptr;
+	QFrame* image_card_ = nullptr;
+	QFormLayout* overview_form_ = nullptr;
+	QHash<QString, QLabel*> overview_values_;
+	QFrame* content_card_ = nullptr;
+	QLabel* content_title_label_ = nullptr;
 	QStackedWidget* stack_ = nullptr;
+
+	enum class ContentKind {
+		None,
+		Message,
+		Text,
+		Audio,
+		Cinematic,
+		Video,
+		Bsp,
+		Model,
+		Image,
+	};
+	enum class ImageBackgroundMode {
+		Transparent,
+		Checkerboard,
+		Solid,
+	};
+	enum class ImageLayoutMode {
+		Fit,
+		Tile,
+	};
+	ContentKind current_content_kind_ = ContentKind::None;
+	QString current_pak_path_;
+	qint64 current_file_size_ = -1;
+	qint64 current_mtime_utc_secs_ = -1;
 
 	QWidget* placeholder_page_ = nullptr;
 	QLabel* placeholder_label_ = nullptr;
@@ -100,13 +153,17 @@ private:
 	QWidget* message_page_ = nullptr;
 	QLabel* message_label_ = nullptr;
 
-	QWidget* image_page_ = nullptr;
+	QWidget* overview_image_container_ = nullptr;
 	QScrollArea* image_scroll_ = nullptr;
 	QLabel* image_label_ = nullptr;
-	QToolButton* image_checkerboard_button_ = nullptr;
+	QComboBox* image_bg_mode_combo_ = nullptr;
+	QComboBox* image_layout_combo_ = nullptr;
 	QToolButton* image_bg_color_button_ = nullptr;
+	QToolButton* image_reveal_transparency_button_ = nullptr;
 	QColor image_bg_color_;
-	bool image_bg_checkerboard_ = true;
+	ImageBackgroundMode image_bg_mode_ = ImageBackgroundMode::Checkerboard;
+	ImageLayoutMode image_layout_mode_ = ImageLayoutMode::Fit;
+	bool image_reveal_transparency_ = false;
 	bool image_texture_smoothing_ = false;
 	QImage image_original_;
 	QPixmap image_source_pixmap_;
@@ -121,18 +178,26 @@ private:
 	QAudioOutput* audio_output_ = nullptr;
 	QToolButton* audio_prev_button_ = nullptr;
 	QToolButton* audio_play_button_ = nullptr;
+	QToolButton* audio_stop_button_ = nullptr;
 	QToolButton* audio_next_button_ = nullptr;
 	QSlider* audio_position_slider_ = nullptr;
 	QScrollBar* audio_volume_scroll_ = nullptr;
 	QToolButton* audio_info_button_ = nullptr;
+	QLabel* audio_status_label_ = nullptr;
 	QString audio_file_path_;
 	bool audio_user_scrubbing_ = false;
 
 	QWidget* cinematic_page_ = nullptr;
 	CinematicPlayerWidget* cinematic_widget_ = nullptr;
 
+	QWidget* video_page_ = nullptr;
+	VideoPlayerWidget* video_widget_ = nullptr;
+
 	QWidget* bsp_page_ = nullptr;
 	BspPreviewWidget* bsp_widget_ = nullptr;
+	QWidget* bsp_controls_ = nullptr;
+	QToolButton* bsp_lightmap_button_ = nullptr;
+	bool bsp_lightmapping_enabled_ = true;
 
 	QWidget* model_page_ = nullptr;
 	ModelViewerWidget* model_widget_ = nullptr;
