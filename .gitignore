@@ -31,6 +31,9 @@
 *.out
 *.app
 
+# Clang
+.cache
+
 # Meson build outputs
 build/
 builddir/

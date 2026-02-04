@@ -11,7 +11,12 @@ class QMenu;
 class QTabWidget;
 class QWidget;
 class QCloseEvent;
+class QDragEnterEvent;
+class QDragLeaveEvent;
+class QDragMoveEvent;
+class QDropEvent;
 
+class DropOverlay;
 class UpdateService;
 class PakTab;
 class QUndoStack;
@@ -27,6 +32,11 @@ public:
 
 protected:
   void closeEvent(QCloseEvent* event) override;
+  void dragEnterEvent(QDragEnterEvent* event) override;
+  void dragLeaveEvent(QDragLeaveEvent* event) override;
+  void dragMoveEvent(QDragMoveEvent* event) override;
+  void dropEvent(QDropEvent* event) override;
+  void resizeEvent(QResizeEvent* event) override;
 
 private:
   void setup_menus();
@@ -96,4 +106,5 @@ private:
   bool restoring_workspace_ = false;
   bool schedule_updates_ = true;
   int untitled_counter_ = 1;
+  DropOverlay* drop_overlay_ = nullptr;
 };
