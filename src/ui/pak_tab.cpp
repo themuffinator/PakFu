@@ -48,6 +48,7 @@
 #include <QTimeZone>
 #include <QBrush>
 #include <QSaveFile>
+#include <QSettings>
 #include <QSplitter>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
@@ -995,6 +996,8 @@ private:
 PakTab::PakTab(Mode mode, const QString& pak_path, QWidget* parent)
     : QWidget(parent), mode_(mode), pak_path_(pak_path) {
   thumbnail_pool_.setMaxThreadCount(1);
+  QSettings settings;
+  image_texture_smoothing_ = settings.value("preview/image/textureSmoothing", false).toBool();
   build_ui();
   if (mode_ == Mode::ExistingPak) {
     load_archive();
@@ -1021,9 +1024,12 @@ void PakTab::set_model_texture_smoothing(bool enabled) {
 }
 
 void PakTab::set_image_texture_smoothing(bool enabled) {
+  image_texture_smoothing_ = enabled;
   if (preview_) {
     preview_->set_image_texture_smoothing(enabled);
   }
+  // Regenerate thumbnails with the new setting.
+  refresh_listing();
 }
 
 void PakTab::set_pure_pak_protector(bool enabled, bool is_official) {
@@ -1708,8 +1714,9 @@ void PakTab::queue_thumbnail(const QString& pak_path,
   PakTab* self = this;
   const QVector<QRgb> quake1_palette = quake1_palette_;
   const QVector<QRgb> quake2_palette = quake2_palette_;
+  const bool texture_smoothing = image_texture_smoothing_;
 
-  auto* task = QRunnable::create([self, gen, pak_path, leaf, source_path, size, icon_size, quake1_palette, quake2_palette]() {
+  auto* task = QRunnable::create([self, gen, pak_path, leaf, source_path, size, icon_size, quake1_palette, quake2_palette, texture_smoothing]() {
     QImage image;
 
     const QString ext = file_ext_lower(leaf);
@@ -1819,12 +1826,13 @@ void PakTab::queue_thumbnail(const QString& pak_path,
       return;
     }
 
-    const QImage scaled = image.scaled(icon_size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    const auto transform_mode = texture_smoothing ? Qt::SmoothTransformation : Qt::FastTransformation;
+    const QImage scaled = image.scaled(icon_size, Qt::KeepAspectRatio, transform_mode);
     QImage square(icon_size, QImage::Format_ARGB32_Premultiplied);
     square.fill(Qt::transparent);
     {
       QPainter p(&square);
-      p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+      p.setRenderHint(QPainter::SmoothPixmapTransform, texture_smoothing);
       const int ox = (icon_size.width() - scaled.width()) / 2;
       const int oy = (icon_size.height() - scaled.height()) / 2;
       p.drawImage(QPoint(ox, oy), scaled);

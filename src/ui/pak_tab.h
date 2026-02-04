@@ -227,4 +227,5 @@ private:
   QString quake2_palette_error_;
   bool pure_pak_protector_enabled_ = true;
   bool official_archive_ = false;
+  bool image_texture_smoothing_ = false;
 };
