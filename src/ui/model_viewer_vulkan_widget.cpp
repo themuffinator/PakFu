@@ -1,0 +1,1245 @@
+#include "ui/model_viewer_vulkan_widget.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+
+#include <QDebug>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QKeyEvent>
+#include <QMouseEvent>
+#include <QPalette>
+#include <QResizeEvent>
+#include <QSettings>
+#include <QWheelEvent>
+
+#include <rhi/qrhi.h>
+#include <rhi/qshader.h>
+
+#include "formats/image_loader.h"
+#include "formats/model.h"
+#include "formats/quake3_skin.h"
+
+namespace {
+QVector3D spherical_dir(float yaw_deg, float pitch_deg) {
+	constexpr float kPi = 3.14159265358979323846f;
+	const float yaw = yaw_deg * kPi / 180.0f;
+	const float pitch = pitch_deg * kPi / 180.0f;
+	const float cy = std::cos(yaw);
+	const float sy = std::sin(yaw);
+	const float cp = std::cos(pitch);
+	const float sp = std::sin(pitch);
+	return QVector3D(cp * cy, cp * sy, sp);
+}
+
+QShader load_shader(const QString& path) {
+	QFile f(path);
+	if (!f.open(QIODevice::ReadOnly)) {
+		qWarning() << "ModelViewerVulkanWidget: unable to open shader" << path;
+		return {};
+	}
+	const QByteArray data = f.readAll();
+	QShader shader = QShader::fromSerialized(data);
+	if (!shader.isValid()) {
+		qWarning() << "ModelViewerVulkanWidget: invalid shader" << path;
+	}
+	return shader;
+}
+
+quint32 aligned_uniform_stride(QRhi* rhi, quint32 size) {
+	const quint32 align = rhi ? rhi->ubufAlignment() : 256u;
+	return (size + align - 1u) & ~(align - 1u);
+}
+}  // namespace
+
+ModelViewerVulkanWidget::ModelViewerVulkanWidget(QWidget* parent) : QRhiWidget(parent) {
+	setApi(QRhiWidget::Api::Vulkan);
+	setMinimumHeight(240);
+	setFocusPolicy(Qt::StrongFocus);
+	setToolTip(
+		"3D Controls:\n"
+		"- Orbit: Left-drag\n"
+		"- Pan: Shift+Left-drag / Middle-drag / Right-drag\n"
+		"- Zoom: Mouse wheel\n"
+		"- Frame: F\n"
+		"- Reset: R");
+
+	QSettings settings;
+	texture_smoothing_ = settings.value("preview/model/textureSmoothing", false).toBool();
+}
+
+ModelViewerVulkanWidget::~ModelViewerVulkanWidget() {
+	releaseResources();
+}
+
+void ModelViewerVulkanWidget::set_texture_smoothing(bool enabled) {
+	if (texture_smoothing_ == enabled) {
+		return;
+	}
+	texture_smoothing_ = enabled;
+	pending_texture_upload_ = has_model();
+	update();
+}
+
+void ModelViewerVulkanWidget::set_palettes(const QVector<QRgb>& quake1_palette, const QVector<QRgb>& quake2_palette) {
+	quake1_palette_ = quake1_palette;
+	quake2_palette_ = quake2_palette;
+}
+
+void ModelViewerVulkanWidget::set_grid_mode(PreviewGridMode mode) {
+	if (grid_mode_ == mode) {
+		return;
+	}
+	grid_mode_ = mode;
+	pending_ground_upload_ = true;
+	update();
+}
+
+void ModelViewerVulkanWidget::set_background_mode(PreviewBackgroundMode mode, const QColor& custom_color) {
+	if (bg_mode_ == mode && bg_custom_color_ == custom_color) {
+		return;
+	}
+	bg_mode_ = mode;
+	bg_custom_color_ = custom_color;
+	update();
+}
+
+void ModelViewerVulkanWidget::set_wireframe_enabled(bool enabled) {
+	if (wireframe_enabled_ == enabled) {
+		return;
+	}
+	wireframe_enabled_ = enabled;
+	pipeline_dirty_ = true;
+	update();
+}
+
+void ModelViewerVulkanWidget::set_textured_enabled(bool enabled) {
+	if (textured_enabled_ == enabled) {
+		return;
+	}
+	textured_enabled_ = enabled;
+	update();
+}
+
+void ModelViewerVulkanWidget::set_glow_enabled(bool enabled) {
+	if (glow_enabled_ == enabled) {
+		return;
+	}
+	glow_enabled_ = enabled;
+	if (model_ && !last_model_path_.isEmpty()) {
+		QString err;
+		(void)load_file(last_model_path_, last_skin_path_, &err);
+		return;
+	}
+	update();
+}
+
+bool ModelViewerVulkanWidget::load_file(const QString& file_path, QString* error) {
+	return load_file(file_path, QString(), error);
+}
+
+bool ModelViewerVulkanWidget::load_file(const QString& file_path, const QString& skin_path, QString* error) {
+	if (error) {
+		error->clear();
+	}
+
+	const QFileInfo skin_info(skin_path);
+	const bool skin_is_q3_skin =
+		(!skin_path.isEmpty() && skin_info.suffix().compare("skin", Qt::CaseInsensitive) == 0);
+	Quake3SkinMapping skin_mapping;
+	if (skin_is_q3_skin) {
+		QString skin_err;
+		if (!parse_quake3_skin_file(skin_path, &skin_mapping, &skin_err)) {
+			if (error) {
+				*error = skin_err.isEmpty() ? "Unable to load .skin file." : skin_err;
+			}
+			unload();
+			return false;
+		}
+	}
+
+	const auto decode_options_for = [&](const QString& path) -> ImageDecodeOptions {
+		ImageDecodeOptions opt;
+		const QString leaf = QFileInfo(path).fileName();
+		const QString ext = QFileInfo(leaf).suffix().toLower();
+		if ((ext == "lmp" || ext == "mip") && quake1_palette_.size() == 256) {
+			opt.palette = &quake1_palette_;
+		} else if (ext == "wal" && quake2_palette_.size() == 256) {
+			opt.palette = &quake2_palette_;
+		}
+		return opt;
+	};
+
+	const auto glow_path_for = [&](const QString& base_path) -> QString {
+		if (base_path.isEmpty() || !glow_enabled_) {
+			return {};
+		}
+		const QFileInfo fi(base_path);
+		const QString base = fi.completeBaseName();
+		if (base.isEmpty()) {
+			return {};
+		}
+		return QDir(fi.absolutePath()).filePath(QString("%1_glow.png").arg(base));
+	};
+
+	const auto load_glow_for = [&](const QString& base_path) -> QImage {
+		const QString glow_path = glow_path_for(base_path);
+		if (glow_path.isEmpty() || !QFileInfo::exists(glow_path)) {
+			return {};
+		}
+		const ImageDecodeResult decoded = decode_image_file(glow_path, ImageDecodeOptions{});
+		return decoded.ok() ? decoded.image : QImage();
+	};
+
+	QString err;
+	model_ = load_model_file(file_path, &err);
+	if (!model_) {
+		if (error) {
+			*error = err.isEmpty() ? "Unable to load model." : err;
+		}
+		unload();
+		return false;
+	}
+	last_model_path_ = file_path;
+	last_skin_path_ = skin_path;
+
+	surfaces_.clear();
+	if (model_->surfaces.isEmpty()) {
+		DrawSurface s;
+		s.first_index = 0;
+		s.index_count = model_->mesh.indices.size();
+		s.name = "model";
+		surfaces_.push_back(std::move(s));
+	} else {
+		surfaces_.reserve(model_->surfaces.size());
+		for (const ModelSurface& ms : model_->surfaces) {
+			if (ms.index_count <= 0) {
+				continue;
+			}
+			DrawSurface s;
+			s.first_index = ms.first_index;
+			s.index_count = ms.index_count;
+			s.name = ms.name;
+			s.shader_hint = ms.shader;
+			s.shader_leaf = QFileInfo(ms.shader).fileName();
+			surfaces_.push_back(std::move(s));
+		}
+		if (surfaces_.isEmpty()) {
+			DrawSurface s;
+			s.first_index = 0;
+			s.index_count = model_->mesh.indices.size();
+			s.name = "model";
+			surfaces_.push_back(std::move(s));
+		}
+	}
+
+	skin_image_ = {};
+	skin_glow_image_ = {};
+	has_texture_ = false;
+	has_glow_ = false;
+	pending_texture_upload_ = false;
+	if (!skin_is_q3_skin && !skin_path.isEmpty()) {
+		const ImageDecodeResult decoded = decode_image_file(skin_path, decode_options_for(skin_path));
+		if (decoded.ok()) {
+			skin_image_ = decoded.image;
+			if (glow_enabled_) {
+				skin_glow_image_ = load_glow_for(skin_path);
+			}
+		}
+	}
+
+	if (skin_is_q3_skin && !skin_mapping.surface_to_shader.isEmpty()) {
+		for (DrawSurface& s : surfaces_) {
+			const QString key = s.name.trimmed().toLower();
+			if (!skin_mapping.surface_to_shader.contains(key)) {
+				continue;
+			}
+			const QString shader = skin_mapping.surface_to_shader.value(key).trimmed();
+			s.shader_hint = shader;
+			s.shader_leaf = shader.isEmpty() ? QString() : QFileInfo(shader).fileName();
+			s.image = {};
+			s.glow_image = {};
+		}
+	}
+
+	const QString model_dir = QFileInfo(file_path).absolutePath();
+	if (!model_dir.isEmpty()) {
+		const QStringList exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "dds", "lmp", "mip"};
+
+		const auto try_find_in_dir = [&](const QString& base_or_file) -> QString {
+			if (base_or_file.isEmpty()) {
+				return {};
+			}
+			const QFileInfo fi(base_or_file);
+			const QString base = fi.completeBaseName();
+			const QString file = fi.fileName();
+			if (!file.isEmpty() && QFileInfo::exists(QDir(model_dir).filePath(file))) {
+				return QDir(model_dir).filePath(file);
+			}
+			if (!base.isEmpty()) {
+				for (const QString& ext : exts) {
+					const QString cand = QDir(model_dir).filePath(QString("%1.%2").arg(base, ext));
+					if (QFileInfo::exists(cand)) {
+						return cand;
+					}
+				}
+			}
+			// Case-insensitive basename match (helps when extracted filenames differ in case).
+			QDir d(model_dir);
+			const QStringList files = d.entryList(QStringList() << "*.png"
+																<< "*.tga"
+																<< "*.jpg"
+																<< "*.jpeg"
+																<< "*.pcx"
+																<< "*.wal"
+																<< "*.dds"
+																<< "*.lmp"
+																<< "*.mip",
+													QDir::Files);
+			const QString want = base.toLower();
+			for (const QString& f : files) {
+				if (QFileInfo(f).completeBaseName().toLower() == want) {
+					return QDir(model_dir).filePath(f);
+				}
+			}
+			return {};
+		};
+
+		// If no explicit skin was provided, try to use a texture with the same base name as the model.
+		if (skin_image_.isNull()) {
+			const QString model_leaf = QFileInfo(file_path).completeBaseName();
+			const QString skin_guess = try_find_in_dir(model_leaf);
+			if (!skin_guess.isEmpty()) {
+				const ImageDecodeResult decoded = decode_image_file(skin_guess, decode_options_for(skin_guess));
+				if (decoded.ok()) {
+					skin_image_ = decoded.image;
+					if (glow_enabled_) {
+						skin_glow_image_ = load_glow_for(skin_guess);
+					}
+				}
+			}
+		}
+
+		// Try to resolve per-surface textures.
+		for (DrawSurface& s : surfaces_) {
+			if (s.shader_leaf.isEmpty()) {
+				continue;
+			}
+			const QString found = try_find_in_dir(s.shader_leaf);
+			if (found.isEmpty()) {
+				continue;
+			}
+			const ImageDecodeResult decoded = decode_image_file(found, decode_options_for(found));
+			if (decoded.ok()) {
+				s.image = decoded.image;
+				if (glow_enabled_) {
+					s.glow_image = load_glow_for(found);
+				}
+			}
+		}
+	}
+
+	pending_upload_ = true;
+	pending_texture_upload_ = true;
+	reset_camera_from_mesh();
+	update();
+	return true;
+}
+
+void ModelViewerVulkanWidget::unload() {
+	model_.reset();
+	last_model_path_.clear();
+	last_skin_path_.clear();
+	pending_upload_ = false;
+	pending_texture_upload_ = false;
+	surfaces_.clear();
+	skin_image_ = {};
+	skin_glow_image_ = {};
+	has_texture_ = false;
+	has_glow_ = false;
+	reset_camera_from_mesh();
+	destroy_mesh_resources();
+	update();
+}
+
+void ModelViewerVulkanWidget::initialize(QRhiCommandBuffer*) {
+	vert_shader_ = load_shader(":/assets/shaders/model_preview.vert.qsb");
+	frag_shader_ = load_shader(":/assets/shaders/model_preview.frag.qsb");
+
+	if (rhi()) {
+		rebuild_sampler();
+		white_tex_ = rhi()->newTexture(QRhiTexture::RGBA8, QSize(1, 1), 1);
+		white_tex_->create();
+		black_tex_ = rhi()->newTexture(QRhiTexture::RGBA8, QSize(1, 1), 1);
+		black_tex_->create();
+	}
+
+	ensure_pipeline();
+}
+
+void ModelViewerVulkanWidget::render(QRhiCommandBuffer* cb) {
+	if (!cb || !rhi()) {
+		return;
+	}
+
+	const QRhiDepthStencilClearValue ds_clear = {1.0f, 0};
+	QRhiResourceUpdateBatch* updates = rhi()->nextResourceUpdateBatch();
+
+	if (pending_upload_) {
+		upload_mesh(updates);
+		pending_upload_ = false;
+	}
+	if (pending_texture_upload_) {
+		upload_textures(updates);
+		pending_texture_upload_ = false;
+	}
+	if (model_) {
+		update_ground_mesh_if_needed(updates);
+	}
+	update_background_mesh_if_needed(updates);
+
+	if (pipeline_dirty_) {
+		ensure_pipeline();
+	}
+
+	cb->beginPass(renderTarget(), QColor(0, 0, 0), ds_clear, updates);
+
+	if (!pipeline_ || !bg_vbuf_) {
+		cb->endPass();
+		return;
+	}
+
+	const bool draw_ground = (grid_mode_ != PreviewGridMode::None && ground_index_count_ > 0 && ground_vbuf_ && ground_ibuf_);
+	const bool draw_surfaces = (model_ && index_count_ > 0 && vbuf_ && ibuf_);
+	const int surface_count = draw_surfaces ? (surfaces_.isEmpty() ? 1 : surfaces_.size()) : 0;
+	const int draw_count = 1 + (draw_ground ? 1 : 0) + surface_count;
+	ensure_uniform_buffer(draw_count);
+
+	const float aspect = (height() > 0) ? (static_cast<float>(width()) / static_cast<float>(height())) : 1.0f;
+	const float near_plane = std::max(radius_ * 0.01f, 0.01f);
+	const float far_plane = std::max(radius_ * 200.0f, near_plane + 10.0f);
+
+	QMatrix4x4 proj;
+	proj.perspective(45.0f, aspect, near_plane, far_plane);
+
+	const QVector3D dir = spherical_dir(yaw_deg_, pitch_deg_).normalized();
+	const QVector3D cam_pos = center_ + dir * distance_;
+
+	QMatrix4x4 view;
+	view.lookAt(cam_pos, center_, QVector3D(0, 0, 1));
+
+	QMatrix4x4 model_m;
+	model_m.setToIdentity();
+
+	const QMatrix4x4 mvp = rhi()->clipSpaceCorrMatrix() * proj * view * model_m;
+	const QMatrix4x4 bg_mvp = rhi()->clipSpaceCorrMatrix();
+
+	QVector3D bg_top;
+	QVector3D bg_bottom;
+	QVector3D bg_base;
+	update_background_colors(&bg_top, &bg_bottom, &bg_base);
+
+	QVector3D grid_color;
+	QVector3D axis_x;
+	QVector3D axis_y;
+	update_grid_colors(&grid_color, &axis_x, &axis_y);
+	update_grid_settings();
+
+	QByteArray udata;
+	udata.resize(static_cast<int>(ubuf_stride_ * draw_count));
+	udata.fill(0);
+
+	auto write_uniform = [&](int i, bool has_tex, bool has_glow, bool is_ground, bool is_background) {
+		UniformBlock u;
+		u.mvp = is_background ? bg_mvp : mvp;
+		u.model = model_m;
+		u.cam_pos = QVector4D(cam_pos, 0.0f);
+		u.light_dir = QVector4D(0.4f, 0.25f, 1.0f, 0.0f);
+		u.fill_dir = QVector4D(-0.65f, -0.15f, 0.8f, 0.0f);
+		u.base_color = QVector4D(0.75f, 0.78f, 0.82f, 0.0f);
+		u.ground_color = QVector4D(bg_base, 0.0f);
+		u.shadow_center = QVector4D(center_.x(), center_.y(), ground_z_, 0.0f);
+		u.shadow_params = QVector4D(std::max(0.05f, radius_ * 1.45f), 0.55f, 2.4f, is_ground ? 1.0f : 0.0f);
+		u.grid_params = QVector4D(is_ground ? (grid_mode_ == PreviewGridMode::Grid ? 1.0f : 0.0f) : 0.0f, grid_scale_, 0.0f, 0.0f);
+		u.grid_color = QVector4D(grid_color, 0.0f);
+		u.axis_color_x = QVector4D(axis_x, 0.0f);
+		u.axis_color_y = QVector4D(axis_y, 0.0f);
+		u.bg_top = QVector4D(bg_top, 0.0f);
+		u.bg_bottom = QVector4D(bg_bottom, 0.0f);
+		u.misc = QVector4D(has_tex ? 1.0f : 0.0f, has_glow ? 1.0f : 0.0f, is_background ? 1.0f : 0.0f, 0.0f);
+		std::memcpy(udata.data() + static_cast<int>(i * ubuf_stride_), &u, sizeof(UniformBlock));
+	};
+
+	int uidx = 0;
+	write_uniform(uidx++, false, false, false, true);
+	if (draw_ground) {
+		write_uniform(uidx++, false, false, true, false);
+	}
+
+	if (draw_surfaces) {
+		if (surfaces_.isEmpty()) {
+			const bool has_tex = textured_enabled_ && (skin_texture_ != nullptr);
+			const bool has_glow = textured_enabled_ && (skin_glow_texture_ != nullptr);
+			write_uniform(uidx++, has_tex, has_glow, false, false);
+		} else {
+			for (const DrawSurface& s : surfaces_) {
+				const bool has_tex = textured_enabled_ && ((s.texture_handle != nullptr) || (skin_texture_ != nullptr));
+				const bool has_glow = textured_enabled_ && ((s.glow_texture_handle != nullptr) || (skin_glow_texture_ != nullptr));
+				write_uniform(uidx++, has_tex, has_glow, false, false);
+			}
+		}
+	}
+
+	updates = rhi()->nextResourceUpdateBatch();
+	updates->updateDynamicBuffer(ubuf_, 0, udata.size(), udata.constData());
+	cb->resourceUpdate(updates);
+
+	cb->setGraphicsPipeline(pipeline_);
+	cb->setViewport(QRhiViewport(0, 0, float(width()), float(height())));
+
+	{
+		const QRhiCommandBuffer::VertexInput bindings[] = {
+			{bg_vbuf_, 0},
+		};
+		cb->setVertexInput(0, 1, bindings);
+		QRhiCommandBuffer::DynamicOffset dyn = {0, 0};
+		cb->setShaderResources(default_srb_, 1, &dyn);
+		cb->draw(6);
+	}
+
+	if (!draw_surfaces) {
+		cb->endPass();
+		return;
+	}
+
+	if (draw_ground) {
+		const QRhiCommandBuffer::VertexInput bindings[] = {
+			{ground_vbuf_, 0},
+		};
+		const quint32 offset = ubuf_stride_ * 1u;
+		QRhiCommandBuffer::DynamicOffset dyn = {0, offset};
+		cb->setVertexInput(0, 1, bindings, ground_ibuf_, 0, QRhiCommandBuffer::IndexUInt16);
+		cb->setShaderResources(default_srb_, 1, &dyn);
+		cb->drawIndexed(ground_index_count_, 1, 0, 0, 0);
+	}
+
+	const QRhiCommandBuffer::VertexInput bindings[] = {
+		{vbuf_, 0},
+	};
+	cb->setVertexInput(0, 1, bindings, ibuf_, 0, QRhiCommandBuffer::IndexUInt32);
+
+	const int base_offset = 1 + (draw_ground ? 1 : 0);
+	if (surfaces_.isEmpty()) {
+		const quint32 offset = ubuf_stride_ * static_cast<quint32>(base_offset);
+		QRhiCommandBuffer::DynamicOffset dyn = {0, offset};
+		cb->setShaderResources(default_srb_, 1, &dyn);
+		cb->drawIndexed(index_count_, 1, 0, 0, 0);
+	} else {
+		int surface_idx = 0;
+		for (const DrawSurface& s : surfaces_) {
+			const quint32 offset = ubuf_stride_ * static_cast<quint32>(base_offset + surface_idx);
+			QRhiCommandBuffer::DynamicOffset dyn = {0, offset};
+			QRhiShaderResourceBindings* srb = default_srb_;
+			if (s.srb) {
+				srb = s.srb;
+			} else if (skin_srb_) {
+				srb = skin_srb_;
+			}
+			cb->setShaderResources(srb, 1, &dyn);
+			cb->drawIndexed(s.index_count, 1, s.first_index, 0, 0);
+			++surface_idx;
+		}
+	}
+
+	cb->endPass();
+}
+
+void ModelViewerVulkanWidget::releaseResources() {
+	destroy_mesh_resources();
+	destroy_pipeline_resources();
+	vert_shader_ = {};
+	frag_shader_ = {};
+}
+
+void ModelViewerVulkanWidget::resizeEvent(QResizeEvent* event) {
+	QRhiWidget::resizeEvent(event);
+	pipeline_dirty_ = true;
+	update();
+}
+
+void ModelViewerVulkanWidget::mousePressEvent(QMouseEvent* event) {
+	if (!event) {
+		QRhiWidget::mousePressEvent(event);
+		return;
+	}
+
+	if (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton || event->button() == Qt::RightButton) {
+		setFocus(Qt::MouseFocusReason);
+		last_mouse_pos_ = event->pos();
+		drag_button_ = event->button();
+
+		if (event->button() == Qt::LeftButton) {
+			drag_mode_ = (event->modifiers() & Qt::ShiftModifier) ? DragMode::Pan : DragMode::Orbit;
+		} else {
+			drag_mode_ = DragMode::Pan;
+		}
+		event->accept();
+		return;
+	}
+
+	QRhiWidget::mousePressEvent(event);
+}
+
+void ModelViewerVulkanWidget::mouseMoveEvent(QMouseEvent* event) {
+	if (!event) {
+		QRhiWidget::mouseMoveEvent(event);
+		return;
+	}
+
+	if (drag_mode_ == DragMode::None) {
+		QRhiWidget::mouseMoveEvent(event);
+		return;
+	}
+
+	const QPoint delta = event->pos() - last_mouse_pos_;
+	last_mouse_pos_ = event->pos();
+
+	if (drag_mode_ == DragMode::Orbit) {
+		yaw_deg_ += delta.x() * 0.4f;
+		pitch_deg_ = std::clamp(pitch_deg_ - delta.y() * 0.4f, -89.0f, 89.0f);
+		update();
+		event->accept();
+		return;
+	}
+
+	if (drag_mode_ == DragMode::Pan) {
+		pan_by_pixels(delta);
+		update();
+		event->accept();
+		return;
+	}
+
+	QRhiWidget::mouseMoveEvent(event);
+}
+
+void ModelViewerVulkanWidget::mouseReleaseEvent(QMouseEvent* event) {
+	if (!event) {
+		QRhiWidget::mouseReleaseEvent(event);
+		return;
+	}
+
+	if (drag_mode_ != DragMode::None && event->button() == drag_button_) {
+		drag_mode_ = DragMode::None;
+		drag_button_ = Qt::NoButton;
+		event->accept();
+		return;
+	}
+
+	QRhiWidget::mouseReleaseEvent(event);
+}
+
+void ModelViewerVulkanWidget::wheelEvent(QWheelEvent* event) {
+	if (!event) {
+		QRhiWidget::wheelEvent(event);
+		return;
+	}
+
+	const QPoint num_deg = event->angleDelta() / 8;
+	if (!num_deg.isNull()) {
+		distance_ *= std::pow(0.92f, num_deg.y() / 15.0f);
+		distance_ = std::clamp(distance_, radius_ * 0.2f, radius_ * 20.0f);
+		update();
+		event->accept();
+		return;
+	}
+
+	QRhiWidget::wheelEvent(event);
+}
+
+void ModelViewerVulkanWidget::keyPressEvent(QKeyEvent* event) {
+	if (!event) {
+		QRhiWidget::keyPressEvent(event);
+		return;
+	}
+
+	if (event->key() == Qt::Key_F) {
+		frame_mesh();
+		event->accept();
+		return;
+	}
+	if (event->key() == Qt::Key_R) {
+		reset_camera_from_mesh();
+		event->accept();
+		return;
+	}
+
+	QRhiWidget::keyPressEvent(event);
+}
+
+void ModelViewerVulkanWidget::reset_camera_from_mesh() {
+	if (!model_) {
+		center_ = QVector3D(0, 0, 0);
+		radius_ = 1.0f;
+		ground_z_ = 0.0f;
+	} else {
+		center_ = (model_->mesh.mins + model_->mesh.maxs) * 0.5f;
+		const QVector3D ext = (model_->mesh.maxs - model_->mesh.mins);
+		radius_ = std::max(0.01f, 0.5f * ext.length());
+		ground_z_ = model_->mesh.mins.z() - std::max(radius_ * 0.18f, 0.05f);
+	}
+	yaw_deg_ = 45.0f;
+	pitch_deg_ = 20.0f;
+	distance_ = std::max(1.0f, radius_ * 2.0f);
+	pending_ground_upload_ = true;
+}
+
+void ModelViewerVulkanWidget::frame_mesh() {
+	reset_camera_from_mesh();
+	update();
+}
+
+void ModelViewerVulkanWidget::pan_by_pixels(const QPoint& delta) {
+	const float scale = std::max(0.001f, radius_ * 0.0025f);
+	const QVector3D dir = spherical_dir(yaw_deg_, pitch_deg_).normalized();
+	const QVector3D right = QVector3D::crossProduct(dir, QVector3D(0, 0, 1)).normalized();
+	const QVector3D up = QVector3D::crossProduct(right, dir).normalized();
+	center_ -= right * (delta.x() * scale);
+	center_ += up * (delta.y() * scale);
+}
+
+void ModelViewerVulkanWidget::upload_mesh(QRhiResourceUpdateBatch* updates) {
+	if (!updates || !rhi() || !model_) {
+		return;
+	}
+
+	QVector<GpuVertex> gpu;
+	gpu.resize(model_->mesh.vertices.size());
+	for (int i = 0; i < model_->mesh.vertices.size(); ++i) {
+		const ModelVertex& v = model_->mesh.vertices[i];
+		gpu[i] = GpuVertex{v.px, v.py, v.pz, v.nx, v.ny, v.nz, v.u, v.v};
+	}
+
+	if (vbuf_) {
+		delete vbuf_;
+		vbuf_ = nullptr;
+	}
+	if (ibuf_) {
+		delete ibuf_;
+		ibuf_ = nullptr;
+	}
+
+	vbuf_ = rhi()->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer,
+							  gpu.size() * sizeof(GpuVertex));
+	vbuf_->create();
+	ibuf_ = rhi()->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::IndexBuffer,
+							  model_->mesh.indices.size() * sizeof(std::uint32_t));
+	ibuf_->create();
+
+	updates->uploadStaticBuffer(vbuf_, gpu.constData());
+	updates->uploadStaticBuffer(ibuf_, model_->mesh.indices.constData());
+
+	index_count_ = model_->mesh.indices.size();
+}
+
+void ModelViewerVulkanWidget::upload_textures(QRhiResourceUpdateBatch* updates) {
+	if (!updates || !rhi()) {
+		return;
+	}
+
+	rebuild_sampler();
+
+	for (DrawSurface& s : surfaces_) {
+		if (s.texture_handle) {
+			delete s.texture_handle;
+			s.texture_handle = nullptr;
+		}
+		if (s.glow_texture_handle) {
+			delete s.glow_texture_handle;
+			s.glow_texture_handle = nullptr;
+		}
+		if (s.srb) {
+			delete s.srb;
+			s.srb = nullptr;
+		}
+		s.has_texture = false;
+		s.has_glow = false;
+	}
+
+	if (skin_texture_) {
+		delete skin_texture_;
+		skin_texture_ = nullptr;
+	}
+	if (skin_glow_texture_) {
+		delete skin_glow_texture_;
+		skin_glow_texture_ = nullptr;
+	}
+	if (skin_srb_) {
+		delete skin_srb_;
+		skin_srb_ = nullptr;
+	}
+
+	if (default_srb_) {
+		delete default_srb_;
+		default_srb_ = nullptr;
+	}
+	if (ground_srb_) {
+		delete ground_srb_;
+		ground_srb_ = nullptr;
+	}
+
+	ensure_uniform_buffer(std::max(1, static_cast<int>(surfaces_.size()) + 1));
+
+	if (!white_tex_) {
+		white_tex_ = rhi()->newTexture(QRhiTexture::RGBA8, QSize(1, 1), 1);
+		white_tex_->create();
+	}
+	const QImage white(1, 1, QImage::Format_RGBA8888);
+	updates->uploadTexture(white_tex_, white);
+	if (!black_tex_) {
+		black_tex_ = rhi()->newTexture(QRhiTexture::RGBA8, QSize(1, 1), 1);
+		black_tex_->create();
+	}
+	QImage black(1, 1, QImage::Format_RGBA8888);
+	black.fill(Qt::black);
+	updates->uploadTexture(black_tex_, black);
+
+	ensure_default_srb(updates);
+
+	auto upload = [&](const QImage& src, QRhiTexture** out_tex) -> bool {
+		if (!out_tex) {
+			return false;
+		}
+		*out_tex = nullptr;
+		if (src.isNull()) {
+			return false;
+		}
+		QImage img = src.convertToFormat(QImage::Format_RGBA8888).flipped(Qt::Vertical);
+		if (img.isNull()) {
+			return false;
+		}
+		QRhiTexture* tex = rhi()->newTexture(QRhiTexture::RGBA8, img.size(), 1);
+		tex->create();
+		updates->uploadTexture(tex, img);
+		*out_tex = tex;
+		return true;
+	};
+
+	if (upload(skin_image_, &skin_texture_)) {
+		has_texture_ = true;
+	} else {
+		has_texture_ = false;
+	}
+	if (upload(skin_glow_image_, &skin_glow_texture_)) {
+		has_glow_ = true;
+	} else {
+		has_glow_ = false;
+	}
+
+	if (skin_texture_ || skin_glow_texture_) {
+		QRhiTexture* base_tex = skin_texture_ ? skin_texture_ : white_tex_;
+		QRhiTexture* glow_tex = skin_glow_texture_ ? skin_glow_texture_ : black_tex_;
+		skin_srb_ = rhi()->newShaderResourceBindings();
+		skin_srb_->setBindings({
+			QRhiShaderResourceBinding::uniformBufferWithDynamicOffset(0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, ubuf_, sizeof(UniformBlock)),
+			QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, base_tex, sampler_),
+			QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage, glow_tex, sampler_),
+		});
+		skin_srb_->create();
+	}
+
+	for (DrawSurface& s : surfaces_) {
+		if (upload(s.image, &s.texture_handle)) {
+			s.has_texture = true;
+		}
+		if (upload(s.glow_image, &s.glow_texture_handle)) {
+			s.has_glow = true;
+		}
+
+		if (s.texture_handle || s.glow_texture_handle) {
+			QRhiTexture* base_tex = s.texture_handle ? s.texture_handle : white_tex_;
+			QRhiTexture* glow_tex = s.glow_texture_handle ? s.glow_texture_handle : black_tex_;
+			s.srb = rhi()->newShaderResourceBindings();
+			s.srb->setBindings({
+				QRhiShaderResourceBinding::uniformBufferWithDynamicOffset(0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, ubuf_, sizeof(UniformBlock)),
+				QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, base_tex, sampler_),
+				QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage, glow_tex, sampler_),
+			});
+			s.srb->create();
+		}
+	}
+}
+
+void ModelViewerVulkanWidget::update_ground_mesh_if_needed(QRhiResourceUpdateBatch* updates) {
+	if (!model_ || !updates || !rhi()) {
+		return;
+	}
+
+	update_grid_settings();
+	const float extent = std::max(radius_ * 2.6f, 1.0f);
+	if (!pending_ground_upload_ && ground_index_count_ == 6 &&
+		std::abs(extent - ground_extent_) < 0.001f && ground_vbuf_ && ground_ibuf_) {
+		return;
+	}
+
+	pending_ground_upload_ = false;
+	ground_extent_ = extent;
+	const float z = ground_z_;
+	const float minx = center_.x() - extent;
+	const float maxx = center_.x() + extent;
+	const float miny = center_.y() - extent;
+	const float maxy = center_.y() + extent;
+
+	ground_vertices_.clear();
+	ground_vertices_.reserve(4);
+	ground_vertices_.push_back(GpuVertex{minx, miny, z, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f});
+	ground_vertices_.push_back(GpuVertex{maxx, miny, z, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f});
+	ground_vertices_.push_back(GpuVertex{maxx, maxy, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f});
+	ground_vertices_.push_back(GpuVertex{minx, maxy, z, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f});
+
+	ground_indices_ = {0, 1, 2, 0, 2, 3};
+
+	if (ground_vbuf_) {
+		delete ground_vbuf_;
+		ground_vbuf_ = nullptr;
+	}
+	if (ground_ibuf_) {
+		delete ground_ibuf_;
+		ground_ibuf_ = nullptr;
+	}
+
+	ground_vbuf_ = rhi()->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer,
+									 ground_vertices_.size() * sizeof(GpuVertex));
+	ground_vbuf_->create();
+	ground_ibuf_ = rhi()->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::IndexBuffer,
+									 ground_indices_.size() * sizeof(std::uint16_t));
+	ground_ibuf_->create();
+
+	updates->uploadStaticBuffer(ground_vbuf_, ground_vertices_.constData());
+	updates->uploadStaticBuffer(ground_ibuf_, ground_indices_.constData());
+
+	ground_index_count_ = 6;
+}
+
+void ModelViewerVulkanWidget::update_background_mesh_if_needed(QRhiResourceUpdateBatch* updates) {
+	if (!updates || !rhi()) {
+		return;
+	}
+	if (bg_vbuf_) {
+		return;
+	}
+
+	bg_vertices_.clear();
+	bg_vertices_.reserve(6);
+	bg_vertices_.push_back(GpuVertex{-1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f});
+	bg_vertices_.push_back(GpuVertex{ 1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f});
+	bg_vertices_.push_back(GpuVertex{ 1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f});
+	bg_vertices_.push_back(GpuVertex{-1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f});
+	bg_vertices_.push_back(GpuVertex{ 1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f});
+	bg_vertices_.push_back(GpuVertex{-1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f});
+
+	bg_vbuf_ = rhi()->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer,
+								 bg_vertices_.size() * sizeof(GpuVertex));
+	bg_vbuf_->create();
+	updates->uploadStaticBuffer(bg_vbuf_, bg_vertices_.constData());
+}
+
+void ModelViewerVulkanWidget::update_grid_settings() {
+	grid_scale_ = std::max(radius_ * 0.25f, 0.5f);
+}
+
+void ModelViewerVulkanWidget::update_background_colors(QVector3D* top, QVector3D* bottom, QVector3D* base) const {
+	QColor base_color;
+	if (bg_mode_ == PreviewBackgroundMode::Custom && bg_custom_color_.isValid()) {
+		base_color = bg_custom_color_;
+	} else if (bg_mode_ == PreviewBackgroundMode::Grey) {
+		base_color = QColor(88, 88, 92);
+	} else {
+		base_color = palette().color(QPalette::Window);
+	}
+	if (!base_color.isValid()) {
+		base_color = QColor(64, 64, 68);
+	}
+
+	QColor top_color = base_color.lighter(112);
+	QColor bottom_color = base_color.darker(118);
+
+	if (top) {
+		*top = QVector3D(top_color.redF(), top_color.greenF(), top_color.blueF());
+	}
+	if (bottom) {
+		*bottom = QVector3D(bottom_color.redF(), bottom_color.greenF(), bottom_color.blueF());
+	}
+	if (base) {
+		*base = QVector3D(base_color.redF(), base_color.greenF(), base_color.blueF());
+	}
+}
+
+void ModelViewerVulkanWidget::update_grid_colors(QVector3D* grid, QVector3D* axis_x, QVector3D* axis_y) const {
+	QVector3D base_vec;
+	update_background_colors(nullptr, nullptr, &base_vec);
+	QColor base_color = QColor::fromRgbF(base_vec.x(), base_vec.y(), base_vec.z());
+	QColor grid_color = (base_color.lightness() < 128) ? base_color.lighter(140) : base_color.darker(140);
+
+	QColor axis_x_color = palette().color(QPalette::Highlight);
+	if (!axis_x_color.isValid()) {
+		axis_x_color = QColor(220, 80, 80);
+	}
+	QColor axis_y_color = palette().color(QPalette::Link);
+	if (!axis_y_color.isValid()) {
+		axis_y_color = QColor(80, 180, 120);
+	}
+
+	if (grid) {
+		*grid = QVector3D(grid_color.redF(), grid_color.greenF(), grid_color.blueF());
+	}
+	if (axis_x) {
+		*axis_x = QVector3D(axis_x_color.redF(), axis_x_color.greenF(), axis_x_color.blueF());
+	}
+	if (axis_y) {
+		*axis_y = QVector3D(axis_y_color.redF(), axis_y_color.greenF(), axis_y_color.blueF());
+	}
+}
+
+void ModelViewerVulkanWidget::destroy_mesh_resources() {
+	if (vbuf_) {
+		delete vbuf_;
+		vbuf_ = nullptr;
+	}
+	if (ibuf_) {
+		delete ibuf_;
+		ibuf_ = nullptr;
+	}
+	if (ground_vbuf_) {
+		delete ground_vbuf_;
+		ground_vbuf_ = nullptr;
+	}
+	if (ground_ibuf_) {
+		delete ground_ibuf_;
+		ground_ibuf_ = nullptr;
+	}
+	if (bg_vbuf_) {
+		delete bg_vbuf_;
+		bg_vbuf_ = nullptr;
+	}
+	if (ubuf_) {
+		delete ubuf_;
+		ubuf_ = nullptr;
+	}
+	for (DrawSurface& s : surfaces_) {
+		if (s.texture_handle) {
+			delete s.texture_handle;
+			s.texture_handle = nullptr;
+		}
+		if (s.glow_texture_handle) {
+			delete s.glow_texture_handle;
+			s.glow_texture_handle = nullptr;
+		}
+		if (s.srb) {
+			delete s.srb;
+			s.srb = nullptr;
+		}
+	}
+	if (skin_texture_) {
+		delete skin_texture_;
+		skin_texture_ = nullptr;
+	}
+	if (skin_glow_texture_) {
+		delete skin_glow_texture_;
+		skin_glow_texture_ = nullptr;
+	}
+	if (skin_srb_) {
+		delete skin_srb_;
+		skin_srb_ = nullptr;
+	}
+	if (default_srb_) {
+		delete default_srb_;
+		default_srb_ = nullptr;
+	}
+	if (ground_srb_) {
+		delete ground_srb_;
+		ground_srb_ = nullptr;
+	}
+	index_count_ = 0;
+	ground_index_count_ = 0;
+}
+
+void ModelViewerVulkanWidget::destroy_pipeline_resources() {
+	if (pipeline_) {
+		delete pipeline_;
+		pipeline_ = nullptr;
+	}
+	if (sampler_) {
+		delete sampler_;
+		sampler_ = nullptr;
+	}
+	if (white_tex_) {
+		delete white_tex_;
+		white_tex_ = nullptr;
+	}
+	if (black_tex_) {
+		delete black_tex_;
+		black_tex_ = nullptr;
+	}
+}
+
+void ModelViewerVulkanWidget::ensure_pipeline() {
+	if (!rhi() || !vert_shader_.isValid() || !frag_shader_.isValid()) {
+		return;
+	}
+	ensure_default_srb();
+	if (pipeline_) {
+		delete pipeline_;
+		pipeline_ = nullptr;
+	}
+
+	pipeline_ = rhi()->newGraphicsPipeline();
+	pipeline_->setShaderStages({
+		{QRhiShaderStage::Vertex, vert_shader_},
+		{QRhiShaderStage::Fragment, frag_shader_},
+	});
+
+	QRhiVertexInputLayout input_layout;
+	input_layout.setBindings({
+		QRhiVertexInputBinding(sizeof(GpuVertex)),
+	});
+	input_layout.setAttributes({
+		QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, offsetof(GpuVertex, px)),
+		QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float3, offsetof(GpuVertex, nx)),
+		QRhiVertexInputAttribute(0, 2, QRhiVertexInputAttribute::Float2, offsetof(GpuVertex, u)),
+	});
+	pipeline_->setVertexInputLayout(input_layout);
+	pipeline_->setShaderResourceBindings(default_srb_);
+	pipeline_->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
+	pipeline_->setDepthTest(true);
+	pipeline_->setDepthWrite(true);
+	pipeline_->setCullMode(QRhiGraphicsPipeline::None);
+	pipeline_->setSampleCount(sampleCount());
+	if (wireframe_enabled_ && rhi()->isFeatureSupported(QRhi::NonFillPolygonMode)) {
+		pipeline_->setPolygonMode(QRhiGraphicsPipeline::Line);
+	} else {
+		pipeline_->setPolygonMode(QRhiGraphicsPipeline::Fill);
+	}
+	QRhiGraphicsPipeline::TargetBlend blend;
+	blend.enable = true;
+	blend.srcColor = QRhiGraphicsPipeline::SrcAlpha;
+	blend.dstColor = QRhiGraphicsPipeline::OneMinusSrcAlpha;
+	blend.opColor = QRhiGraphicsPipeline::Add;
+	blend.srcAlpha = QRhiGraphicsPipeline::One;
+	blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
+	blend.opAlpha = QRhiGraphicsPipeline::Add;
+	pipeline_->setTargetBlends({blend});
+	pipeline_->create();
+
+	pipeline_dirty_ = false;
+}
+
+void ModelViewerVulkanWidget::ensure_uniform_buffer(int draw_count) {
+	if (!rhi()) {
+		return;
+	}
+	const quint32 stride = aligned_uniform_stride(rhi(), sizeof(UniformBlock));
+	const quint32 required = stride * static_cast<quint32>(std::max(1, draw_count));
+	if (ubuf_ && ubuf_->size() >= static_cast<int>(required)) {
+		ubuf_stride_ = stride;
+		return;
+	}
+	if (ubuf_) {
+		delete ubuf_;
+		ubuf_ = nullptr;
+	}
+	ubuf_ = rhi()->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, required);
+	ubuf_->create();
+	ubuf_stride_ = stride;
+
+	if (default_srb_) {
+		delete default_srb_;
+		default_srb_ = nullptr;
+	}
+	if (skin_srb_) {
+		delete skin_srb_;
+		skin_srb_ = nullptr;
+	}
+	for (DrawSurface& s : surfaces_) {
+		if (s.srb) {
+			delete s.srb;
+			s.srb = nullptr;
+		}
+	}
+	pipeline_dirty_ = true;
+}
+
+void ModelViewerVulkanWidget::ensure_default_srb(QRhiResourceUpdateBatch* updates) {
+	if (!rhi()) {
+		return;
+	}
+	if (!sampler_) {
+		rebuild_sampler();
+	}
+	if (!white_tex_) {
+		white_tex_ = rhi()->newTexture(QRhiTexture::RGBA8, QSize(1, 1), 1);
+		white_tex_->create();
+		if (updates) {
+			const QImage white(1, 1, QImage::Format_RGBA8888);
+			updates->uploadTexture(white_tex_, white);
+		}
+	}
+	if (!black_tex_) {
+		black_tex_ = rhi()->newTexture(QRhiTexture::RGBA8, QSize(1, 1), 1);
+		black_tex_->create();
+		if (updates) {
+			QImage black(1, 1, QImage::Format_RGBA8888);
+			black.fill(Qt::black);
+			updates->uploadTexture(black_tex_, black);
+		}
+	}
+	if (default_srb_) {
+		return;
+	}
+	if (!ubuf_) {
+		ensure_uniform_buffer(1);
+	}
+	default_srb_ = rhi()->newShaderResourceBindings();
+	default_srb_->setBindings({
+		QRhiShaderResourceBinding::uniformBufferWithDynamicOffset(0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, ubuf_, sizeof(UniformBlock)),
+		QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, white_tex_, sampler_),
+		QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage, black_tex_, sampler_),
+	});
+	default_srb_->create();
+	pipeline_dirty_ = true;
+}
+
+void ModelViewerVulkanWidget::rebuild_sampler() {
+	if (!rhi()) {
+		return;
+	}
+	if (sampler_) {
+		delete sampler_;
+		sampler_ = nullptr;
+	}
+	const QRhiSampler::Filter filter = texture_smoothing_ ? QRhiSampler::Linear : QRhiSampler::Nearest;
+	sampler_ = rhi()->newSampler(filter,
+								  filter,
+								  QRhiSampler::None,
+								  QRhiSampler::Repeat,
+								  QRhiSampler::Repeat);
+	sampler_->create();
+	if (default_srb_) {
+		delete default_srb_;
+		default_srb_ = nullptr;
+	}
+	if (skin_srb_) {
+		delete skin_srb_;
+		skin_srb_ = nullptr;
+	}
+	for (DrawSurface& s : surfaces_) {
+		if (s.srb) {
+			delete s.srb;
+			s.srb = nullptr;
+		}
+	}
+	pipeline_dirty_ = true;
+}

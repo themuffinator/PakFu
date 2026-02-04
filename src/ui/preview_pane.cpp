@@ -33,10 +33,12 @@
 #include <QStyle>
 
 #include "formats/image_loader.h"
+#include "ui/bsp_preview_vulkan_widget.h"
 #include "ui/bsp_preview_widget.h"
 #include "ui/cfg_syntax_highlighter.h"
 #include "ui/cinematic_player_widget.h"
 #include "ui/video_player_widget.h"
+#include "ui/model_viewer_vulkan_widget.h"
 #include "ui/model_viewer_widget.h"
 #include "ui/simple_syntax_highlighter.h"
 
@@ -132,6 +134,32 @@ QString format_mtime(qint64 utc_secs) {
 	}
 	const QDateTime dt = QDateTime::fromSecsSinceEpoch(utc_secs, QTimeZone::utc()).toLocalTime();
 	return dt.toString("yyyy-MM-dd HH:mm:ss");
+}
+
+BspPreviewWidget* as_gl_bsp_widget(QWidget* widget) {
+	return dynamic_cast<BspPreviewWidget*>(widget);
+}
+
+BspPreviewVulkanWidget* as_vk_bsp_widget(QWidget* widget) {
+	return dynamic_cast<BspPreviewVulkanWidget*>(widget);
+}
+
+ModelViewerWidget* as_gl_model_widget(QWidget* widget) {
+	return dynamic_cast<ModelViewerWidget*>(widget);
+}
+
+ModelViewerVulkanWidget* as_vk_model_widget(QWidget* widget) {
+	return dynamic_cast<ModelViewerVulkanWidget*>(widget);
+}
+
+void apply_bsp_lightmap(QWidget* widget, bool enabled) {
+	if (auto* gl = as_gl_bsp_widget(widget)) {
+		gl->set_lightmap_enabled(enabled);
+		return;
+	}
+	if (auto* vk = as_vk_bsp_widget(widget)) {
+		vk->set_lightmap_enabled(enabled);
+	}
 }
 }  // namespace
 
@@ -294,6 +322,20 @@ void PreviewPane::build_ui() {
 	image_layout_combo_->setToolTip("Choose whether to fit the image or tile it across the preview area.");
 	img_controls_layout->addWidget(image_layout_combo_);
 
+	image_mip_label_ = new QLabel("Mip", img_controls);
+	image_mip_label_->setStyleSheet("color: rgba(190, 190, 190, 220);");
+	img_controls_layout->addWidget(image_mip_label_);
+
+	image_mip_combo_ = new QComboBox(img_controls);
+	image_mip_combo_->addItem("Mip 0 (Base)", 0);
+	image_mip_combo_->addItem("Mip 1", 1);
+	image_mip_combo_->addItem("Mip 2", 2);
+	image_mip_combo_->addItem("Mip 3", 3);
+	image_mip_combo_->setToolTip("Choose the mip level to display (0 = largest).");
+	img_controls_layout->addWidget(image_mip_combo_);
+	image_mip_label_->setVisible(false);
+	image_mip_combo_->setVisible(false);
+
 	img_controls_layout->addStretch();
 
 	image_reveal_transparency_button_ = new QToolButton(img_controls);
@@ -346,6 +388,71 @@ void PreviewPane::build_ui() {
 	content_title_label_ = new QLabel(content_card_);
 	content_title_label_->setFont(card_title_font);
 	content_layout->addWidget(content_title_label_, 0);
+
+	three_d_controls_ = new QWidget(content_card_);
+	auto* three_d_layout = new QHBoxLayout(three_d_controls_);
+	three_d_layout->setContentsMargins(6, 4, 6, 4);
+	three_d_layout->setSpacing(8);
+
+	auto* grid_label = new QLabel("Grid", three_d_controls_);
+	grid_label->setStyleSheet("color: rgba(190, 190, 190, 220);");
+	three_d_layout->addWidget(grid_label);
+
+	three_d_grid_combo_ = new QComboBox(three_d_controls_);
+	three_d_grid_combo_->addItem("Floor + Shadow", "floor");
+	three_d_grid_combo_->addItem("Grid + Axis", "grid");
+	three_d_grid_combo_->addItem("None", "none");
+	three_d_grid_combo_->setToolTip("Choose the XY grid or ground treatment for 3D previews.");
+	three_d_layout->addWidget(three_d_grid_combo_);
+
+	auto* three_d_bg_label = new QLabel("Background", three_d_controls_);
+	three_d_bg_label->setStyleSheet("color: rgba(190, 190, 190, 220);");
+	three_d_layout->addWidget(three_d_bg_label);
+
+	three_d_bg_combo_ = new QComboBox(three_d_controls_);
+	three_d_bg_combo_->addItem("Themed", "themed");
+	three_d_bg_combo_->addItem("Grey", "grey");
+	three_d_bg_combo_->addItem("Custom", "custom");
+	three_d_bg_combo_->setToolTip("Choose the background style for 3D previews.");
+	three_d_layout->addWidget(three_d_bg_combo_);
+
+	three_d_bg_color_button_ = new QToolButton(three_d_controls_);
+	three_d_bg_color_button_->setText("Color…");
+	three_d_bg_color_button_->setToolTip("Choose the custom background color for 3D previews.");
+	three_d_layout->addWidget(three_d_bg_color_button_);
+
+	auto* lighting_label = new QLabel("Lighting", three_d_controls_);
+	lighting_label->setStyleSheet("color: rgba(190, 190, 190, 220);");
+	three_d_layout->addWidget(lighting_label);
+
+	bsp_lightmap_button_ = new QToolButton(three_d_controls_);
+	bsp_lightmap_button_->setText("Lightmap");
+	bsp_lightmap_button_->setCheckable(true);
+	bsp_lightmap_button_->setAutoRaise(true);
+	bsp_lightmap_button_->setCursor(Qt::PointingHandCursor);
+	bsp_lightmap_button_->setToolTip("Apply baked lightmaps when rendering BSP previews.");
+	three_d_layout->addWidget(bsp_lightmap_button_);
+
+	three_d_layout->addStretch();
+
+	three_d_textured_button_ = new QToolButton(three_d_controls_);
+	three_d_textured_button_->setText("Textured");
+	three_d_textured_button_->setCheckable(true);
+	three_d_textured_button_->setAutoRaise(true);
+	three_d_textured_button_->setCursor(Qt::PointingHandCursor);
+	three_d_textured_button_->setToolTip("Toggle textured rendering for 3D previews.");
+	three_d_layout->addWidget(three_d_textured_button_);
+
+	three_d_wireframe_button_ = new QToolButton(three_d_controls_);
+	three_d_wireframe_button_->setText("Wireframe");
+	three_d_wireframe_button_->setCheckable(true);
+	three_d_wireframe_button_->setAutoRaise(true);
+	three_d_wireframe_button_->setCursor(Qt::PointingHandCursor);
+	three_d_wireframe_button_->setToolTip("Toggle wireframe rendering for 3D previews.");
+	three_d_layout->addWidget(three_d_wireframe_button_);
+
+	three_d_controls_->setVisible(false);
+	content_layout->addWidget(three_d_controls_, 0);
 
 	stack_ = new QStackedWidget(content_card_);
 	content_layout->addWidget(stack_, 1);
@@ -566,26 +673,6 @@ void PreviewPane::build_ui() {
 	auto* bsp_layout = new QVBoxLayout(bsp_page_);
 	bsp_layout->setContentsMargins(0, 0, 0, 0);
 	bsp_layout->setSpacing(6);
-
-	bsp_controls_ = new QWidget(bsp_page_);
-	auto* bsp_controls_layout = new QHBoxLayout(bsp_controls_);
-	bsp_controls_layout->setContentsMargins(6, 4, 6, 4);
-	bsp_controls_layout->setSpacing(8);
-
-	auto* lighting_label = new QLabel("Lighting", bsp_controls_);
-	lighting_label->setStyleSheet("color: rgba(190, 190, 190, 220);");
-	bsp_controls_layout->addWidget(lighting_label);
-
-	bsp_lightmap_button_ = new QToolButton(bsp_controls_);
-	bsp_lightmap_button_->setText("Lightmap");
-	bsp_lightmap_button_->setCheckable(true);
-	bsp_lightmap_button_->setAutoRaise(true);
-	bsp_lightmap_button_->setCursor(Qt::PointingHandCursor);
-	bsp_lightmap_button_->setToolTip("Apply baked lightmaps when rendering BSP previews.");
-	bsp_controls_layout->addWidget(bsp_lightmap_button_);
-	bsp_controls_layout->addStretch();
-
-	bsp_layout->addWidget(bsp_controls_, 0);
 	stack_->addWidget(bsp_page_);
 	rebuild_bsp_widget();
 
@@ -613,6 +700,28 @@ void PreviewPane::build_ui() {
 	image_reveal_transparency_ = settings.value("preview/image/revealTransparent", false).toBool();
 	image_texture_smoothing_ = settings.value("preview/image/textureSmoothing", false).toBool();
 	bsp_lightmapping_enabled_ = settings.value("preview/bsp/lightmapping", true).toBool();
+	{
+		const QString grid_mode = settings.value("preview/3d/gridMode", "floor").toString().trimmed().toLower();
+		if (grid_mode == "grid") {
+			three_d_grid_mode_ = PreviewGridMode::Grid;
+		} else if (grid_mode == "none") {
+			three_d_grid_mode_ = PreviewGridMode::None;
+		} else {
+			three_d_grid_mode_ = PreviewGridMode::Floor;
+		}
+	}
+	{
+		const QString bg_mode = settings.value("preview/3d/backgroundMode", "themed").toString().trimmed().toLower();
+		if (bg_mode == "grey") {
+			three_d_bg_mode_ = PreviewBackgroundMode::Grey;
+		} else if (bg_mode == "custom") {
+			three_d_bg_mode_ = PreviewBackgroundMode::Custom;
+		} else {
+			three_d_bg_mode_ = PreviewBackgroundMode::Themed;
+		}
+	}
+	three_d_wireframe_enabled_ = settings.value("preview/3d/wireframe", false).toBool();
+	three_d_textured_enabled_ = settings.value("preview/3d/textured", true).toBool();
 
 	{
 		QVariant bg = settings.value("preview/image/backgroundColor");
@@ -628,6 +737,21 @@ void PreviewPane::build_ui() {
 			c = (base.lightness() < 128) ? QColor(64, 64, 64) : QColor(224, 224, 224);
 		}
 		image_bg_color_ = c;
+	}
+
+	{
+		QVariant bg = settings.value("preview/3d/backgroundColor");
+		QColor c;
+		if (bg.canConvert<QColor>()) {
+			c = bg.value<QColor>();
+		} else {
+			c = QColor(bg.toString());
+		}
+		if (!c.isValid()) {
+			const QColor base = palette().color(QPalette::Window);
+			c = (base.lightness() < 128) ? QColor(40, 40, 44) : QColor(210, 210, 210);
+		}
+		three_d_bg_color_ = c;
 	}
 
 	if (image_bg_mode_combo_) {
@@ -673,6 +797,29 @@ void PreviewPane::build_ui() {
 		});
 	}
 
+	if (image_mip_combo_) {
+		const int idx = image_mip_combo_->findData(image_mip_level_);
+		if (idx >= 0) {
+			image_mip_combo_->setCurrentIndex(idx);
+		}
+		connect(image_mip_combo_, &QComboBox::currentIndexChanged, this, [this](int index) {
+			if (!image_mip_combo_) {
+				return;
+			}
+			bool ok = false;
+			const int level = image_mip_combo_->itemData(index).toInt(&ok);
+			if (!ok) {
+				return;
+			}
+			const int clamped = qBound(0, level, 3);
+			if (image_mip_level_ == clamped) {
+				return;
+			}
+			image_mip_level_ = clamped;
+			emit request_image_mip_level(image_mip_level_);
+		});
+	}
+
 	if (image_bg_color_button_) {
 		update_image_bg_button();
 		connect(image_bg_color_button_, &QToolButton::clicked, this, [this]() {
@@ -698,6 +845,93 @@ void PreviewPane::build_ui() {
 		});
 	}
 
+	if (three_d_grid_combo_) {
+		const QString want = (three_d_grid_mode_ == PreviewGridMode::Grid) ? "grid"
+			: (three_d_grid_mode_ == PreviewGridMode::None) ? "none" : "floor";
+		const int idx = three_d_grid_combo_->findData(want);
+		if (idx >= 0) {
+			three_d_grid_combo_->setCurrentIndex(idx);
+		}
+		connect(three_d_grid_combo_, &QComboBox::currentIndexChanged, this, [this](int index) {
+			if (!three_d_grid_combo_) {
+				return;
+			}
+			const QString data = three_d_grid_combo_->itemData(index).toString().trimmed().toLower();
+			if (data == "grid") {
+				three_d_grid_mode_ = PreviewGridMode::Grid;
+			} else if (data == "none") {
+				three_d_grid_mode_ = PreviewGridMode::None;
+			} else {
+				three_d_grid_mode_ = PreviewGridMode::Floor;
+			}
+			QSettings s;
+			s.setValue("preview/3d/gridMode", data.isEmpty() ? "floor" : data);
+			apply_3d_settings();
+		});
+	}
+
+	if (three_d_bg_combo_) {
+		const QString want = (three_d_bg_mode_ == PreviewBackgroundMode::Grey) ? "grey"
+			: (three_d_bg_mode_ == PreviewBackgroundMode::Custom) ? "custom" : "themed";
+		const int idx = three_d_bg_combo_->findData(want);
+		if (idx >= 0) {
+			three_d_bg_combo_->setCurrentIndex(idx);
+		}
+		connect(three_d_bg_combo_, &QComboBox::currentIndexChanged, this, [this](int index) {
+			if (!three_d_bg_combo_) {
+				return;
+			}
+			const QString data = three_d_bg_combo_->itemData(index).toString().trimmed().toLower();
+			if (data == "grey") {
+				three_d_bg_mode_ = PreviewBackgroundMode::Grey;
+			} else if (data == "custom") {
+				three_d_bg_mode_ = PreviewBackgroundMode::Custom;
+			} else {
+				three_d_bg_mode_ = PreviewBackgroundMode::Themed;
+			}
+			QSettings s;
+			s.setValue("preview/3d/backgroundMode", data.isEmpty() ? "themed" : data);
+			apply_3d_bg_color_button_state();
+			apply_3d_settings();
+		});
+	}
+
+	if (three_d_bg_color_button_) {
+		update_3d_bg_button();
+		apply_3d_bg_color_button_state();
+		connect(three_d_bg_color_button_, &QToolButton::clicked, this, [this]() {
+			const QColor chosen = QColorDialog::getColor(three_d_bg_color_, this, "Choose 3D Background Color");
+			if (!chosen.isValid()) {
+				return;
+			}
+			three_d_bg_color_ = chosen;
+			QSettings s;
+			s.setValue("preview/3d/backgroundColor", three_d_bg_color_);
+			update_3d_bg_button();
+			apply_3d_settings();
+		});
+	}
+
+	if (three_d_wireframe_button_) {
+		three_d_wireframe_button_->setChecked(three_d_wireframe_enabled_);
+		connect(three_d_wireframe_button_, &QToolButton::toggled, this, [this](bool checked) {
+			three_d_wireframe_enabled_ = checked;
+			QSettings s;
+			s.setValue("preview/3d/wireframe", three_d_wireframe_enabled_);
+			apply_3d_settings();
+		});
+	}
+
+	if (three_d_textured_button_) {
+		three_d_textured_button_->setChecked(three_d_textured_enabled_);
+		connect(three_d_textured_button_, &QToolButton::toggled, this, [this](bool checked) {
+			three_d_textured_enabled_ = checked;
+			QSettings s;
+			s.setValue("preview/3d/textured", three_d_textured_enabled_);
+			apply_3d_settings();
+		});
+	}
+
 	if (bsp_lightmap_button_) {
 		bsp_lightmap_button_->blockSignals(true);
 		bsp_lightmap_button_->setChecked(bsp_lightmapping_enabled_);
@@ -707,15 +941,16 @@ void PreviewPane::build_ui() {
 			QSettings s;
 			s.setValue("preview/bsp/lightmapping", bsp_lightmapping_enabled_);
 			if (bsp_widget_) {
-				bsp_widget_->set_lightmap_enabled(bsp_lightmapping_enabled_);
+				apply_bsp_lightmap(bsp_widget_, bsp_lightmapping_enabled_);
 			}
 		});
 	}
 
 	if (bsp_widget_) {
-		bsp_widget_->set_lightmap_enabled(bsp_lightmapping_enabled_);
+		apply_bsp_lightmap(bsp_widget_, bsp_lightmapping_enabled_);
 	}
 
+	apply_3d_settings();
 	apply_image_background();
 }
 
@@ -764,12 +999,17 @@ void PreviewPane::rebuild_bsp_widget() {
 
 	switch (renderer_effective_) {
 		case PreviewRenderer::Vulkan:
+			bsp_widget_ = new BspPreviewVulkanWidget(bsp_page_);
+			layout->addWidget(bsp_widget_, 1);
+			apply_bsp_lightmap(bsp_widget_, bsp_lightmapping_enabled_);
+			break;
 		case PreviewRenderer::OpenGL:
 			bsp_widget_ = new BspPreviewWidget(bsp_page_);
 			layout->addWidget(bsp_widget_, 1);
-			bsp_widget_->set_lightmap_enabled(bsp_lightmapping_enabled_);
+			apply_bsp_lightmap(bsp_widget_, bsp_lightmapping_enabled_);
 			break;
 	}
+	apply_3d_settings();
 }
 
 void PreviewPane::rebuild_model_widget() {
@@ -788,11 +1028,15 @@ void PreviewPane::rebuild_model_widget() {
 
 	switch (renderer_effective_) {
 		case PreviewRenderer::Vulkan:
+			model_widget_ = new ModelViewerVulkanWidget(model_page_);
+			layout->addWidget(model_widget_, 1);
+			break;
 		case PreviewRenderer::OpenGL:
 			model_widget_ = new ModelViewerWidget(model_page_);
 			layout->addWidget(model_widget_, 1);
 			break;
 	}
+	apply_3d_settings();
 }
 
 /*
@@ -1047,9 +1291,20 @@ void PreviewPane::show_bsp(const QString& title, const QString& subtitle, BspMes
 	set_overview_value("Surfaces", QString::number(mesh.surfaces.size()));
 
 	show_content_block("3D Panel", bsp_page_);
+	if (three_d_controls_) {
+		three_d_controls_->setVisible(true);
+	}
+	if (bsp_lightmap_button_) {
+		bsp_lightmap_button_->setVisible(true);
+	}
 	if (bsp_widget_) {
-		bsp_widget_->set_lightmap_enabled(bsp_lightmapping_enabled_);
-		bsp_widget_->set_mesh(std::move(mesh), std::move(textures));
+		if (auto* gl = as_gl_bsp_widget(bsp_widget_)) {
+			gl->set_lightmap_enabled(bsp_lightmapping_enabled_);
+			gl->set_mesh(std::move(mesh), std::move(textures));
+		} else if (auto* vk = as_vk_bsp_widget(bsp_widget_)) {
+			vk->set_lightmap_enabled(bsp_lightmapping_enabled_);
+			vk->set_mesh(std::move(mesh), std::move(textures));
+		}
 	}
 }
 
@@ -1101,6 +1356,9 @@ void PreviewPane::show_content_block(const QString& title, QWidget* page) {
 	}
 	if (content_card_) {
 		content_card_->setVisible(true);
+	}
+	if (three_d_controls_) {
+		three_d_controls_->setVisible(false);
 	}
 	if (stack_ && page) {
 		stack_->setCurrentWidget(page);
@@ -1448,6 +1706,23 @@ void PreviewPane::update_image_transparency_controls() {
 	image_reveal_transparency_button_->setEnabled(has_alpha);
 }
 
+void PreviewPane::update_3d_bg_button() {
+	if (!three_d_bg_color_button_) {
+		return;
+	}
+	QPixmap swatch(14, 14);
+	swatch.fill(three_d_bg_color_);
+	three_d_bg_color_button_->setIcon(QIcon(swatch));
+	three_d_bg_color_button_->setToolTip(QString("Choose the custom 3D background color.\nCurrent: %1").arg(three_d_bg_color_.name(QColor::HexArgb)));
+}
+
+void PreviewPane::apply_3d_bg_color_button_state() {
+	if (!three_d_bg_color_button_) {
+		return;
+	}
+	three_d_bg_color_button_->setEnabled(three_d_bg_mode_ == PreviewBackgroundMode::Custom);
+}
+
 /*
 =============
 PreviewPane::show_image_from_bytes
@@ -1606,28 +1881,49 @@ void PreviewPane::show_model_from_file(const QString& title,
 	}
 
 	show_content_block("3D Panel", model_page_);
+	if (three_d_controls_) {
+		three_d_controls_->setVisible(true);
+	}
+	if (bsp_lightmap_button_) {
+		bsp_lightmap_button_->setVisible(false);
+	}
 
 	QString err;
-	const bool ok = skin_path.isEmpty() ? model_widget_->load_file(file_path, &err)
-	                                    : model_widget_->load_file(file_path, skin_path, &err);
+	bool ok = false;
+	if (auto* gl = as_gl_model_widget(model_widget_)) {
+		ok = skin_path.isEmpty() ? gl->load_file(file_path, &err)
+								 : gl->load_file(file_path, skin_path, &err);
+	} else if (auto* vk = as_vk_model_widget(model_widget_)) {
+		ok = skin_path.isEmpty() ? vk->load_file(file_path, &err)
+								 : vk->load_file(file_path, skin_path, &err);
+	}
 	if (!ok) {
 		show_message(title, err.isEmpty() ? "Unable to load model." : err);
 		return;
 	}
 
-	const QString fmt = model_widget_->model_format().toUpper();
+	QString fmt;
+	ModelMesh mesh;
+	if (auto* gl = as_gl_model_widget(model_widget_)) {
+		fmt = gl->model_format().toUpper();
+		mesh = gl->mesh();
+	} else if (auto* vk = as_vk_model_widget(model_widget_)) {
+		fmt = vk->model_format().toUpper();
+		mesh = vk->mesh();
+	}
 	if (!fmt.isEmpty()) {
 		set_overview_value("Format", fmt);
 	}
-	const ModelMesh mesh = model_widget_->mesh();
 	set_overview_value("Vertices", QString::number(mesh.vertices.size()));
 	set_overview_value("Triangles", QString::number(mesh.indices.size() / 3));
 }
 
 void PreviewPane::set_model_texture_smoothing(bool enabled) {
-  if (model_widget_) {
-    model_widget_->set_texture_smoothing(enabled);
-  }
+	if (auto* gl = as_gl_model_widget(model_widget_)) {
+		gl->set_texture_smoothing(enabled);
+	} else if (auto* vk = as_vk_model_widget(model_widget_)) {
+		vk->set_texture_smoothing(enabled);
+	}
 }
 
 void PreviewPane::set_image_texture_smoothing(bool enabled) {
@@ -1645,10 +1941,81 @@ void PreviewPane::set_image_texture_smoothing(bool enabled) {
 	}
 }
 
-void PreviewPane::set_model_palettes(const QVector<QRgb>& quake1_palette, const QVector<QRgb>& quake2_palette) {
-	if (model_widget_) {
-		model_widget_->set_palettes(quake1_palette, quake2_palette);
+void PreviewPane::set_image_mip_controls(bool visible, int mip_level) {
+	if (!image_mip_label_ || !image_mip_combo_) {
+		return;
 	}
+	image_mip_label_->setVisible(visible);
+	image_mip_combo_->setVisible(visible);
+	if (!visible) {
+		image_mip_level_ = 0;
+		return;
+	}
+	const int clamped = qBound(0, mip_level, 3);
+	image_mip_level_ = clamped;
+	const bool was_blocked = image_mip_combo_->blockSignals(true);
+	const int idx = image_mip_combo_->findData(clamped);
+	if (idx >= 0) {
+		image_mip_combo_->setCurrentIndex(idx);
+	}
+	image_mip_combo_->blockSignals(was_blocked);
+}
+
+void PreviewPane::set_model_palettes(const QVector<QRgb>& quake1_palette, const QVector<QRgb>& quake2_palette) {
+	if (auto* gl = as_gl_model_widget(model_widget_)) {
+		gl->set_palettes(quake1_palette, quake2_palette);
+	} else if (auto* vk = as_vk_model_widget(model_widget_)) {
+		vk->set_palettes(quake1_palette, quake2_palette);
+	}
+}
+
+void PreviewPane::set_glow_enabled(bool enabled) {
+	glow_enabled_ = enabled;
+	if (auto* gl = as_gl_model_widget(model_widget_)) {
+		gl->set_glow_enabled(enabled);
+	} else if (auto* vk = as_vk_model_widget(model_widget_)) {
+		vk->set_glow_enabled(enabled);
+	}
+}
+
+void PreviewPane::apply_3d_settings() {
+	auto apply = [&](QWidget* widget) {
+		if (!widget) {
+			return;
+		}
+		if (auto* gl = as_gl_bsp_widget(widget)) {
+			gl->set_grid_mode(three_d_grid_mode_);
+			gl->set_background_mode(three_d_bg_mode_, three_d_bg_color_);
+			gl->set_wireframe_enabled(three_d_wireframe_enabled_);
+			gl->set_textured_enabled(three_d_textured_enabled_);
+			return;
+		}
+		if (auto* vk = as_vk_bsp_widget(widget)) {
+			vk->set_grid_mode(three_d_grid_mode_);
+			vk->set_background_mode(three_d_bg_mode_, three_d_bg_color_);
+			vk->set_wireframe_enabled(three_d_wireframe_enabled_);
+			vk->set_textured_enabled(three_d_textured_enabled_);
+			return;
+		}
+		if (auto* gl = as_gl_model_widget(widget)) {
+			gl->set_grid_mode(three_d_grid_mode_);
+			gl->set_background_mode(three_d_bg_mode_, three_d_bg_color_);
+			gl->set_wireframe_enabled(three_d_wireframe_enabled_);
+			gl->set_textured_enabled(three_d_textured_enabled_);
+			gl->set_glow_enabled(glow_enabled_);
+			return;
+		}
+		if (auto* vk = as_vk_model_widget(widget)) {
+			vk->set_grid_mode(three_d_grid_mode_);
+			vk->set_background_mode(three_d_bg_mode_, three_d_bg_color_);
+			vk->set_wireframe_enabled(three_d_wireframe_enabled_);
+			vk->set_textured_enabled(three_d_textured_enabled_);
+			vk->set_glow_enabled(glow_enabled_);
+		}
+	};
+
+	apply(bsp_widget_);
+	apply(model_widget_);
 }
 
 void PreviewPane::start_playback_from_beginning() {
@@ -1705,8 +2072,10 @@ void PreviewPane::stop_video_playback() {
 }
 
 void PreviewPane::stop_model_preview() {
-	if (model_widget_) {
-		model_widget_->unload();
+	if (auto* gl = as_gl_model_widget(model_widget_)) {
+		gl->unload();
+	} else if (auto* vk = as_vk_model_widget(model_widget_)) {
+		vk->unload();
 	}
 }
 

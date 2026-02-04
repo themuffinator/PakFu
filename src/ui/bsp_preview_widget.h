@@ -12,6 +12,7 @@
 #include <QVector3D>
 
 #include "formats/bsp_preview.h"
+#include "ui/preview_3d_options.h"
 
 class QKeyEvent;
 
@@ -22,6 +23,10 @@ class BspPreviewWidget final : public QOpenGLWidget, protected QOpenGLFunctions 
 
   void set_mesh(BspMesh mesh, QHash<QString, QImage> textures = {});
   void set_lightmap_enabled(bool enabled);
+  void set_grid_mode(PreviewGridMode mode);
+  void set_background_mode(PreviewBackgroundMode mode, const QColor& custom_color);
+  void set_wireframe_enabled(bool enabled);
+  void set_textured_enabled(bool enabled);
   void clear();
 
  protected:
@@ -60,6 +65,12 @@ class BspPreviewWidget final : public QOpenGLWidget, protected QOpenGLFunctions 
   void upload_textures_if_possible();
   void destroy_gl_resources();
   void ensure_program();
+  void update_ground_mesh_if_needed();
+  void update_background_mesh_if_needed();
+  void update_grid_settings();
+  void apply_wireframe_state(bool enabled);
+  void update_background_colors(QVector3D* top, QVector3D* bottom, QVector3D* base) const;
+  void update_grid_colors(QVector3D* grid, QVector3D* axis_x, QVector3D* axis_y) const;
 
   enum class DragMode {
     None,
@@ -75,13 +86,26 @@ class BspPreviewWidget final : public QOpenGLWidget, protected QOpenGLFunctions 
   QOpenGLShaderProgram program_;
   QOpenGLBuffer vbo_{QOpenGLBuffer::VertexBuffer};
   QOpenGLBuffer ibo_{QOpenGLBuffer::IndexBuffer};
+  QOpenGLBuffer ground_vbo_{QOpenGLBuffer::VertexBuffer};
+  QOpenGLBuffer ground_ibo_{QOpenGLBuffer::IndexBuffer};
+  QOpenGLBuffer bg_vbo_{QOpenGLBuffer::VertexBuffer};
   QOpenGLVertexArrayObject vao_;
+  QOpenGLVertexArrayObject bg_vao_;
   bool gl_ready_ = false;
   int index_count_ = 0;
+  int ground_index_count_ = 0;
+  float ground_extent_ = 0.0f;
+  float ground_z_ = 0.0f;
+  float grid_scale_ = 1.0f;
   QVector<DrawSurface> surfaces_;
   QHash<QString, QImage> textures_;
 
   bool lightmap_enabled_ = true;
+  PreviewGridMode grid_mode_ = PreviewGridMode::Floor;
+  PreviewBackgroundMode bg_mode_ = PreviewBackgroundMode::Themed;
+  QColor bg_custom_color_;
+  bool wireframe_enabled_ = false;
+  bool textured_enabled_ = true;
   QVector3D center_ = QVector3D(0, 0, 0);
   float radius_ = 1.0f;
   float yaw_deg_ = 45.0f;

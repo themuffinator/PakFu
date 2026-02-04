@@ -58,6 +58,7 @@
 #include <QTreeWidget>
 #include <QUndoStack>
 #include <QUndoCommand>
+#include <QUuid>
 #include <QVBoxLayout>
 
 #include "archive/path_safety.h"
@@ -86,6 +87,8 @@ struct ChildListing {
   bool is_added = false;
   bool is_overridden = false;
 };
+
+QString normalize_pak_path(QString path);
 
 [[nodiscard]] size_t mz_read_qfile(void* opaque, mz_uint64 file_ofs, void* buf, size_t n) {
   auto* f = static_cast<QFile*>(opaque);
@@ -126,6 +129,95 @@ QString format_size(quint32 size) {
     return QString("%1 KiB").arg(QString::number(static_cast<double>(size) / kKiB, 'f', 1));
   }
   return QString("%1 B").arg(size);
+}
+
+bool is_quake2_game(GameId id) {
+  return id == GameId::Quake2 || id == GameId::Quake2Rerelease;
+}
+
+QString glow_path_for_fs(const QString& base_path) {
+  if (base_path.isEmpty()) {
+    return {};
+  }
+  const QFileInfo fi(base_path);
+  const QString base = fi.completeBaseName();
+  if (base.isEmpty() || base.endsWith("_glow", Qt::CaseInsensitive)) {
+    return {};
+  }
+  return QDir(fi.absolutePath()).filePath(QString("%1_glow.png").arg(base));
+}
+
+QString glow_path_for_pak(const QString& pak_path) {
+  const QString normalized = normalize_pak_path(pak_path);
+  if (normalized.isEmpty()) {
+    return {};
+  }
+  const int slash = normalized.lastIndexOf('/');
+  const QString dir = (slash >= 0) ? normalized.left(slash + 1) : QString();
+  const QString leaf = (slash >= 0) ? normalized.mid(slash + 1) : normalized;
+  const QFileInfo fi(leaf);
+  const QString base = fi.completeBaseName();
+  if (base.isEmpty() || base.endsWith("_glow", Qt::CaseInsensitive)) {
+    return {};
+  }
+  return dir + base + "_glow.png";
+}
+
+QImage apply_glow_overlay(const QImage& base, const QImage& glow) {
+  if (base.isNull() || glow.isNull()) {
+    return base;
+  }
+
+  QImage base_img = base.convertToFormat(QImage::Format_ARGB32);
+  QImage glow_img = glow.convertToFormat(QImage::Format_ARGB32);
+  if (base_img.isNull() || glow_img.isNull()) {
+    return base;
+  }
+  if (glow_img.size() != base_img.size()) {
+    glow_img = glow_img.scaled(base_img.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+  }
+
+  const int w = base_img.width();
+  const int h = base_img.height();
+
+  auto to_linear = [](int c) -> float {
+    const float f = static_cast<float>(c) / 255.0f;
+    return std::pow(f, 2.2f);
+  };
+  auto to_srgb = [](float c) -> int {
+    const float clamped = std::clamp(c, 0.0f, 1.0f);
+    return static_cast<int>(std::round(std::pow(clamped, 1.0f / 2.2f) * 255.0f));
+  };
+
+  for (int y = 0; y < h; ++y) {
+    auto* base_line = reinterpret_cast<QRgb*>(base_img.scanLine(y));
+    const auto* glow_line = reinterpret_cast<const QRgb*>(glow_img.constScanLine(y));
+    for (int x = 0; x < w; ++x) {
+      const QRgb b = base_line[x];
+      const QRgb g = glow_line[x];
+      const int ga = qAlpha(g);
+      if (ga <= 0) {
+        continue;
+      }
+
+      const float glow_alpha = static_cast<float>(ga) / 255.0f;
+      const float glow_rgb = std::max({qRed(g), qGreen(g), qBlue(g)}) / 255.0f;
+      const float glow_mask = std::clamp(glow_alpha * glow_rgb, 0.0f, 1.0f);
+      if (glow_mask <= 0.0f) {
+        continue;
+      }
+
+      // Fullbright pixels keep their base color without lighting influence.
+      const float base_r = to_linear(qRed(b));
+      const float base_g = to_linear(qGreen(b));
+      const float base_b = to_linear(qBlue(b));
+      const int out_a = qAlpha(b);
+
+      base_line[x] = qRgba(to_srgb(base_r), to_srgb(base_g), to_srgb(base_b), out_a);
+    }
+  }
+
+  return base_img;
 }
 
 QString join_prefix(const QStringList& parts) {
@@ -316,6 +408,104 @@ constexpr int kRoleIsAdded = Qt::UserRole + 4;
 constexpr int kRoleIsOverridden = Qt::UserRole + 5;
 
 constexpr char kPakFuMimeType[] = "application/x-pakfu-items";
+
+struct PakFuMimePayload {
+  bool cut = false;
+  QString source_uid;
+  QString source_archive;
+  QVector<QPair<QString, bool>> items;
+};
+
+bool pak_paths_equal(const QString& a_in, const QString& b_in) {
+  const QString a = normalize_pak_path(a_in);
+  const QString b = normalize_pak_path(b_in);
+#if defined(Q_OS_WIN)
+  return a.compare(b, Qt::CaseInsensitive) == 0;
+#else
+  return a == b;
+#endif
+}
+
+bool pak_path_is_under(const QString& path_in, const QString& root_in) {
+  const QString path = normalize_pak_path(path_in);
+  QString root = normalize_pak_path(root_in);
+  if (path.isEmpty() || root.isEmpty()) {
+    return false;
+  }
+  if (!root.endsWith('/')) {
+    root += '/';
+  }
+#if defined(Q_OS_WIN)
+  return path.startsWith(root, Qt::CaseInsensitive);
+#else
+  return path.startsWith(root);
+#endif
+}
+
+QList<QUrl> filter_local_urls(const QList<QUrl>& urls) {
+  QList<QUrl> out;
+  out.reserve(urls.size());
+  for (const QUrl& url : urls) {
+    if (!url.isLocalFile()) {
+      continue;
+    }
+    const QString local = url.toLocalFile();
+    if (local.isEmpty()) {
+      continue;
+    }
+    const QFileInfo info(local);
+    if (!info.exists()) {
+      continue;
+    }
+    out.push_back(url);
+  }
+  return out;
+}
+
+bool parse_pakfu_mime(const QMimeData* mime, PakFuMimePayload* out) {
+  if (!out) {
+    return false;
+  }
+  *out = {};
+  if (!mime || !mime->hasFormat(kPakFuMimeType)) {
+    return false;
+  }
+  const QByteArray payload = mime->data(kPakFuMimeType);
+  if (payload.isEmpty()) {
+    return false;
+  }
+
+  QJsonParseError parse_error{};
+  const QJsonDocument doc = QJsonDocument::fromJson(payload, &parse_error);
+  if (parse_error.error != QJsonParseError::NoError || !doc.isObject()) {
+    return false;
+  }
+
+  const QJsonObject root = doc.object();
+  out->cut = root.value("cut").toBool(false);
+  out->source_uid = root.value("source_uid").toString();
+  out->source_archive = root.value("source_archive").toString();
+
+  const QJsonArray items = root.value("items").toArray();
+  out->items.reserve(items.size());
+  for (const QJsonValue& v : items) {
+    if (!v.isObject()) {
+      continue;
+    }
+    const QJsonObject it = v.toObject();
+    QString pak_path = normalize_pak_path(it.value("pak_path").toString());
+    const bool is_dir = it.value("is_dir").toBool(false);
+    if (pak_path.isEmpty()) {
+      continue;
+    }
+    if (is_dir && !pak_path.endsWith('/')) {
+      pak_path += '/';
+    }
+    out->items.push_back(qMakePair(std::move(pak_path), is_dir));
+  }
+
+  return true;
+}
 
 class PakTreeItem : public QTreeWidgetItem {
 public:
@@ -859,9 +1049,14 @@ public:
     setDropIndicatorShown(true);
     setDragDropMode(QAbstractItemView::DragDrop);
     setDefaultDropAction(Qt::CopyAction);
+    setSupportedDragActions(Qt::CopyAction | Qt::MoveAction);
   }
 
 protected:
+  Qt::DropActions supportedDropActions() const override {
+    return Qt::CopyAction | Qt::MoveAction;
+  }
+
   QMimeData* mimeData(const QList<QTreeWidgetItem*>& items) const override {
     if (!tab_) {
       return nullptr;
@@ -884,7 +1079,7 @@ protected:
   }
 
   void dragEnterEvent(QDragEnterEvent* event) override {
-    if (event && event->mimeData() && event->mimeData()->hasUrls()) {
+    if (event && tab_ && tab_->can_accept_mime(event->mimeData())) {
       event->acceptProposedAction();
       return;
     }
@@ -892,7 +1087,7 @@ protected:
   }
 
   void dragMoveEvent(QDragMoveEvent* event) override {
-    if (event && event->mimeData() && event->mimeData()->hasUrls()) {
+    if (event && tab_ && tab_->can_accept_mime(event->mimeData())) {
       event->acceptProposedAction();
       return;
     }
@@ -900,7 +1095,7 @@ protected:
   }
 
   void dropEvent(QDropEvent* event) override {
-    if (!event || !tab_ || !event->mimeData() || !event->mimeData()->hasUrls()) {
+    if (!event || !tab_) {
       QTreeWidget::dropEvent(event);
       return;
     }
@@ -915,8 +1110,10 @@ protected:
       }
     }
 
-    tab_->import_urls_with_undo(event->mimeData()->urls(), dest_prefix, "Drop");
-    event->acceptProposedAction();
+    if (tab_->handle_drop_event(event, dest_prefix)) {
+      return;
+    }
+    QTreeWidget::dropEvent(event);
   }
 
 private:
@@ -931,9 +1128,14 @@ public:
     setDropIndicatorShown(true);
     setDragDropMode(QAbstractItemView::DragDrop);
     setDefaultDropAction(Qt::CopyAction);
+    setSupportedDragActions(Qt::CopyAction | Qt::MoveAction);
   }
 
 protected:
+  Qt::DropActions supportedDropActions() const override {
+    return Qt::CopyAction | Qt::MoveAction;
+  }
+
   QMimeData* mimeData(const QList<QListWidgetItem*>& items) const override {
     if (!tab_) {
       return nullptr;
@@ -956,7 +1158,7 @@ protected:
   }
 
   void dragEnterEvent(QDragEnterEvent* event) override {
-    if (event && event->mimeData() && event->mimeData()->hasUrls()) {
+    if (event && tab_ && tab_->can_accept_mime(event->mimeData())) {
       event->acceptProposedAction();
       return;
     }
@@ -964,7 +1166,7 @@ protected:
   }
 
   void dragMoveEvent(QDragMoveEvent* event) override {
-    if (event && event->mimeData() && event->mimeData()->hasUrls()) {
+    if (event && tab_ && tab_->can_accept_mime(event->mimeData())) {
       event->acceptProposedAction();
       return;
     }
@@ -972,7 +1174,7 @@ protected:
   }
 
   void dropEvent(QDropEvent* event) override {
-    if (!event || !tab_ || !event->mimeData() || !event->mimeData()->hasUrls()) {
+    if (!event || !tab_) {
       QListWidget::dropEvent(event);
       return;
     }
@@ -987,8 +1189,10 @@ protected:
       }
     }
 
-    tab_->import_urls_with_undo(event->mimeData()->urls(), dest_prefix, "Drop");
-    event->acceptProposedAction();
+    if (tab_->handle_drop_event(event, dest_prefix)) {
+      return;
+    }
+    QListWidget::dropEvent(event);
   }
 
 private:
@@ -997,6 +1201,8 @@ private:
 
 PakTab::PakTab(Mode mode, const QString& pak_path, QWidget* parent)
     : QWidget(parent), mode_(mode), pak_path_(pak_path) {
+  setAcceptDrops(true);
+  drag_source_uid_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
   thumbnail_pool_.setMaxThreadCount(1);
   QSettings settings;
   image_texture_smoothing_ = settings.value("preview/image/textureSmoothing", false).toBool();
@@ -1037,6 +1243,19 @@ void PakTab::set_image_texture_smoothing(bool enabled) {
 void PakTab::set_preview_renderer(PreviewRenderer renderer) {
   if (preview_) {
     preview_->set_preview_renderer(renderer);
+  }
+}
+
+void PakTab::set_game_id(GameId id) {
+  if (game_id_ == id) {
+    return;
+  }
+  game_id_ = id;
+  if (preview_) {
+    preview_->set_glow_enabled(is_quake2_game(game_id_));
+  }
+  if (loaded_) {
+    update_preview();
   }
 }
 
@@ -1092,6 +1311,29 @@ void PakTab::redo() {
   if (undo_stack_) {
     undo_stack_->redo();
   }
+}
+
+void PakTab::dragEnterEvent(QDragEnterEvent* event) {
+  if (event && can_accept_mime(event->mimeData())) {
+    event->acceptProposedAction();
+    return;
+  }
+  QWidget::dragEnterEvent(event);
+}
+
+void PakTab::dragMoveEvent(QDragMoveEvent* event) {
+  if (event && can_accept_mime(event->mimeData())) {
+    event->acceptProposedAction();
+    return;
+  }
+  QWidget::dragMoveEvent(event);
+}
+
+void PakTab::dropEvent(QDropEvent* event) {
+  if (handle_drop_event(event, current_prefix())) {
+    return;
+  }
+  QWidget::dropEvent(event);
 }
 
 void PakTab::set_dirty(bool dirty) {
@@ -1305,6 +1547,7 @@ void PakTab::build_ui() {
 
   preview_ = new PreviewPane(splitter_);
   preview_->setMinimumWidth(320);
+  preview_->set_glow_enabled(is_quake2_game(game_id_));
   splitter_->addWidget(preview_);
   splitter_->setStretchFactor(0, 3);
   splitter_->setStretchFactor(1, 2);
@@ -1312,6 +1555,7 @@ void PakTab::build_ui() {
 	connect(preview_, &PreviewPane::request_next_audio, this, [this]() { select_adjacent_audio(1); });
 	connect(preview_, &PreviewPane::request_previous_video, this, [this]() { select_adjacent_video(-1); });
 	connect(preview_, &PreviewPane::request_next_video, this, [this]() { select_adjacent_video(1); });
+	connect(preview_, &PreviewPane::request_image_mip_level, this, [this]() { update_preview(); });
 
   details_view_ = new PakTabDetailsView(this, view_stack_);
   details_view_->setHeaderLabels({"Name", "Size", "Modified"});
@@ -2665,7 +2909,11 @@ bool PakTab::import_urls(const QList<QUrl>& urls,
   return changed;
 }
 
-void PakTab::import_urls_with_undo(const QList<QUrl>& urls, const QString& dest_prefix, const QString& label) {
+void PakTab::import_urls_with_undo(const QList<QUrl>& urls,
+                                   const QString& dest_prefix,
+                                   const QString& label,
+                                   const QVector<QPair<QString, bool>>& cut_items,
+                                   bool is_cut) {
   if (!ensure_editable(label)) {
     return;
   }
@@ -2687,6 +2935,18 @@ void PakTab::import_urls_with_undo(const QList<QUrl>& urls, const QString& dest_
     rebuild_added_index();
     refresh_listing();
     return;
+  }
+
+  if (changed && is_cut && !cut_items.isEmpty()) {
+    for (const auto& it : cut_items) {
+      const QString p = normalize_pak_path(it.first);
+      if (it.second) {
+        deleted_dir_prefixes_.insert(p.endsWith('/') ? p : (p + "/"));
+      } else {
+        deleted_files_.insert(p);
+        remove_added_file_by_name(p);
+      }
+    }
   }
 
   if (!failures.isEmpty()) {
@@ -2713,6 +2973,98 @@ void PakTab::import_urls_with_undo(const QList<QUrl>& urls, const QString& dest_
   }
 
   refresh_listing();
+}
+
+bool PakTab::can_accept_mime(const QMimeData* mime) const {
+  if (!mime) {
+    return false;
+  }
+  if (mime->hasFormat(kPakFuMimeType)) {
+    return true;
+  }
+  if (!mime->hasUrls()) {
+    return false;
+  }
+  const QList<QUrl> urls = filter_local_urls(mime->urls());
+  return !urls.isEmpty();
+}
+
+bool PakTab::handle_drop_event(QDropEvent* event, const QString& dest_prefix_in) {
+  if (!event || !event->mimeData()) {
+    return false;
+  }
+
+  const QMimeData* mime = event->mimeData();
+  PakFuMimePayload payload;
+  const bool has_payload = parse_pakfu_mime(mime, &payload);
+
+  QList<QUrl> urls = filter_local_urls(mime->urls());
+  if (urls.isEmpty() && !has_payload) {
+    return false;
+  }
+
+  QString dest_prefix = normalize_pak_path(dest_prefix_in);
+  if (!dest_prefix.isEmpty() && !dest_prefix.endsWith('/')) {
+    dest_prefix += '/';
+  }
+
+  bool wants_move = false;
+  if (has_payload && payload.source_uid == drag_source_uid_) {
+    if (event->dropAction() == Qt::MoveAction) {
+      wants_move = true;
+    }
+  }
+
+  QList<QUrl> import_urls = urls;
+  QVector<QPair<QString, bool>> move_items;
+
+  if (wants_move && !payload.items.isEmpty() && payload.items.size() == urls.size()) {
+    QList<QUrl> filtered_urls;
+    QVector<QPair<QString, bool>> filtered_items;
+    filtered_urls.reserve(urls.size());
+    filtered_items.reserve(payload.items.size());
+
+    bool move_blocked = false;
+    for (int i = 0; i < payload.items.size() && i < urls.size(); ++i) {
+      const auto& item = payload.items[i];
+      const QString leaf = pak_leaf_name(item.first);
+      QString new_path = normalize_pak_path(dest_prefix + leaf + (item.second ? "/" : ""));
+      if (pak_paths_equal(item.first, new_path)) {
+        continue;  // No-op move.
+      }
+      if (item.second && pak_path_is_under(dest_prefix, item.first)) {
+        move_blocked = true;
+        break;
+      }
+      filtered_urls.push_back(urls[i]);
+      filtered_items.push_back(item);
+    }
+
+    if (!move_blocked) {
+      import_urls = filtered_urls;
+      move_items = filtered_items;
+      if (import_urls.isEmpty()) {
+        event->acceptProposedAction();
+        return true;
+      }
+    } else {
+      wants_move = false;
+    }
+  } else if (wants_move) {
+    wants_move = false;
+  }
+
+  if (!wants_move && event->dropAction() == Qt::MoveAction) {
+    event->setDropAction(Qt::CopyAction);
+  }
+
+  if (import_urls.isEmpty()) {
+    return false;
+  }
+
+  import_urls_with_undo(import_urls, dest_prefix, wants_move ? "Move" : "Drop", move_items, wants_move);
+  event->acceptProposedAction();
+  return true;
 }
 
 QMimeData* PakTab::make_mime_data_for_items(const QVector<QPair<QString, bool>>& items,
@@ -2770,9 +3122,11 @@ QMimeData* PakTab::make_mime_data_for_items(const QVector<QPair<QString, bool>>&
     return nullptr;
   }
 
-  QJsonObject root;
-  root.insert("cut", cut);
-  root.insert("items", json_items);
+    QJsonObject root;
+    root.insert("cut", cut);
+    root.insert("source_uid", drag_source_uid_);
+    root.insert("source_archive", pak_path_.isEmpty() ? QString() : QFileInfo(pak_path_).absoluteFilePath());
+    root.insert("items", json_items);
 
   auto* mime = new QMimeData();
   mime->setUrls(urls);
@@ -2825,27 +3179,10 @@ void PakTab::paste_from_clipboard() {
 
   bool is_cut = false;
   QVector<QPair<QString, bool>> cut_items;
-  if (mime->hasFormat(kPakFuMimeType)) {
-    const QByteArray payload = mime->data(kPakFuMimeType);
-    QJsonParseError parse_error{};
-    const QJsonDocument doc = QJsonDocument::fromJson(payload, &parse_error);
-    if (parse_error.error == QJsonParseError::NoError && doc.isObject()) {
-      const QJsonObject obj = doc.object();
-      is_cut = obj.value("cut").toBool(false);
-      const QJsonArray items = obj.value("items").toArray();
-      for (const QJsonValue& v : items) {
-        if (!v.isObject()) {
-          continue;
-        }
-        const QJsonObject it = v.toObject();
-        const QString pak_path = normalize_pak_path(it.value("pak_path").toString());
-        const bool dir = it.value("is_dir").toBool(false);
-        if (pak_path.isEmpty()) {
-          continue;
-        }
-        cut_items.push_back(qMakePair(pak_path, dir));
-      }
-    }
+  PakFuMimePayload payload;
+  if (parse_pakfu_mime(mime, &payload)) {
+    is_cut = payload.cut;
+    cut_items = payload.items;
   }
 
   // Capture for undo.
@@ -4321,6 +4658,12 @@ void PakTab::refresh_listing() {
         item->setToolTip(0, full_path);
       }
 
+      Qt::ItemFlags flags = item->flags() | Qt::ItemIsDragEnabled;
+      if (child.is_dir) {
+        flags |= Qt::ItemIsDropEnabled;
+      }
+      item->setFlags(flags);
+
       if (child.is_added || child.is_overridden) {
         QFont f = item->font(0);
         f.setItalic(true);
@@ -4404,6 +4747,12 @@ void PakTab::refresh_listing() {
       } else {
         item->setToolTip(full_path);
       }
+
+      Qt::ItemFlags flags = item->flags() | Qt::ItemIsDragEnabled;
+      if (child.is_dir) {
+        flags |= Qt::ItemIsDropEnabled;
+      }
+      item->setFlags(flags);
 
       if (child.is_added || child.is_overridden) {
         QFont f = item->font();
@@ -5097,6 +5446,11 @@ void PakTab::update_preview() {
 
   if (is_image_file_name(leaf)) {
     ImageDecodeOptions decode_options;
+    const bool supports_mips = (ext == "wal" || ext == "mip");
+    if (preview_) {
+      preview_->set_image_mip_controls(supports_mips, preview_->image_mip_level());
+    }
+    decode_options.mip_level = supports_mips && preview_ ? preview_->image_mip_level() : 0;
     if (ext == "wal") {
       QString pal_err;
       if (!ensure_quake2_palette(&pal_err)) {
@@ -5125,10 +5479,34 @@ void PakTab::update_preview() {
         decode_options.palette = &quake1_palette_;
       }
     }
+
+    const bool allow_glow = is_quake2_game(game_id_);
+    const auto apply_glow_from_file = [&](const QString& path, const QImage& base_image) -> QImage {
+      if (!allow_glow) {
+        return base_image;
+      }
+      const QString glow_path = glow_path_for_fs(path);
+      if (glow_path.isEmpty() || !QFileInfo::exists(glow_path)) {
+        return base_image;
+      }
+      const ImageDecodeResult glow_decoded = decode_image_file(glow_path, ImageDecodeOptions{});
+      if (!glow_decoded.ok()) {
+        return base_image;
+      }
+      return apply_glow_overlay(base_image, glow_decoded.image);
+    };
+
     if (!source_path.isEmpty()) {
-      preview_->show_image_from_file(leaf, subtitle, source_path, decode_options);
+      const ImageDecodeResult decoded = decode_image_file(source_path, decode_options);
+      if (!decoded.ok()) {
+        preview_->show_message(leaf, decoded.error.isEmpty() ? "Unable to load this image file." : decoded.error);
+        return;
+      }
+      const QImage out = apply_glow_from_file(source_path, decoded.image);
+      preview_->show_image(leaf, subtitle, out);
       return;
     }
+
     QByteArray bytes;
     QString err;
     constexpr qint64 kMaxImageBytes = 32LL * 1024 * 1024;
@@ -5136,7 +5514,59 @@ void PakTab::update_preview() {
       preview_->show_message(leaf, err.isEmpty() ? "Unable to read image from PAK." : err);
       return;
     }
-    preview_->show_image_from_bytes(leaf, subtitle, bytes, decode_options);
+    ImageDecodeResult decoded = decode_image_bytes(bytes, leaf, decode_options);
+    if (!decoded.ok()) {
+      preview_->show_message(leaf, decoded.error.isEmpty() ? "Unable to decode this image format." : decoded.error);
+      return;
+    }
+
+    QImage image = decoded.image;
+    if (allow_glow) {
+      const QString glow_pak = glow_path_for_pak(pak_path);
+      if (!glow_pak.isEmpty()) {
+        QHash<QString, QString> by_lower;
+        by_lower.reserve(view_archive().entries().size() + (wad_mounted_ ? 0 : added_files_.size()));
+        for (const ArchiveEntry& e : view_archive().entries()) {
+          const QString n = normalize_pak_path(e.name);
+          if (!n.isEmpty()) {
+            by_lower.insert(n.toLower(), e.name);
+          }
+        }
+        if (!wad_mounted_) {
+          for (const AddedFile& f : added_files_) {
+            const QString n = normalize_pak_path(f.pak_name);
+            if (!n.isEmpty()) {
+              by_lower.insert(n.toLower(), f.pak_name);
+            }
+          }
+        }
+
+        const QString key = normalize_pak_path(glow_pak).toLower();
+        const QString found = key.isEmpty() ? QString() : by_lower.value(key);
+        if (!found.isEmpty()) {
+          const int glow_added_idx = added_index_by_name_.value(normalize_pak_path(found), -1);
+          if (glow_added_idx >= 0 && glow_added_idx < added_files_.size()) {
+            const ImageDecodeResult glow_decoded =
+              decode_image_file(added_files_[glow_added_idx].source_path, ImageDecodeOptions{});
+            if (glow_decoded.ok()) {
+              image = apply_glow_overlay(image, glow_decoded.image);
+            }
+          } else {
+            QByteArray glow_bytes;
+            QString glow_err;
+            constexpr qint64 kMaxGlowBytes = 32LL * 1024 * 1024;
+            if (view_archive().read_entry_bytes(found, &glow_bytes, &glow_err, kMaxGlowBytes)) {
+              const ImageDecodeResult glow_decoded = decode_image_bytes(glow_bytes, QFileInfo(found).fileName(), ImageDecodeOptions{});
+              if (glow_decoded.ok()) {
+                image = apply_glow_overlay(image, glow_decoded.image);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    preview_->show_image(leaf, subtitle, image);
     return;
   }
 
@@ -5323,21 +5753,67 @@ void PakTab::update_preview() {
         return;
       }
 
+      const QString op_dir = QFileInfo(model_path).absolutePath();
+
+      auto extract_entry_to_model_dir = [&](const QString& found_entry) -> QString {
+        const QString entry_leaf = pak_leaf_name(found_entry);
+        if (entry_leaf.isEmpty()) {
+          return {};
+        }
+        const QString dest = QDir(op_dir).filePath(entry_leaf);
+        if (QFileInfo::exists(dest)) {
+          return dest;
+        }
+
+        QString tex_err;
+        const int tex_added_idx = added_index_by_name_.value(normalize_pak_path(found_entry), -1);
+        if (tex_added_idx >= 0 && tex_added_idx < added_files_.size()) {
+          if (copy_file_stream(added_files_[tex_added_idx].source_path, dest, &tex_err)) {
+            return dest;
+          }
+          return {};
+        }
+        if (view_archive().extract_entry_to_file(found_entry, dest, &tex_err)) {
+          return dest;
+        }
+        return QFileInfo::exists(dest) ? dest : QString();
+      };
+
+      auto find_entry_ci_slow = [&](const QString& want) -> QString {
+        const QString key = normalize_pak_path(want).toLower();
+        if (key.isEmpty()) {
+          return {};
+        }
+        for (const ArchiveEntry& e : view_archive().entries()) {
+          const QString n = normalize_pak_path(e.name);
+          if (!n.isEmpty() && n.toLower() == key) {
+            return e.name;
+          }
+        }
+        if (!wad_mounted_) {
+          for (const AddedFile& f : added_files_) {
+            const QString n = normalize_pak_path(f.pak_name);
+            if (!n.isEmpty() && n.toLower() == key) {
+              return f.pak_name;
+            }
+          }
+        }
+        return {};
+      };
+
       // Try to find and export a skin from the same folder in the archive.
       const QString skin_pak = find_skin_in_archive(pak_path);
       if (!skin_pak.isEmpty()) {
-        const QString op_dir = QFileInfo(model_path).absolutePath();
-        const QString dest_skin = QDir(op_dir).filePath(pak_leaf_name(skin_pak));
+        skin_path = extract_entry_to_model_dir(skin_pak);
 
-        QString skin_err;
-        const int skin_added_idx = added_index_by_name_.value(normalize_pak_path(skin_pak), -1);
-        if (skin_added_idx >= 0 && skin_added_idx < added_files_.size()) {
-          if (copy_file_stream(added_files_[skin_added_idx].source_path, dest_skin, &skin_err)) {
-            skin_path = dest_skin;
-          }
-        } else {
-          if (view_archive().extract_entry_to_file(skin_pak, dest_skin, &skin_err)) {
-            skin_path = dest_skin;
+        if (!skin_path.isEmpty() && is_quake2_game(game_id_)) {
+          const QString skin_ext = file_ext_lower(QFileInfo(skin_path).fileName());
+          if (skin_ext != "skin") {
+            const QString glow_candidate = glow_path_for_pak(skin_pak);
+            const QString glow_found = glow_candidate.isEmpty() ? QString() : find_entry_ci_slow(glow_candidate);
+            if (!glow_found.isEmpty()) {
+              (void)extract_entry_to_model_dir(glow_found);
+            }
           }
         }
       }
@@ -5345,7 +5821,6 @@ void PakTab::update_preview() {
       // For multi-surface formats, try to extract per-surface textures referenced by the model so the model viewer can
       // auto-load them from the exported temp directory.
       if (ext == "md3" || ext == "md5mesh" || ext == "iqm" || ext == "obj" || ext == "lwo") {
-        const QString op_dir = QFileInfo(model_path).absolutePath();
         const QString normalized_model = normalize_pak_path(pak_path);
         const int slash = normalized_model.lastIndexOf('/');
         const QString model_dir_prefix = (slash >= 0) ? normalized_model.left(slash + 1) : QString();
@@ -5375,23 +5850,23 @@ void PakTab::update_preview() {
           return key.isEmpty() ? QString() : by_lower.value(key);
         };
 
-        auto extract_entry_to_model_dir = [&](const QString& found_entry) -> void {
-          const QString entry_leaf = pak_leaf_name(found_entry);
-          if (entry_leaf.isEmpty()) {
+        auto extract_glow_for_entry = [&](const QString& found_entry) -> void {
+          if (!is_quake2_game(game_id_)) {
             return;
           }
-          const QString dest = QDir(op_dir).filePath(entry_leaf);
-          if (QFileInfo::exists(dest)) {
+          const QString lower = found_entry.toLower();
+          if (lower.endsWith("_glow.png")) {
             return;
           }
-
-          QString tex_err;
-          const int tex_added_idx = added_index_by_name_.value(normalize_pak_path(found_entry), -1);
-          if (tex_added_idx >= 0 && tex_added_idx < added_files_.size()) {
-            (void)copy_file_stream(added_files_[tex_added_idx].source_path, dest, &tex_err);
+          const QString glow_candidate = glow_path_for_pak(found_entry);
+          if (glow_candidate.isEmpty()) {
             return;
           }
-          (void)view_archive().extract_entry_to_file(found_entry, dest, &tex_err);
+          const QString glow_found = find_entry_ci(glow_candidate);
+          if (glow_found.isEmpty()) {
+            return;
+          }
+          extract_entry_to_model_dir(glow_found);
         };
 
         // If we exported an OBJ, try to extract its referenced .mtl files first so the OBJ loader can resolve
@@ -5552,15 +6027,16 @@ void PakTab::update_preview() {
                 continue;
               }
               const QString leaf_lower = pak_leaf_name(found).toLower();
-              if (leaf_lower.isEmpty() || extracted_lower.contains(leaf_lower)) {
-                continue;
-              }
-              extracted_lower.insert(leaf_lower);
-              extract_entry_to_model_dir(found);
-              if (extracted_lower.size() >= 32) {
-                break;
-              }
+            if (leaf_lower.isEmpty() || extracted_lower.contains(leaf_lower)) {
+              continue;
             }
+            extracted_lower.insert(leaf_lower);
+            extract_entry_to_model_dir(found);
+            extract_glow_for_entry(found);
+            if (extracted_lower.size() >= 32) {
+              break;
+            }
+          }
           };
 
           for (const ModelSurface& s : loaded_model->surfaces) {
@@ -5691,12 +6167,12 @@ void PakTab::update_preview() {
               return ImageDecodeResult{QImage(), "Missing Quake II palette for WAL."};
             }
             QString wal_err;
-            QImage img = decode_wal_image(bytes, quake2_palette_, &wal_err);
+            QImage img = decode_wal_image(bytes, quake2_palette_, 0, &wal_err);
             return ImageDecodeResult{std::move(img), wal_err};
           }
           if (ext == "mip") {
             QString mip_err;
-            QImage img = decode_miptex_image(bytes, quake1_palette_.size() == 256 ? &quake1_palette_ : nullptr, &mip_err);
+            QImage img = decode_miptex_image(bytes, quake1_palette_.size() == 256 ? &quake1_palette_ : nullptr, 0, &mip_err);
             return ImageDecodeResult{std::move(img), mip_err};
           }
           ImageDecodeOptions opts;

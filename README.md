@@ -22,6 +22,8 @@ This project is still training under the waterfall 💦🥋 (early development).
   - Models: `mdl`, `md2`, `md3`, `iqm`, `md5mesh`, `lwo`, `obj` 🧊🧩
   - Maps: `bsp` (Quake/Quake II/Quake III/Quake Live) 🗺️🧭
   - Text/config: `cfg` and similar plain-text formats 🧾🖋️
+- Tune 3D previews with grid/floor/none options, themed/grey/custom backgrounds, and wireframe/textured toggles
+- Quake II previews honor `_glow.png` glow maps for textures and models
 - Stay responsive for large archives (no freezing in the middle of a roundhouse kick) 🥶➡️🥋
 - Guard official game archives with a default-on Pure PAK Protector preference 🛡️📦
 - Keep C++ code clean, portable, and documented (minimal OS-specific sorcery) 🧠🧹🧾
@@ -107,6 +109,9 @@ meson compile -C build
 
 ### GUI 🪟
 - Use **File → Open Archive…** or **File → Open Folder…** (opens in a tab).
+- Drag archives or folders onto the window to open them.
+- Drag files/folders into an open archive tab to add them.
+- Drag items out of PakFu to copy them to your file manager (exports via temp files).
 
 ### CLI 🧑‍💻
 - Most archive actions also work on folders (pass a directory path instead of an archive file).

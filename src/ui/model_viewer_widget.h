@@ -13,6 +13,7 @@
 #include <optional>
 
 #include "formats/model.h"
+#include "ui/preview_3d_options.h"
 
 class QKeyEvent;
 
@@ -27,6 +28,11 @@ class ModelViewerWidget final : public QOpenGLWidget, protected QOpenGLFunctions
 
   void set_texture_smoothing(bool enabled);
   void set_palettes(const QVector<QRgb>& quake1_palette, const QVector<QRgb>& quake2_palette);
+  void set_grid_mode(PreviewGridMode mode);
+  void set_background_mode(PreviewBackgroundMode mode, const QColor& custom_color);
+  void set_wireframe_enabled(bool enabled);
+  void set_textured_enabled(bool enabled);
+  void set_glow_enabled(bool enabled);
 
   [[nodiscard]] bool load_file(const QString& file_path, QString* error = nullptr);
   [[nodiscard]] bool load_file(const QString& file_path, const QString& skin_path, QString* error);
@@ -57,8 +63,11 @@ protected:
     QString shader_hint;
     QString shader_leaf;
     QImage image;
+    QImage glow_image;
     GLuint texture_id = 0;
+    GLuint glow_texture_id = 0;
     bool has_texture = false;
+    bool has_glow = false;
   };
 
   void reset_camera_from_mesh();
@@ -69,6 +78,11 @@ protected:
   void destroy_gl_resources();
   void ensure_program();
   void update_ground_mesh_if_needed();
+  void update_background_mesh_if_needed();
+  void update_grid_settings();
+  void apply_wireframe_state(bool enabled);
+  void update_background_colors(QVector3D* top, QVector3D* bottom, QVector3D* base) const;
+  void update_grid_colors(QVector3D* grid, QVector3D* axis_x, QVector3D* axis_y) const;
 
   enum class DragMode {
     None,
@@ -77,6 +91,8 @@ protected:
   };
 
   std::optional<LoadedModel> model_;
+  QString last_model_path_;
+  QString last_skin_path_;
   bool pending_upload_ = false;
 
   QOpenGLShaderProgram program_;
@@ -84,18 +100,24 @@ protected:
   QOpenGLBuffer ibo_{QOpenGLBuffer::IndexBuffer};
   QOpenGLBuffer ground_vbo_{QOpenGLBuffer::VertexBuffer};
   QOpenGLBuffer ground_ibo_{QOpenGLBuffer::IndexBuffer};
+  QOpenGLBuffer bg_vbo_{QOpenGLBuffer::VertexBuffer};
   QOpenGLVertexArrayObject vao_;
+  QOpenGLVertexArrayObject bg_vao_;
   bool gl_ready_ = false;
   int index_count_ = 0;
   GLenum index_type_ = GL_UNSIGNED_INT;
   int ground_index_count_ = 0;
   float ground_extent_ = 0.0f;
   float ground_z_ = 0.0f;
+  float grid_scale_ = 1.0f;
   QVector<DrawSurface> surfaces_;
   GLuint texture_id_ = 0;
+  GLuint glow_texture_id_ = 0;
   bool has_texture_ = false;
+  bool has_glow_ = false;
   bool pending_texture_upload_ = false;
   QImage skin_image_;
+  QImage skin_glow_image_;
 
   QVector3D center_ = QVector3D(0, 0, 0);
   float radius_ = 1.0f;
@@ -110,4 +132,11 @@ protected:
   bool texture_smoothing_ = false;
   QVector<QRgb> quake1_palette_;
   QVector<QRgb> quake2_palette_;
+
+  PreviewGridMode grid_mode_ = PreviewGridMode::Floor;
+  PreviewBackgroundMode bg_mode_ = PreviewBackgroundMode::Themed;
+  QColor bg_custom_color_;
+  bool wireframe_enabled_ = false;
+  bool textured_enabled_ = true;
+  bool glow_enabled_ = false;
 };

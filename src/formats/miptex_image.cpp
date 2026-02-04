@@ -82,7 +82,7 @@ namespace {
 }
 }  // namespace
 
-QImage decode_miptex_image(const QByteArray& bytes, const QVector<QRgb>* external_palette, QString* error) {
+QImage decode_miptex_image(const QByteArray& bytes, const QVector<QRgb>* external_palette, int mip_level, QString* error) {
   if (error) {
     error->clear();
   }
@@ -109,14 +109,24 @@ QImage decode_miptex_image(const QByteArray& bytes, const QVector<QRgb>* externa
   const quint32 ofs1 = read_u32_le_from(bytes.constData() + 28);
   const quint32 ofs2 = read_u32_le_from(bytes.constData() + 32);
   const quint32 ofs3 = read_u32_le_from(bytes.constData() + 36);
-  (void)ofs1;
-  (void)ofs2;
-  (void)ofs3;
+  const quint32 offsets[4] = {ofs0, ofs1, ofs2, ofs3};
 
   const qint64 mip0_bytes = static_cast<qint64>(width) * static_cast<qint64>(height);
   if (ofs0 == 0 || static_cast<qint64>(ofs0) + mip0_bytes > bytes.size()) {
     if (error) {
       *error = "MIP texture data is out of bounds.";
+    }
+    return {};
+  }
+
+  const int level = qBound(0, mip_level, 3);
+  const int mip_width = mip_dim(width, level);
+  const int mip_height = mip_dim(height, level);
+  const qint64 mip_bytes = static_cast<qint64>(mip_width) * static_cast<qint64>(mip_height);
+  const quint32 offset = offsets[level];
+  if (offset == 0 || static_cast<qint64>(offset) + mip_bytes > bytes.size()) {
+    if (error) {
+      *error = QString("MIP texture mip %1 is out of bounds.").arg(level);
     }
     return {};
   }
@@ -132,7 +142,7 @@ QImage decode_miptex_image(const QByteArray& bytes, const QVector<QRgb>* externa
     palette = *external_palette;
   }
 
-  QImage img(width, height, QImage::Format_ARGB32);
+  QImage img(mip_width, mip_height, QImage::Format_ARGB32);
   if (img.isNull()) {
     if (error) {
       *error = "Unable to allocate image.";
@@ -140,11 +150,11 @@ QImage decode_miptex_image(const QByteArray& bytes, const QVector<QRgb>* externa
     return {};
   }
 
-  const auto* src = reinterpret_cast<const quint8*>(bytes.constData() + ofs0);
-  for (int y = 0; y < height; ++y) {
+  const auto* src = reinterpret_cast<const quint8*>(bytes.constData() + offset);
+  for (int y = 0; y < mip_height; ++y) {
     QRgb* dst = reinterpret_cast<QRgb*>(img.scanLine(y));
-    const qint64 row = static_cast<qint64>(y) * static_cast<qint64>(width);
-    for (int x = 0; x < width; ++x) {
+    const qint64 row = static_cast<qint64>(y) * static_cast<qint64>(mip_width);
+    for (int x = 0; x < mip_width; ++x) {
       const int idx = static_cast<int>(src[row + x]);
       const QRgb c = (idx >= 0 && idx < palette.size()) ? palette[idx] : qRgba(0, 0, 0, 255);
       if (idx == 255) {

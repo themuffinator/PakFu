@@ -23,6 +23,15 @@ miniz_lib = static_library(
   ],
 )
 
+qt_headers = qt6_dep.get_variable(configtool: 'QT_INSTALL_HEADERS', default_value: '')
+qt_version = qt6_dep.get_variable(configtool: 'QT_VERSION', default_value: '')
+qt_rhi_includes = []
+if qt_headers != '' and qt_version != ''
+  qt_rhi_includes += include_directories(join_paths(qt_headers, 'QtGui', qt_version, 'QtGui'))
+endif
+
+pakfu_includes = [include_directories('.')] + qt_rhi_includes
+
 sources = files(
   'main.cpp',
   'cli/cli.cpp',
@@ -58,7 +67,9 @@ sources = files(
   'ui/cinematic_player_widget.cpp',
   'ui/video_player_widget.cpp',
   'ui/bsp_preview_widget.cpp',
+  'ui/bsp_preview_vulkan_widget.cpp',
   'ui/model_viewer_widget.cpp',
+  'ui/model_viewer_vulkan_widget.cpp',
   'ui/preview_pane.cpp',
   'ui/pak_tab.cpp',
   'platform/file_associations.cpp',
@@ -78,6 +89,8 @@ moc_sources = qt6.preprocess(
     'ui/breadcrumb_bar.h',
     'ui/cinematic_player_widget.h',
     'ui/video_player_widget.h',
+    'ui/bsp_preview_vulkan_widget.h',
+    'ui/model_viewer_vulkan_widget.h',
     'ui/preview_pane.h',
     'ui/pak_tab.h',
     'ui/preferences_tab.h',
@@ -102,7 +115,7 @@ endif
 pakfu = executable(
   'pakfu',
   sources,
-  include_directories: include_directories('.'),
+  include_directories: pakfu_includes,
   dependencies: [qt6_dep],
   link_with: [miniz_lib],
   link_args: pakfu_link_args,
@@ -118,7 +131,7 @@ roq_probe = executable(
     'formats/cin_cinematic.cpp',
     'formats/roq_cinematic.cpp',
   ],
-  include_directories: include_directories('.'),
+  include_directories: pakfu_includes,
   dependencies: [qt6_dep],
   install: false,
 )
@@ -129,7 +142,7 @@ model_probe = executable(
     'tools/model_probe.cpp',
     'formats/model.cpp',
   ],
-  include_directories: include_directories('.'),
+  include_directories: pakfu_includes,
   dependencies: [qt6_dep],
   install: false,
 )

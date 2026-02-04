@@ -1625,7 +1625,7 @@ QHash<QString, QImage> extract_bsp_embedded_textures_bytes(const QByteArray& byt
 
     const QByteArray mip_bytes = tex_lump.mid(base, static_cast<int>(slice_len));
     QString mip_err;
-    const QImage img = decode_miptex_image(mip_bytes, quake_palette, &mip_err);
+    const QImage img = decode_miptex_image(mip_bytes, quake_palette, 0, &mip_err);
     if (!img.isNull()) {
       out.insert(name, img);
     }

@@ -15,6 +15,7 @@
 #include <memory>
 
 #include "archive/archive.h"
+#include "game/game_set.h"
 
 class BreadcrumbBar;
 class QAction;
@@ -31,6 +32,9 @@ class QTreeWidget;
 class QUndoStack;
 class QMimeData;
 class QProgressDialog;
+class QDragEnterEvent;
+class QDragMoveEvent;
+class QDropEvent;
 
 class PakTabDetailsView;
 class PakTabIconView;
@@ -66,6 +70,7 @@ public:
   void set_model_texture_smoothing(bool enabled);
   void set_image_texture_smoothing(bool enabled);
   void set_preview_renderer(PreviewRenderer renderer);
+  void set_game_id(GameId id);
   void set_pure_pak_protector(bool enabled, bool is_official);
   bool is_editable() const;
   bool is_pure_protected() const;
@@ -106,6 +111,11 @@ public:
 signals:
   void dirty_changed(bool dirty);
 
+protected:
+  void dragEnterEvent(QDragEnterEvent* event) override;
+  void dragMoveEvent(QDragMoveEvent* event) override;
+  void dropEvent(QDropEvent* event) override;
+
 private:
   void build_ui();
   void load_archive();
@@ -143,7 +153,11 @@ private:
                    const QString& dest_prefix,
                    QStringList* failures,
                    QProgressDialog* progress = nullptr);
-  void import_urls_with_undo(const QList<QUrl>& urls, const QString& dest_prefix, const QString& label);
+  void import_urls_with_undo(const QList<QUrl>& urls,
+                             const QString& dest_prefix,
+                             const QString& label,
+                             const QVector<QPair<QString, bool>>& cut_items = {},
+                             bool is_cut = false);
   QMimeData* make_mime_data_for_items(const QVector<QPair<QString, bool>>& items,
                                       bool cut,
                                       QStringList* failures,
@@ -166,6 +180,8 @@ private:
   void remove_added_file_by_name(const QString& pak_name);
   bool is_deleted_path(const QString& pak_name) const;
   void clear_deletions_under(const QString& pak_name);
+  bool can_accept_mime(const QMimeData* mime) const;
+  bool handle_drop_event(QDropEvent* event, const QString& dest_prefix);
   QString ensure_export_root();
   bool export_path_to_temp(const QString& pak_path, bool is_dir, QString* out_fs_path, QString* error);
   bool export_dir_prefix_to_fs(const QString& dir_prefix, const QString& dest_dir, QString* error);
@@ -230,4 +246,6 @@ private:
   bool pure_pak_protector_enabled_ = true;
   bool official_archive_ = false;
   bool image_texture_smoothing_ = false;
+  GameId game_id_ = GameId::Quake;
+  QString drag_source_uid_;
 };

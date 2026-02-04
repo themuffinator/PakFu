@@ -198,7 +198,7 @@ QImage decode_wal_image_with_mips(const QByteArray& bytes, const QVector<QRgb>& 
 	return composite;
 }
 
-QImage decode_wal_image(const QByteArray& bytes, const QVector<QRgb>& palette, QString* error) {
+QImage decode_wal_image(const QByteArray& bytes, const QVector<QRgb>& palette, int mip_level, QString* error) {
 	if (error) {
 		error->clear();
 	}
@@ -235,18 +235,30 @@ QImage decode_wal_image(const QByteArray& bytes, const QVector<QRgb>& palette, Q
 		return {};
 	}
 
-	const quint32 offset0 = read_u32le(data + 40);
 	const int w0 = static_cast<int>(width_u32);
 	const int h0 = static_cast<int>(height_u32);
 
-	QImage mip0;
+	quint32 offsets[4] = {};
+	for (int i = 0; i < 4; ++i) {
+		offsets[i] = read_u32le(data + 40 + i * 4);
+	}
+
+	const int level = std::clamp(mip_level, 0, 3);
+	int w = w0;
+	int h = h0;
+	for (int i = 0; i < level; ++i) {
+		w = std::max(1, w / 2);
+		h = std::max(1, h / 2);
+	}
+
+	QImage mip;
 	QString err;
-	if (!decode_wal_mip(data, size, offset0, w0, h0, palette, &mip0, &err)) {
+	if (!decode_wal_mip(data, size, offsets[level], w, h, palette, &mip, &err)) {
 		if (error) {
-			*error = err.isEmpty() ? "Unable to decode WAL mip 0." : err;
+			*error = err.isEmpty() ? QString("Unable to decode WAL mip %1.").arg(level) : err;
 		}
 		return {};
 	}
 
-	return mip0;
+	return mip;
 }

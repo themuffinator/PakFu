@@ -15,6 +15,8 @@ struct ImageDecodeResult {
 struct ImageDecodeOptions {
 	// Optional 256-color palette for paletted formats that do not embed one (e.g. Quake II WAL).
 	const QVector<QRgb>* palette = nullptr;
+	// Mip level for formats that embed a mip chain (0 = largest).
+	int mip_level = 0;
 };
 
 [[nodiscard]] ImageDecodeResult decode_image_bytes(const QByteArray& bytes, const QString& file_name, const ImageDecodeOptions& options = {});

@@ -2,8 +2,11 @@
 
 #include <QSettings>
 
-#if QT_CONFIG(vulkan)
+#if defined(QT_FEATURE_vulkan) && QT_FEATURE_vulkan
 #include <QtGui/QVulkanInstance>
+#define PAKFU_HAS_QT_VULKAN 1
+#else
+#define PAKFU_HAS_QT_VULKAN 0
 #endif
 
 namespace {
@@ -53,7 +56,7 @@ void save_preview_renderer(PreviewRenderer renderer) {
 }
 
 bool is_vulkan_renderer_available() {
-#if QT_CONFIG(vulkan)
+#if PAKFU_HAS_QT_VULKAN
 	QVulkanInstance instance;
 	return instance.create();
 #else

@@ -14,6 +14,12 @@ layout(std140, binding = 0) uniform UBO {
   vec4 uGroundColor;
   vec4 uShadowCenter;
   vec4 uShadowParams;
+  vec4 uGridParams;
+  vec4 uGridColor;
+  vec4 uAxisColorX;
+  vec4 uAxisColorY;
+  vec4 uBgTop;
+  vec4 uBgBottom;
   vec4 uMisc;
 } ubo;
 

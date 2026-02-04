@@ -58,6 +58,11 @@ public:
     hide();
   }
 
+  void set_message(const QString& message) {
+    message_ = message;
+    update();
+  }
+
 protected:
   void paintEvent(QPaintEvent*) override {
     QPainter painter(this);
@@ -68,8 +73,11 @@ protected:
     font.setPointSize(24);
     font.setBold(true);
     painter.setFont(font);
-    painter.drawText(rect(), Qt::AlignCenter, "Drop to open archive");
+    painter.drawText(rect(), Qt::AlignCenter, message_.isEmpty() ? "Drop to open" : message_);
   }
+
+private:
+  QString message_ = "Drop to open archive";
 };
 
 namespace {
@@ -88,26 +96,53 @@ bool is_supported_archive_extension(const QString& path) {
          lower.endsWith(".zip") || lower.endsWith(".wad");
 }
 
-bool has_any_supported_archive(const QList<QUrl>& urls) {
+struct OpenableDropPaths {
+  QStringList archives;
+  QStringList folders;
+};
+
+OpenableDropPaths collect_openable_paths(const QList<QUrl>& urls) {
+  OpenableDropPaths out;
   for (const QUrl& url : urls) {
-    if (url.isLocalFile() && is_supported_archive_extension(url.toLocalFile())) {
-      return true;
+    if (!url.isLocalFile()) {
+      continue;
+    }
+    const QString path = url.toLocalFile();
+    if (path.isEmpty()) {
+      continue;
+    }
+    const QFileInfo info(path);
+    if (!info.exists()) {
+      continue;
+    }
+    if (info.isDir()) {
+      out.folders.append(info.absoluteFilePath());
+      continue;
+    }
+    if (info.isFile() && is_supported_archive_extension(path)) {
+      out.archives.append(info.absoluteFilePath());
     }
   }
-  return false;
+  return out;
 }
 
-QStringList filter_archive_paths(const QList<QUrl>& urls) {
-  QStringList paths;
-  for (const QUrl& url : urls) {
-    if (url.isLocalFile()) {
-      const QString path = url.toLocalFile();
-      if (is_supported_archive_extension(path)) {
-        paths.append(path);
-      }
-    }
+bool has_openable_paths(const OpenableDropPaths& drop) {
+  return !(drop.archives.isEmpty() && drop.folders.isEmpty());
+}
+
+QString drop_overlay_message(const OpenableDropPaths& drop) {
+  const bool has_archives = !drop.archives.isEmpty();
+  const bool has_folders = !drop.folders.isEmpty();
+  if (has_archives && has_folders) {
+    return "Drop to open archives and folders";
   }
-  return paths;
+  if (has_archives) {
+    return (drop.archives.size() > 1) ? "Drop to open archives" : "Drop to open archive";
+  }
+  if (has_folders) {
+    return (drop.folders.size() > 1) ? "Drop to open folders" : "Drop to open folder";
+  }
+  return "Drop to open";
 }
 
 QString normalize_recent_path(const QString& path) {
@@ -848,6 +883,7 @@ void MainWindow::create_new_pak() {
   const QString title = QString("Untitled %1").arg(untitled_counter_++);
   auto* tab = new PakTab(PakTab::Mode::NewPak, QString(), this);
   tab->set_default_directory(default_directory_for_dialogs());
+  tab->set_game_id(game_set_.game);
   tab->set_pure_pak_protector(pure_pak_protector_enabled(), false);
   const int index = add_tab(title, tab);
   tabs_->setCurrentIndex(index);
@@ -927,6 +963,7 @@ PakTab* MainWindow::open_pak_internal(const QString& path, bool allow_auto_selec
   QString error;
   auto* tab = new PakTab(PakTab::Mode::ExistingPak, info.absoluteFilePath(), this);
   tab->set_default_directory(default_directory_for_dialogs());
+  tab->set_game_id(game_set_.game);
   if (!tab->is_loaded()) {
     error = tab->load_error();
     tab->deleteLater();
@@ -1143,6 +1180,7 @@ void MainWindow::apply_game_set(const QString& uid, bool persist_selection) {
     for (int i = 0; i < tabs_->count(); ++i) {
       if (auto* tab = qobject_cast<PakTab*>(tabs_->widget(i))) {
         tab->set_default_directory(default_directory_for_dialogs());
+        tab->set_game_id(game_set_.game);
       }
     }
   }
@@ -1367,9 +1405,11 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 
 void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
   if (event && event->mimeData() && event->mimeData()->hasUrls()) {
-    if (has_any_supported_archive(event->mimeData()->urls())) {
+    const OpenableDropPaths drop = collect_openable_paths(event->mimeData()->urls());
+    if (has_openable_paths(drop)) {
       if (drop_overlay_) {
         drop_overlay_->resize(size());
+        drop_overlay_->set_message(drop_overlay_message(drop));
         drop_overlay_->show();
         drop_overlay_->raise();
       }
@@ -1389,7 +1429,11 @@ void MainWindow::dragLeaveEvent(QDragLeaveEvent* event) {
 
 void MainWindow::dragMoveEvent(QDragMoveEvent* event) {
   if (event && event->mimeData() && event->mimeData()->hasUrls()) {
-    if (has_any_supported_archive(event->mimeData()->urls())) {
+    const OpenableDropPaths drop = collect_openable_paths(event->mimeData()->urls());
+    if (has_openable_paths(drop)) {
+      if (drop_overlay_) {
+        drop_overlay_->set_message(drop_overlay_message(drop));
+      }
       event->acceptProposedAction();
       return;
     }
@@ -1402,7 +1446,9 @@ void MainWindow::dropEvent(QDropEvent* event) {
     drop_overlay_->hide();
   }
   if (event && event->mimeData() && event->mimeData()->hasUrls()) {
-    const QStringList paths = filter_archive_paths(event->mimeData()->urls());
+    const OpenableDropPaths drop = collect_openable_paths(event->mimeData()->urls());
+    QStringList paths = drop.archives;
+    paths.append(drop.folders);
     if (!paths.isEmpty()) {
       open_archives(paths);
       event->acceptProposedAction();

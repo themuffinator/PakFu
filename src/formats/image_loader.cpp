@@ -75,7 +75,7 @@ ImageDecodeResult decode_image_bytes(const QByteArray& bytes, const QString& fil
 			return ImageDecodeResult{QImage(), "WAL textures require a 256-color palette (Quake II: pics/colormap.pcx)."};
 		}
 		QString err;
-		QImage image = decode_wal_image_with_mips(bytes, *options.palette, &err);
+		QImage image = decode_wal_image(bytes, *options.palette, options.mip_level, &err);
 		if (image.isNull()) {
 			return ImageDecodeResult{QImage(), err.isEmpty() ? "Unable to decode WAL texture." : err};
 		}
@@ -99,7 +99,7 @@ ImageDecodeResult decode_image_bytes(const QByteArray& bytes, const QString& fil
 	}
 	if (ext == "mip") {
 		QString err;
-		QImage image = decode_miptex_image(bytes, options.palette, &err);
+		QImage image = decode_miptex_image(bytes, options.palette, options.mip_level, &err);
 		if (image.isNull()) {
 			return ImageDecodeResult{QImage(), err.isEmpty() ? "Unable to decode MIP texture." : err};
 		}

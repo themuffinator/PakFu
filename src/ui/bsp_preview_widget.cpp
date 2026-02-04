@@ -12,6 +12,7 @@
 #include <QWheelEvent>
 #include <QDebug>
 #include <QtGui/QOpenGLContext>
+#include <QtOpenGL/QOpenGLFunctions_1_1>
 
 namespace {
 QVector3D spherical_dir(float yaw_deg, float pitch_deg) {
@@ -39,11 +40,13 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
       varying highp vec3 vNormal;
       varying highp vec3 vColor;
       varying highp vec2 vUV;
+      varying highp vec3 vPos;
       void main() {
         gl_Position = uMvp * vec4(aPos, 1.0);
         vNormal = (uModel * vec4(aNormal, 0.0)).xyz;
         vColor = aColor;
         vUV = aUV * uTexScale + uTexOffset;
+        vPos = (uModel * vec4(aPos, 1.0)).xyz;
       }
     )GLSL";
   }
@@ -67,11 +70,13 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
       out vec3 vNormal;
       out vec3 vColor;
       out vec2 vUV;
+      out vec3 vPos;
       void main() {
         gl_Position = uMvp * vec4(aPos, 1.0);
         vNormal = (uModel * vec4(aNormal, 0.0)).xyz;
         vColor = aColor;
         vUV = aUV * uTexScale + uTexOffset;
+        vPos = (uModel * vec4(aPos, 1.0)).xyz;
       }
     )GLSL";
   }
@@ -90,11 +95,13 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
       out vec3 vNormal;
       out vec3 vColor;
       out vec2 vUV;
+      out vec3 vPos;
       void main() {
         gl_Position = uMvp * vec4(aPos, 1.0);
         vNormal = (uModel * vec4(aNormal, 0.0)).xyz;
         vColor = aColor;
         vUV = aUV * uTexScale + uTexOffset;
+        vPos = (uModel * vec4(aPos, 1.0)).xyz;
       }
     )GLSL";
   }
@@ -112,11 +119,13 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
     varying vec3 vNormal;
     varying vec3 vColor;
     varying vec2 vUV;
+    varying vec3 vPos;
     void main() {
       gl_Position = uMvp * vec4(aPos, 1.0);
       vNormal = (uModel * vec4(aNormal, 0.0)).xyz;
       vColor = aColor;
       vUV = aUV * uTexScale + uTexOffset;
+      vPos = (uModel * vec4(aPos, 1.0)).xyz;
     }
   )GLSL";
 }
@@ -128,10 +137,25 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       varying mediump vec3 vNormal;
       varying mediump vec3 vColor;
       varying mediump vec2 vUV;
+      varying mediump vec3 vPos;
       uniform mediump vec3 uLightDir;
       uniform mediump vec3 uFillDir;
       uniform mediump vec3 uAmbient;
       uniform mediump float uLightmapStrength;
+      uniform mediump float uIsGround;
+      uniform mediump float uGridMode;
+      uniform mediump float uGridScale;
+      uniform mediump vec3 uGroundColor;
+      uniform mediump vec3 uGridColor;
+      uniform mediump vec3 uAxisColorX;
+      uniform mediump vec3 uAxisColorY;
+      uniform mediump vec3 uShadowCenter;
+      uniform mediump float uShadowRadius;
+      uniform mediump float uShadowStrength;
+      uniform mediump float uShadowSoftness;
+      uniform mediump float uIsBackground;
+      uniform mediump vec3 uBgTop;
+      uniform mediump vec3 uBgBottom;
       uniform sampler2D uTex;
       uniform int uHasTexture;
 
@@ -139,9 +163,45 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       vec3 toSrgb(vec3 c) { return pow(c, vec3(1.0 / 2.2)); }
 
       void main() {
+        if (uIsBackground > 0.5) {
+          float t = clamp(vUV.y, 0.0, 1.0);
+          vec3 col = mix(uBgBottom, uBgTop, t);
+          gl_FragColor = vec4(col, 1.0);
+          return;
+        }
         vec3 n = normalize(vNormal);
         float ndl = abs(dot(n, normalize(uLightDir)));
         float ndl2 = abs(dot(n, normalize(uFillDir)));
+        if (uIsGround > 0.5) {
+          if (uGridMode > 0.5) {
+            vec3 baseGrid = toLinear(uGroundColor);
+            float scale = max(uGridScale, 0.001);
+            vec2 coord = vPos.xy / scale;
+            vec2 cell = abs(fract(coord) - 0.5);
+            float line = step(cell.x, 0.02) + step(cell.y, 0.02);
+            line = clamp(line, 0.0, 1.0);
+            float axisX = step(abs(vPos.x / scale), 0.04);
+            float axisY = step(abs(vPos.y / scale), 0.04);
+            vec3 col = baseGrid;
+            col = mix(col, toLinear(uGridColor), line);
+            col = mix(col, toLinear(uAxisColorX), axisX);
+            col = mix(col, toLinear(uAxisColorY), axisY);
+            gl_FragColor = vec4(toSrgb(col), 1.0);
+            return;
+          }
+          vec3 groundLin = toLinear(uGroundColor);
+          float gdiff = ndl * 0.5 + ndl2 * 0.2;
+          vec3 ground = groundLin * (0.22 + gdiff);
+
+          vec2 delta = vPos.xy - uShadowCenter.xy;
+          float dist = length(delta) / max(0.001, uShadowRadius);
+          float shadow = exp(-dist * dist * uShadowSoftness) * uShadowStrength;
+          shadow = clamp(shadow, 0.0, 0.85);
+          ground *= (1.0 - shadow);
+          gl_FragColor = vec4(toSrgb(ground), 1.0);
+          return;
+        }
+
         vec3 tex = (uHasTexture == 1) ? texture2D(uTex, vUV).rgb : vec3(1.0);
         vec3 lm = mix(vec3(1.0), vColor, uLightmapStrength);
         vec3 base = toLinear(lm) * toLinear(tex);
@@ -163,10 +223,25 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       in vec3 vNormal;
       in vec3 vColor;
       in vec2 vUV;
+      in vec3 vPos;
       uniform vec3 uLightDir;
       uniform vec3 uFillDir;
       uniform vec3 uAmbient;
       uniform float uLightmapStrength;
+      uniform float uIsGround;
+      uniform float uGridMode;
+      uniform float uGridScale;
+      uniform vec3 uGroundColor;
+      uniform vec3 uGridColor;
+      uniform vec3 uAxisColorX;
+      uniform vec3 uAxisColorY;
+      uniform vec3 uShadowCenter;
+      uniform float uShadowRadius;
+      uniform float uShadowStrength;
+      uniform float uShadowSoftness;
+      uniform float uIsBackground;
+      uniform vec3 uBgTop;
+      uniform vec3 uBgBottom;
       uniform sampler2D uTex;
       uniform int uHasTexture;
       out vec4 fragColor;
@@ -175,9 +250,45 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       vec3 toSrgb(vec3 c) { return pow(c, vec3(1.0 / 2.2)); }
 
       void main() {
+        if (uIsBackground > 0.5) {
+          float t = clamp(vUV.y, 0.0, 1.0);
+          vec3 col = mix(uBgBottom, uBgTop, t);
+          fragColor = vec4(col, 1.0);
+          return;
+        }
         vec3 n = normalize(vNormal);
         float ndl = abs(dot(n, normalize(uLightDir)));
         float ndl2 = abs(dot(n, normalize(uFillDir)));
+        if (uIsGround > 0.5) {
+          if (uGridMode > 0.5) {
+            vec3 baseGrid = toLinear(uGroundColor);
+            float scale = max(uGridScale, 0.001);
+            vec2 coord = vPos.xy / scale;
+            vec2 cell = abs(fract(coord) - 0.5);
+            float line = step(cell.x, 0.02) + step(cell.y, 0.02);
+            line = clamp(line, 0.0, 1.0);
+            float axisX = step(abs(vPos.x / scale), 0.04);
+            float axisY = step(abs(vPos.y / scale), 0.04);
+            vec3 col = baseGrid;
+            col = mix(col, toLinear(uGridColor), line);
+            col = mix(col, toLinear(uAxisColorX), axisX);
+            col = mix(col, toLinear(uAxisColorY), axisY);
+            fragColor = vec4(toSrgb(col), 1.0);
+            return;
+          }
+          vec3 groundLin = toLinear(uGroundColor);
+          float gdiff = ndl * 0.5 + ndl2 * 0.2;
+          vec3 ground = groundLin * (0.22 + gdiff);
+
+          vec2 delta = vPos.xy - uShadowCenter.xy;
+          float dist = length(delta) / max(0.001, uShadowRadius);
+          float shadow = exp(-dist * dist * uShadowSoftness) * uShadowStrength;
+          shadow = clamp(shadow, 0.0, 0.85);
+          ground *= (1.0 - shadow);
+          fragColor = vec4(toSrgb(ground), 1.0);
+          return;
+        }
+
         vec3 tex = (uHasTexture == 1) ? texture(uTex, vUV).rgb : vec3(1.0);
         vec3 lm = mix(vec3(1.0), vColor, uLightmapStrength);
         vec3 base = toLinear(lm) * toLinear(tex);
@@ -194,10 +305,25 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       in vec3 vNormal;
       in vec3 vColor;
       in vec2 vUV;
+      in vec3 vPos;
       uniform vec3 uLightDir;
       uniform vec3 uFillDir;
       uniform vec3 uAmbient;
       uniform float uLightmapStrength;
+      uniform float uIsGround;
+      uniform float uGridMode;
+      uniform float uGridScale;
+      uniform vec3 uGroundColor;
+      uniform vec3 uGridColor;
+      uniform vec3 uAxisColorX;
+      uniform vec3 uAxisColorY;
+      uniform vec3 uShadowCenter;
+      uniform float uShadowRadius;
+      uniform float uShadowStrength;
+      uniform float uShadowSoftness;
+      uniform float uIsBackground;
+      uniform vec3 uBgTop;
+      uniform vec3 uBgBottom;
       uniform sampler2D uTex;
       uniform int uHasTexture;
       out vec4 fragColor;
@@ -206,9 +332,45 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       vec3 toSrgb(vec3 c) { return pow(c, vec3(1.0 / 2.2)); }
 
       void main() {
+        if (uIsBackground > 0.5) {
+          float t = clamp(vUV.y, 0.0, 1.0);
+          vec3 col = mix(uBgBottom, uBgTop, t);
+          fragColor = vec4(col, 1.0);
+          return;
+        }
         vec3 n = normalize(vNormal);
         float ndl = abs(dot(n, normalize(uLightDir)));
         float ndl2 = abs(dot(n, normalize(uFillDir)));
+        if (uIsGround > 0.5) {
+          if (uGridMode > 0.5) {
+            vec3 baseGrid = toLinear(uGroundColor);
+            float scale = max(uGridScale, 0.001);
+            vec2 coord = vPos.xy / scale;
+            vec2 cell = abs(fract(coord) - 0.5);
+            float line = step(cell.x, 0.02) + step(cell.y, 0.02);
+            line = clamp(line, 0.0, 1.0);
+            float axisX = step(abs(vPos.x / scale), 0.04);
+            float axisY = step(abs(vPos.y / scale), 0.04);
+            vec3 col = baseGrid;
+            col = mix(col, toLinear(uGridColor), line);
+            col = mix(col, toLinear(uAxisColorX), axisX);
+            col = mix(col, toLinear(uAxisColorY), axisY);
+            fragColor = vec4(toSrgb(col), 1.0);
+            return;
+          }
+          vec3 groundLin = toLinear(uGroundColor);
+          float gdiff = ndl * 0.5 + ndl2 * 0.2;
+          vec3 ground = groundLin * (0.22 + gdiff);
+
+          vec2 delta = vPos.xy - uShadowCenter.xy;
+          float dist = length(delta) / max(0.001, uShadowRadius);
+          float shadow = exp(-dist * dist * uShadowSoftness) * uShadowStrength;
+          shadow = clamp(shadow, 0.0, 0.85);
+          ground *= (1.0 - shadow);
+          fragColor = vec4(toSrgb(ground), 1.0);
+          return;
+        }
+
         vec3 tex = (uHasTexture == 1) ? texture(uTex, vUV).rgb : vec3(1.0);
         vec3 lm = mix(vec3(1.0), vColor, uLightmapStrength);
         vec3 base = toLinear(lm) * toLinear(tex);
@@ -224,10 +386,25 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
     varying vec3 vNormal;
     varying vec3 vColor;
     varying vec2 vUV;
+    varying vec3 vPos;
     uniform vec3 uLightDir;
     uniform vec3 uFillDir;
     uniform vec3 uAmbient;
     uniform float uLightmapStrength;
+    uniform float uIsGround;
+    uniform float uGridMode;
+    uniform float uGridScale;
+    uniform vec3 uGroundColor;
+    uniform vec3 uGridColor;
+    uniform vec3 uAxisColorX;
+    uniform vec3 uAxisColorY;
+    uniform vec3 uShadowCenter;
+    uniform float uShadowRadius;
+    uniform float uShadowStrength;
+    uniform float uShadowSoftness;
+    uniform float uIsBackground;
+    uniform vec3 uBgTop;
+    uniform vec3 uBgBottom;
     uniform sampler2D uTex;
     uniform int uHasTexture;
 
@@ -235,9 +412,45 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
     vec3 toSrgb(vec3 c) { return pow(c, vec3(1.0 / 2.2)); }
 
     void main() {
+      if (uIsBackground > 0.5) {
+        float t = clamp(vUV.y, 0.0, 1.0);
+        vec3 col = mix(uBgBottom, uBgTop, t);
+        gl_FragColor = vec4(col, 1.0);
+        return;
+      }
       vec3 n = normalize(vNormal);
       float ndl = abs(dot(n, normalize(uLightDir)));
       float ndl2 = abs(dot(n, normalize(uFillDir)));
+      if (uIsGround > 0.5) {
+        if (uGridMode > 0.5) {
+          vec3 baseGrid = toLinear(uGroundColor);
+          float scale = max(uGridScale, 0.001);
+          vec2 coord = vPos.xy / scale;
+          vec2 cell = abs(fract(coord) - 0.5);
+          float line = step(cell.x, 0.02) + step(cell.y, 0.02);
+          line = clamp(line, 0.0, 1.0);
+          float axisX = step(abs(vPos.x / scale), 0.04);
+          float axisY = step(abs(vPos.y / scale), 0.04);
+          vec3 col = baseGrid;
+          col = mix(col, toLinear(uGridColor), line);
+          col = mix(col, toLinear(uAxisColorX), axisX);
+          col = mix(col, toLinear(uAxisColorY), axisY);
+          gl_FragColor = vec4(toSrgb(col), 1.0);
+          return;
+        }
+        vec3 groundLin = toLinear(uGroundColor);
+        float gdiff = ndl * 0.5 + ndl2 * 0.2;
+        vec3 ground = groundLin * (0.22 + gdiff);
+
+        vec2 delta = vPos.xy - uShadowCenter.xy;
+        float dist = length(delta) / max(0.001, uShadowRadius);
+        float shadow = exp(-dist * dist * uShadowSoftness) * uShadowStrength;
+        shadow = clamp(shadow, 0.0, 0.85);
+        ground *= (1.0 - shadow);
+        gl_FragColor = vec4(toSrgb(ground), 1.0);
+        return;
+      }
+
       vec3 tex = (uHasTexture == 1) ? texture2D(uTex, vUV).rgb : vec3(1.0);
       vec3 lm = mix(vec3(1.0), vColor, uLightmapStrength);
       vec3 base = toLinear(lm) * toLinear(tex);
@@ -309,6 +522,40 @@ void BspPreviewWidget::set_lightmap_enabled(bool enabled) {
   update();
 }
 
+void BspPreviewWidget::set_grid_mode(PreviewGridMode mode) {
+  if (grid_mode_ == mode) {
+    return;
+  }
+  grid_mode_ = mode;
+  ground_extent_ = 0.0f;
+  update();
+}
+
+void BspPreviewWidget::set_background_mode(PreviewBackgroundMode mode, const QColor& custom_color) {
+  if (bg_mode_ == mode && bg_custom_color_ == custom_color) {
+    return;
+  }
+  bg_mode_ = mode;
+  bg_custom_color_ = custom_color;
+  update();
+}
+
+void BspPreviewWidget::set_wireframe_enabled(bool enabled) {
+  if (wireframe_enabled_ == enabled) {
+    return;
+  }
+  wireframe_enabled_ = enabled;
+  update();
+}
+
+void BspPreviewWidget::set_textured_enabled(bool enabled) {
+  if (textured_enabled_ == enabled) {
+    return;
+  }
+  textured_enabled_ = enabled;
+  update();
+}
+
 void BspPreviewWidget::clear() {
   has_mesh_ = false;
   pending_upload_ = false;
@@ -334,22 +581,10 @@ void BspPreviewWidget::initializeGL() {
 }
 
 void BspPreviewWidget::paintGL() {
-  const QColor base = palette().color(QPalette::Window);
-  glClearColor(base.redF(), base.greenF(), base.blueF(), 1.0f);
+  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-  if (!gl_ready_ || !has_mesh_) {
-    return;
-  }
-
-  if (pending_upload_) {
-    upload_mesh_if_possible();
-  }
-  if (pending_texture_upload_) {
-    upload_textures_if_possible();
-  }
-
-  if (index_count_ <= 0) {
+  if (!gl_ready_) {
     return;
   }
 
@@ -357,6 +592,18 @@ void BspPreviewWidget::paintGL() {
   if (!program_.isLinked()) {
     return;
   }
+
+  update_background_mesh_if_needed();
+
+  QVector3D bg_top;
+  QVector3D bg_bottom;
+  QVector3D bg_base;
+  update_background_colors(&bg_top, &bg_bottom, &bg_base);
+
+  QVector3D grid_color;
+  QVector3D axis_x;
+  QVector3D axis_y;
+  update_grid_colors(&grid_color, &axis_x, &axis_y);
 
   const float aspect = (height() > 0) ? (static_cast<float>(width()) / static_cast<float>(height())) : 1.0f;
   const float near_plane = std::max(radius_ * 0.01f, 0.01f);
@@ -377,16 +624,96 @@ void BspPreviewWidget::paintGL() {
   const QMatrix4x4 mvp = proj * view * model;
 
   program_.bind();
+  program_.setUniformValue("uMvp", QMatrix4x4());
+  program_.setUniformValue("uModel", QMatrix4x4());
+  program_.setUniformValue("uIsBackground", 1.0f);
+  program_.setUniformValue("uIsGround", 0.0f);
+  program_.setUniformValue("uBgTop", bg_top);
+  program_.setUniformValue("uBgBottom", bg_bottom);
+  program_.setUniformValue("uHasTexture", 0);
+  program_.setUniformValue("uTex", 0);
+
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_BLEND);
+  if (bg_vao_.isCreated()) {
+    bg_vao_.bind();
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    bg_vao_.release();
+  }
+  glEnable(GL_DEPTH_TEST);
+
+  if (!has_mesh_) {
+    program_.release();
+    return;
+  }
+
+  if (pending_upload_) {
+    upload_mesh_if_possible();
+  }
+  if (pending_texture_upload_) {
+    upload_textures_if_possible();
+  }
+
+  if (index_count_ <= 0) {
+    program_.release();
+    return;
+  }
+
   program_.setUniformValue("uMvp", mvp);
   program_.setUniformValue("uModel", model);
   program_.setUniformValue("uLightDir", QVector3D(-0.35f, -0.6f, 0.75f));
   program_.setUniformValue("uFillDir", QVector3D(0.75f, 0.2f, 0.45f));
   program_.setUniformValue("uAmbient", QVector3D(0.35f, 0.35f, 0.35f));
   program_.setUniformValue("uLightmapStrength", lightmap_enabled_ ? 1.0f : 0.0f);
+  program_.setUniformValue("uGroundColor", bg_base);
+  program_.setUniformValue("uShadowCenter", QVector3D(center_.x(), center_.y(), ground_z_));
+  program_.setUniformValue("uShadowRadius", std::max(0.05f, radius_ * 1.45f));
+  program_.setUniformValue("uShadowStrength", 0.55f);
+  program_.setUniformValue("uShadowSoftness", 2.4f);
+  program_.setUniformValue("uGridMode", grid_mode_ == PreviewGridMode::Grid ? 1.0f : 0.0f);
+  program_.setUniformValue("uGridScale", grid_scale_);
+  program_.setUniformValue("uGridColor", grid_color);
+  program_.setUniformValue("uAxisColorX", axis_x);
+  program_.setUniformValue("uAxisColorY", axis_y);
+  program_.setUniformValue("uIsBackground", 0.0f);
+  program_.setUniformValue("uBgTop", bg_top);
+  program_.setUniformValue("uBgBottom", bg_bottom);
 
-  vao_.bind();
   glActiveTexture(GL_TEXTURE0);
   program_.setUniformValue("uTex", 0);
+  update_ground_mesh_if_needed();
+
+  apply_wireframe_state(wireframe_enabled_);
+
+  if (grid_mode_ != PreviewGridMode::None && ground_index_count_ > 0 && ground_vbo_.isCreated() && ground_ibo_.isCreated()) {
+    program_.setUniformValue("uIsGround", 1.0f);
+    program_.setUniformValue("uHasTexture", 0);
+    program_.setUniformValue("uTexScale", QVector2D(1.0f, 1.0f));
+    program_.setUniformValue("uTexOffset", QVector2D(0.0f, 0.0f));
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDisable(GL_BLEND);
+
+    ground_vbo_.bind();
+    ground_ibo_.bind();
+    const int pos_loc = program_.attributeLocation("aPos");
+    const int nrm_loc = program_.attributeLocation("aNormal");
+    const int col_loc = program_.attributeLocation("aColor");
+    const int uv_loc = program_.attributeLocation("aUV");
+    program_.enableAttributeArray(pos_loc);
+    program_.enableAttributeArray(nrm_loc);
+    program_.enableAttributeArray(col_loc);
+    program_.enableAttributeArray(uv_loc);
+    program_.setAttributeBuffer(pos_loc, GL_FLOAT, offsetof(GpuVertex, px), 3, sizeof(GpuVertex));
+    program_.setAttributeBuffer(nrm_loc, GL_FLOAT, offsetof(GpuVertex, nx), 3, sizeof(GpuVertex));
+    program_.setAttributeBuffer(col_loc, GL_FLOAT, offsetof(GpuVertex, r), 3, sizeof(GpuVertex));
+    program_.setAttributeBuffer(uv_loc, GL_FLOAT, offsetof(GpuVertex, u), 2, sizeof(GpuVertex));
+
+    glDrawElements(GL_TRIANGLES, ground_index_count_, GL_UNSIGNED_SHORT, nullptr);
+  }
+
+  program_.setUniformValue("uIsGround", 0.0f);
+
+  vao_.bind();
   if (surfaces_.isEmpty()) {
     program_.setUniformValue("uHasTexture", 0);
     program_.setUniformValue("uTexScale", QVector2D(1.0f, 1.0f));
@@ -395,16 +722,18 @@ void BspPreviewWidget::paintGL() {
     glDrawElements(GL_TRIANGLES, index_count_, GL_UNSIGNED_INT, nullptr);
   } else {
     for (const DrawSurface& s : surfaces_) {
-      program_.setUniformValue("uHasTexture", s.has_texture ? 1 : 0);
+      const bool use_tex = textured_enabled_ && s.has_texture;
+      program_.setUniformValue("uHasTexture", use_tex ? 1 : 0);
       program_.setUniformValue("uTexScale", s.tex_scale);
       program_.setUniformValue("uTexOffset", s.tex_offset);
-      glBindTexture(GL_TEXTURE_2D, s.has_texture ? s.texture_id : 0);
+      glBindTexture(GL_TEXTURE_2D, use_tex ? s.texture_id : 0);
       const uintptr_t offs = static_cast<uintptr_t>(s.first_index) * sizeof(std::uint32_t);
       glDrawElements(GL_TRIANGLES, s.index_count, GL_UNSIGNED_INT, reinterpret_cast<const void*>(offs));
     }
   }
   glBindTexture(GL_TEXTURE_2D, 0);
   vao_.release();
+  apply_wireframe_state(false);
   program_.release();
 }
 
@@ -520,6 +849,8 @@ void BspPreviewWidget::frame_mesh() {
     center_ = QVector3D(0, 0, 0);
     radius_ = 1.0f;
     distance_ = 3.0f;
+    ground_z_ = 0.0f;
+    ground_extent_ = 0.0f;
     return;
   }
   const QVector3D mins = mesh_.mins;
@@ -527,6 +858,8 @@ void BspPreviewWidget::frame_mesh() {
   center_ = (mins + maxs) * 0.5f;
   radius_ = std::max(0.001f, (maxs - mins).length() * 0.5f);
   distance_ = std::max(radius_ * 2.8f, 1.0f);
+  ground_z_ = mins.z() - radius_ * 0.02f;
+  ground_extent_ = 0.0f;
 }
 
 void BspPreviewWidget::pan_by_pixels(const QPoint& delta) {
@@ -553,6 +886,7 @@ void BspPreviewWidget::pan_by_pixels(const QPoint& delta) {
 
   const QVector3D up = QVector3D::crossProduct(right, forward).normalized();
   center_ += (-right * static_cast<float>(delta.x()) + up * static_cast<float>(delta.y())) * units_per_px;
+  ground_extent_ = 0.0f;
 }
 
 void BspPreviewWidget::upload_mesh_if_possible() {
@@ -693,6 +1027,7 @@ void BspPreviewWidget::upload_textures_if_possible() {
 
 void BspPreviewWidget::destroy_gl_resources() {
   index_count_ = 0;
+  ground_index_count_ = 0;
   for (DrawSurface& s : surfaces_) {
     if (s.texture_id != 0) {
       glDeleteTextures(1, &s.texture_id);
@@ -706,8 +1041,20 @@ void BspPreviewWidget::destroy_gl_resources() {
   if (ibo_.isCreated()) {
     ibo_.destroy();
   }
+  if (ground_vbo_.isCreated()) {
+    ground_vbo_.destroy();
+  }
+  if (ground_ibo_.isCreated()) {
+    ground_ibo_.destroy();
+  }
+  if (bg_vbo_.isCreated()) {
+    bg_vbo_.destroy();
+  }
   if (vao_.isCreated()) {
     vao_.destroy();
+  }
+  if (bg_vao_.isCreated()) {
+    bg_vao_.destroy();
   }
   program_.removeAllShaders();
 }
@@ -734,5 +1081,167 @@ void BspPreviewWidget::ensure_program() {
 
   if (!vs_ok || !fs_ok || !program_.link()) {
     qWarning() << "BspPreviewWidget shader compile/link failed:" << program_.log();
+  }
+}
+
+void BspPreviewWidget::update_ground_mesh_if_needed() {
+  if (!has_mesh_ || !gl_ready_ || !context()) {
+    return;
+  }
+
+  update_grid_settings();
+  const float extent = std::max(radius_ * 2.6f, 1.0f);
+  if (ground_index_count_ == 6 && std::abs(extent - ground_extent_) < 0.001f && ground_vbo_.isCreated() &&
+      ground_ibo_.isCreated()) {
+    return;
+  }
+
+  ground_extent_ = extent;
+  const float z = ground_z_;
+  const float minx = center_.x() - extent;
+  const float maxx = center_.x() + extent;
+  const float miny = center_.y() - extent;
+  const float maxy = center_.y() + extent;
+
+  QVector<GpuVertex> verts;
+  verts.reserve(4);
+  verts.push_back(GpuVertex{minx, miny, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f});
+  verts.push_back(GpuVertex{maxx, miny, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f});
+  verts.push_back(GpuVertex{maxx, maxy, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f});
+  verts.push_back(GpuVertex{minx, maxy, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f});
+
+  const std::uint16_t idx[6] = {0, 1, 2, 0, 2, 3};
+
+  if (!ground_vbo_.isCreated()) {
+    ground_vbo_.create();
+  }
+  if (!ground_ibo_.isCreated()) {
+    ground_ibo_.create();
+  }
+
+  ground_vbo_.bind();
+  ground_vbo_.allocate(verts.constData(), static_cast<int>(verts.size() * sizeof(GpuVertex)));
+  ground_ibo_.bind();
+  ground_ibo_.allocate(idx, static_cast<int>(sizeof(idx)));
+
+  ground_index_count_ = 6;
+}
+
+void BspPreviewWidget::update_background_mesh_if_needed() {
+  if (!gl_ready_ || !context()) {
+    return;
+  }
+  if (bg_vao_.isCreated() && bg_vbo_.isCreated()) {
+    return;
+  }
+
+  ensure_program();
+  program_.bind();
+
+  if (!bg_vbo_.isCreated()) {
+    bg_vbo_.create();
+  }
+  if (!bg_vao_.isCreated()) {
+    bg_vao_.create();
+  }
+
+  const GpuVertex verts[6] = {
+    {-1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f},
+    { 1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f},
+    { 1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+    {-1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f},
+    { 1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+    {-1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f},
+  };
+
+  bg_vao_.bind();
+  bg_vbo_.bind();
+  bg_vbo_.allocate(verts, static_cast<int>(sizeof(verts)));
+
+  const int pos_loc = program_.attributeLocation("aPos");
+  const int nrm_loc = program_.attributeLocation("aNormal");
+  const int col_loc = program_.attributeLocation("aColor");
+  const int uv_loc = program_.attributeLocation("aUV");
+  program_.enableAttributeArray(pos_loc);
+  program_.enableAttributeArray(nrm_loc);
+  program_.enableAttributeArray(col_loc);
+  program_.enableAttributeArray(uv_loc);
+  program_.setAttributeBuffer(pos_loc, GL_FLOAT, offsetof(GpuVertex, px), 3, sizeof(GpuVertex));
+  program_.setAttributeBuffer(nrm_loc, GL_FLOAT, offsetof(GpuVertex, nx), 3, sizeof(GpuVertex));
+  program_.setAttributeBuffer(col_loc, GL_FLOAT, offsetof(GpuVertex, r), 3, sizeof(GpuVertex));
+  program_.setAttributeBuffer(uv_loc, GL_FLOAT, offsetof(GpuVertex, u), 2, sizeof(GpuVertex));
+
+  bg_vao_.release();
+  bg_vbo_.release();
+  program_.release();
+}
+
+void BspPreviewWidget::update_grid_settings() {
+  grid_scale_ = std::max(radius_ * 0.35f, 1.0f);
+}
+
+void BspPreviewWidget::apply_wireframe_state(bool enabled) {
+  if (!gl_ready_ || !context()) {
+    return;
+  }
+  QOpenGLContext* ctx = QOpenGLContext::currentContext();
+  if (!ctx || ctx->isOpenGLES()) {
+    return;
+  }
+  QOpenGLFunctions_1_1 f;
+  f.initializeOpenGLFunctions();
+  f.glPolygonMode(GL_FRONT_AND_BACK, enabled ? GL_LINE : GL_FILL);
+}
+
+void BspPreviewWidget::update_background_colors(QVector3D* top, QVector3D* bottom, QVector3D* base) const {
+  QColor base_color;
+  if (bg_mode_ == PreviewBackgroundMode::Custom && bg_custom_color_.isValid()) {
+    base_color = bg_custom_color_;
+  } else if (bg_mode_ == PreviewBackgroundMode::Grey) {
+    base_color = QColor(88, 88, 92);
+  } else {
+    base_color = palette().color(QPalette::Window);
+  }
+  if (!base_color.isValid()) {
+    base_color = QColor(64, 64, 68);
+  }
+
+  QColor top_color = base_color.lighter(112);
+  QColor bottom_color = base_color.darker(118);
+
+  if (top) {
+    *top = QVector3D(top_color.redF(), top_color.greenF(), top_color.blueF());
+  }
+  if (bottom) {
+    *bottom = QVector3D(bottom_color.redF(), bottom_color.greenF(), bottom_color.blueF());
+  }
+  if (base) {
+    *base = QVector3D(base_color.redF(), base_color.greenF(), base_color.blueF());
+  }
+}
+
+void BspPreviewWidget::update_grid_colors(QVector3D* grid, QVector3D* axis_x, QVector3D* axis_y) const {
+  QVector3D base_vec;
+  update_background_colors(nullptr, nullptr, &base_vec);
+  QColor base_color = QColor::fromRgbF(base_vec.x(), base_vec.y(), base_vec.z());
+  QColor grid_color = (base_color.lightness() < 128) ? base_color.lighter(140) : base_color.darker(140);
+
+  QColor axis_x_color = palette().color(QPalette::Highlight);
+  if (!axis_x_color.isValid()) {
+    axis_x_color = QColor(220, 80, 80);
+  }
+  QColor axis_y_color = palette().color(QPalette::Link);
+  if (!axis_y_color.isValid()) {
+    axis_y_color = QColor(80, 180, 120);
+  }
+
+  if (grid) {
+    *grid = QVector3D(grid_color.redF(), grid_color.greenF(), grid_color.blueF());
+  }
+  if (axis_x) {
+    *axis_x = QVector3D(axis_x_color.redF(), axis_x_color.greenF(), axis_x_color.blueF());
+  }
+  if (axis_y) {
+    *axis_y = QVector3D(axis_y_color.redF(), axis_y_color.greenF(), axis_y_color.blueF());
   }
 }
