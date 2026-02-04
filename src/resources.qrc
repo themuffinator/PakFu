@@ -1,5 +1,9 @@
 <RCC>
   <qresource prefix="/">
     <file>../assets/img/logo.png</file>
+    <file>../assets/shaders/bsp_preview.vert.qsb</file>
+    <file>../assets/shaders/bsp_preview.frag.qsb</file>
+    <file>../assets/shaders/model_preview.vert.qsb</file>
+    <file>../assets/shaders/model_preview.frag.qsb</file>
   </qresource>
 </RCC>

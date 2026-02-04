@@ -2,6 +2,10 @@
 
 #include <QSettings>
 
+#if QT_CONFIG(vulkan)
+#include <QtGui/QVulkanInstance>
+#endif
+
 namespace {
 constexpr char kPreviewRendererKey[] = "preview/renderer";
 }
@@ -49,8 +53,12 @@ void save_preview_renderer(PreviewRenderer renderer) {
 }
 
 bool is_vulkan_renderer_available() {
-	// Vulkan renderer support is not implemented yet.
+#if QT_CONFIG(vulkan)
+	QVulkanInstance instance;
+	return instance.create();
+#else
 	return false;
+#endif
 }
 
 PreviewRenderer resolve_preview_renderer(PreviewRenderer requested) {
