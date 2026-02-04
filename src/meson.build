@@ -9,6 +9,20 @@ configure_file(
   configuration: conf,
 )
 
+miniz_lib = static_library(
+  'pakfu_miniz',
+  files(
+    'third_party/miniz/miniz_c.cpp',
+    'third_party/miniz/miniz_tdef_c.cpp',
+    'third_party/miniz/miniz_tinfl_c.cpp',
+    'third_party/miniz/miniz_zip_c.cpp',
+  ),
+  override_options: [
+    'warning_level=0',
+    'werror=false',
+  ],
+)
+
 sources = files(
   'main.cpp',
   'cli/cli.cpp',
@@ -31,10 +45,6 @@ sources = files(
   'formats/wal_image.cpp',
   'zip/quakelive_pk3_crypto.cpp',
   'zip/zip_archive.cpp',
-  'third_party/miniz/miniz_c.cpp',
-  'third_party/miniz/miniz_tdef_c.cpp',
-  'third_party/miniz/miniz_tinfl_c.cpp',
-  'third_party/miniz/miniz_zip_c.cpp',
   'ui/splash_screen.cpp',
   'ui/main_window.cpp',
   'ui/game_set_dialog.cpp',
@@ -91,6 +101,7 @@ pakfu = executable(
   sources,
   include_directories: include_directories('.'),
   dependencies: [qt6_dep],
+  link_with: [miniz_lib],
   link_args: pakfu_link_args,
   win_subsystem: pakfu_win_subsystem,
   install: true,
