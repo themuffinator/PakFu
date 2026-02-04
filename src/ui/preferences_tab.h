@@ -3,6 +3,7 @@
 #include <QWidget>
 
 #include "ui/theme_manager.h"
+#include "ui/preview_renderer.h"
 
 class QComboBox;
 class QCheckBox;
@@ -20,6 +21,7 @@ signals:
   void model_texture_smoothing_changed(bool enabled);
   void image_texture_smoothing_changed(bool enabled);
   void pure_pak_protector_changed(bool enabled);
+  void preview_renderer_changed(PreviewRenderer renderer);
 
 private:
   void build_ui();
@@ -29,7 +31,9 @@ private:
   void apply_association();
 
   QComboBox* theme_combo_ = nullptr;
+  QComboBox* renderer_combo_ = nullptr;
   QLabel* assoc_status_ = nullptr;
+  QLabel* renderer_status_ = nullptr;
   QPushButton* assoc_apply_ = nullptr;
   QPushButton* assoc_details_ = nullptr;
   QCheckBox* model_texture_smoothing_ = nullptr;

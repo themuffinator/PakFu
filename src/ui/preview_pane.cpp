@@ -181,6 +181,9 @@ void PreviewPane::build_ui() {
 	layout->setContentsMargins(14, 14, 14, 14);
 	layout->setSpacing(10);
 
+	renderer_requested_ = load_preview_renderer();
+	renderer_effective_ = resolve_preview_renderer(renderer_requested_);
+
 	auto* header = new QWidget(this);
 	auto* header_layout = new QVBoxLayout(header);
 	header_layout->setContentsMargins(8, 8, 8, 8);
@@ -583,17 +586,15 @@ void PreviewPane::build_ui() {
 	bsp_controls_layout->addStretch();
 
 	bsp_layout->addWidget(bsp_controls_, 0);
-	bsp_widget_ = new BspPreviewWidget(bsp_page_);
-	bsp_layout->addWidget(bsp_widget_, 1);
 	stack_->addWidget(bsp_page_);
+	rebuild_bsp_widget();
 
 	// Model page (MDL/MD2/MD3/IQM/MD5/LWO/OBJ).
 	model_page_ = new QWidget(stack_);
 	auto* model_layout = new QVBoxLayout(model_page_);
 	model_layout->setContentsMargins(0, 0, 0, 0);
-	model_widget_ = new ModelViewerWidget(model_page_);
-	model_layout->addWidget(model_widget_, 1);
 	stack_->addWidget(model_page_);
+	rebuild_model_widget();
 
 	QSettings settings;
 	const QString bg_mode = settings.value("preview/image/backgroundMode").toString().trimmed().toLower();
@@ -720,11 +721,88 @@ void PreviewPane::build_ui() {
 
 /*
 =============
+PreviewPane::set_preview_renderer
+
+Switch the renderer preference (effective change recreates 3D widgets).
+=============
+*/
+void PreviewPane::set_preview_renderer(PreviewRenderer renderer) {
+	if (renderer_requested_ == renderer) {
+		return;
+	}
+	renderer_requested_ = renderer;
+	const PreviewRenderer effective = resolve_preview_renderer(renderer_requested_);
+	if (renderer_effective_ == effective) {
+		return;
+	}
+	renderer_effective_ = effective;
+	rebuild_3d_widgets();
+
+	if (current_content_kind_ == ContentKind::Bsp || current_content_kind_ == ContentKind::Model) {
+		show_message("Renderer changed", "Select the file again to re-render with the new backend.");
+	}
+}
+
+void PreviewPane::rebuild_3d_widgets() {
+	rebuild_bsp_widget();
+	rebuild_model_widget();
+}
+
+void PreviewPane::rebuild_bsp_widget() {
+	if (!bsp_page_) {
+		return;
+	}
+	auto* layout = qobject_cast<QVBoxLayout*>(bsp_page_->layout());
+	if (!layout) {
+		return;
+	}
+	if (bsp_widget_) {
+		layout->removeWidget(bsp_widget_);
+		bsp_widget_->deleteLater();
+		bsp_widget_ = nullptr;
+	}
+
+	switch (renderer_effective_) {
+		case PreviewRenderer::Vulkan:
+		case PreviewRenderer::OpenGL:
+			bsp_widget_ = new BspPreviewWidget(bsp_page_);
+			layout->addWidget(bsp_widget_, 1);
+			bsp_widget_->set_lightmap_enabled(bsp_lightmapping_enabled_);
+			break;
+	}
+}
+
+void PreviewPane::rebuild_model_widget() {
+	if (!model_page_) {
+		return;
+	}
+	auto* layout = qobject_cast<QVBoxLayout*>(model_page_->layout());
+	if (!layout) {
+		return;
+	}
+	if (model_widget_) {
+		layout->removeWidget(model_widget_);
+		model_widget_->deleteLater();
+		model_widget_ = nullptr;
+	}
+
+	switch (renderer_effective_) {
+		case PreviewRenderer::Vulkan:
+		case PreviewRenderer::OpenGL:
+			model_widget_ = new ModelViewerWidget(model_page_);
+			layout->addWidget(model_widget_, 1);
+			break;
+	}
+}
+
+/*
+=============
 PreviewPane::set_header
 
 Update the header title and subtitle text.
 =============
 */
+
 void PreviewPane::set_header(const QString& title, const QString& subtitle) {
 	if (title_label_) {
 		title_label_->setText(title);

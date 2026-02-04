@@ -11,6 +11,7 @@
 
 #include "formats/bsp_preview.h"
 #include "formats/image_loader.h"
+#include "ui/preview_renderer.h"
 
 class QLabel;
 class QPlainTextEdit;
@@ -47,6 +48,7 @@ public:
 	explicit PreviewPane(QWidget* parent = nullptr);
 	~PreviewPane() override;
 
+	void set_preview_renderer(PreviewRenderer renderer);
 	void set_model_texture_smoothing(bool enabled);
 	void set_image_texture_smoothing(bool enabled);
 	void set_model_palettes(const QVector<QRgb>& quake1_palette, const QVector<QRgb>& quake2_palette);
@@ -105,6 +107,9 @@ private:
 	void stop_cinematic_playback();
 	void stop_video_playback();
 	void stop_model_preview();
+	void rebuild_3d_widgets();
+	void rebuild_bsp_widget();
+	void rebuild_model_widget();
 	void set_audio_source(const QString& file_path);
 	void sync_audio_controls();
 	void update_audio_tooltip();
@@ -201,4 +206,7 @@ private:
 
 	QWidget* model_page_ = nullptr;
 	ModelViewerWidget* model_widget_ = nullptr;
+
+	PreviewRenderer renderer_requested_ = PreviewRenderer::Vulkan;
+	PreviewRenderer renderer_effective_ = PreviewRenderer::OpenGL;
 };

@@ -50,6 +50,7 @@ sources = files(
   'ui/game_set_dialog.cpp',
   'ui/game_set_editor_dialog.cpp',
   'ui/preferences_tab.cpp',
+  'ui/preview_renderer.cpp',
   'ui/theme_manager.cpp',
   'ui/breadcrumb_bar.cpp',
   'ui/cfg_syntax_highlighter.cpp',

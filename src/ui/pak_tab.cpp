@@ -73,6 +73,7 @@
 #include "pak/pak_archive.h"
 #include "ui/breadcrumb_bar.h"
 #include "ui/preview_pane.h"
+#include "ui/preview_renderer.h"
 #include "zip/quakelive_pk3_crypto.h"
 
 namespace {
@@ -1031,6 +1032,12 @@ void PakTab::set_image_texture_smoothing(bool enabled) {
   }
   // Regenerate thumbnails with the new setting.
   refresh_listing();
+}
+
+void PakTab::set_preview_renderer(PreviewRenderer renderer) {
+  if (preview_) {
+    preview_->set_preview_renderer(renderer);
+  }
 }
 
 void PakTab::set_pure_pak_protector(bool enabled, bool is_official) {

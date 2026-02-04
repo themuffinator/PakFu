@@ -22,6 +22,7 @@ class QActionGroup;
 class QListWidget;
 class QListWidgetItem;
 class PreviewPane;
+enum class PreviewRenderer;
 class QStackedWidget;
 class QSplitter;
 class QToolBar;
@@ -64,6 +65,7 @@ public:
 
   void set_model_texture_smoothing(bool enabled);
   void set_image_texture_smoothing(bool enabled);
+  void set_preview_renderer(PreviewRenderer renderer);
   void set_pure_pak_protector(bool enabled, bool is_official);
   bool is_editable() const;
   bool is_pure_protected() const;

@@ -121,10 +121,35 @@ void PreferencesTab::build_ui() {
   model_layout->addWidget(model_label);
 
   auto* model_help = new QLabel(
-    "Configure how 3D model previews are rendered.",
+    "Configure how 3D model and BSP previews are rendered.",
     model_card);
   model_help->setWordWrap(true);
   model_layout->addWidget(model_help);
+
+  auto* renderer_row = new QWidget(model_card);
+  auto* renderer_layout = new QHBoxLayout(renderer_row);
+  renderer_layout->setContentsMargins(0, 0, 0, 0);
+  renderer_layout->setSpacing(8);
+
+  auto* renderer_label = new QLabel("Renderer", renderer_row);
+  renderer_label->setStyleSheet("color: rgba(190, 190, 190, 220);");
+  renderer_layout->addWidget(renderer_label);
+
+  renderer_combo_ = new QComboBox(renderer_row);
+  renderer_combo_->addItem("Vulkan (default)", preview_renderer_to_string(PreviewRenderer::Vulkan));
+  renderer_combo_->addItem("OpenGL", preview_renderer_to_string(PreviewRenderer::OpenGL));
+  renderer_combo_->setMinimumWidth(220);
+  renderer_layout->addWidget(renderer_combo_);
+  renderer_layout->addStretch();
+  model_layout->addWidget(renderer_row);
+
+  renderer_status_ = new QLabel(model_card);
+  renderer_status_->setWordWrap(true);
+  renderer_status_->setStyleSheet("color: rgba(180, 180, 180, 200);");
+  renderer_status_->setText(is_vulkan_renderer_available()
+                              ? "Vulkan renderer available. OpenGL remains available as a fallback."
+                              : "Vulkan renderer is not available in this build. OpenGL will be used.");
+  model_layout->addWidget(renderer_status_);
 
   model_texture_smoothing_ = new QCheckBox("Texture smoothing (bilinear filtering)", model_card);
   model_layout->addWidget(model_texture_smoothing_);
@@ -236,6 +261,16 @@ void PreferencesTab::build_ui() {
       emit pure_pak_protector_changed(checked);
     });
   }
+  if (renderer_combo_) {
+    connect(renderer_combo_, &QComboBox::currentIndexChanged, this, [this](int) {
+      if (!renderer_combo_) {
+        return;
+      }
+      const PreviewRenderer renderer = preview_renderer_from_string(renderer_combo_->currentData().toString());
+      save_preview_renderer(renderer);
+      emit preview_renderer_changed(renderer);
+    });
+  }
   connect(assoc_apply_, &QPushButton::clicked, this, &PreferencesTab::apply_association);
   connect(assoc_details_, &QPushButton::clicked, this, [this]() {
     QString details;
@@ -259,6 +294,13 @@ void PreferencesTab::load_settings() {
     model_texture_smoothing_->blockSignals(true);
     model_texture_smoothing_->setChecked(smooth);
     model_texture_smoothing_->blockSignals(false);
+  }
+  if (renderer_combo_) {
+    const QString renderer_key = preview_renderer_to_string(load_preview_renderer());
+    const int idx = renderer_combo_->findData(renderer_key);
+    renderer_combo_->blockSignals(true);
+    renderer_combo_->setCurrentIndex(idx >= 0 ? idx : 0);
+    renderer_combo_->blockSignals(false);
   }
   if (image_texture_smoothing_) {
     QSettings s;
