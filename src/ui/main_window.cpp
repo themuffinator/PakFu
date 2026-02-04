@@ -6,6 +6,10 @@
 #include <QComboBox>
 #include <QDateTime>
 #include <QCloseEvent>
+#include <QDragEnterEvent>
+#include <QDragLeaveEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QDialog>
 #include <QDir>
 #include <QFileDialog>
@@ -19,10 +23,12 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPushButton>
 #include <QRandomGenerator>
+#include <QResizeEvent>
 #include <QSet>
 #include <QSettings>
 #include <QTabWidget>
@@ -31,6 +37,7 @@
 #include <QToolButton>
 #include <QStyle>
 #include <QUndoStack>
+#include <QUrl>
 #include <QVariant>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -44,6 +51,27 @@
 #include "ui/preferences_tab.h"
 #include "update/update_service.h"
 
+class DropOverlay : public QWidget {
+public:
+  explicit DropOverlay(QWidget* parent = nullptr) : QWidget(parent) {
+    setAttribute(Qt::WA_TransparentForMouseEvents);
+    hide();
+  }
+
+protected:
+  void paintEvent(QPaintEvent*) override {
+    QPainter painter(this);
+    painter.fillRect(rect(), QColor(0, 120, 212, 80));
+
+    painter.setPen(Qt::white);
+    QFont font = painter.font();
+    font.setPointSize(24);
+    font.setBold(true);
+    painter.setFont(font);
+    painter.drawText(rect(), Qt::AlignCenter, "Drop to open archive");
+  }
+};
+
 namespace {
 constexpr int kMaxRecentFiles = 12;
 constexpr char kLegacyRecentFilesKey[] = "ui/recentFiles";
@@ -52,6 +80,35 @@ constexpr char kRecentFilesByInstallMigratedKey[] = "ui/recentFilesByInstallMigr
 constexpr char kInstallWorkspaceKeyPrefix[] = "ui/installWorkspace";
 constexpr char kInstallWorkspaceVersionKey[] = "ui/installWorkspaceVersion";
 constexpr char kConfigureGameSetsUid[] = "__configure_game_sets__";
+
+bool is_supported_archive_extension(const QString& path) {
+  const QString lower = path.toLower();
+  return lower.endsWith(".pak") || lower.endsWith(".pk3") ||
+         lower.endsWith(".pk4") || lower.endsWith(".pkz") ||
+         lower.endsWith(".zip") || lower.endsWith(".wad");
+}
+
+bool has_any_supported_archive(const QList<QUrl>& urls) {
+  for (const QUrl& url : urls) {
+    if (url.isLocalFile() && is_supported_archive_extension(url.toLocalFile())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+QStringList filter_archive_paths(const QList<QUrl>& urls) {
+  QStringList paths;
+  for (const QUrl& url : urls) {
+    if (url.isLocalFile()) {
+      const QString path = url.toLocalFile();
+      if (is_supported_archive_extension(path)) {
+        paths.append(path);
+      }
+    }
+  }
+  return paths;
+}
 
 QString normalize_recent_path(const QString& path) {
   if (path.isEmpty()) {
@@ -361,10 +418,13 @@ QWidget* build_welcome_tab(QWidget* parent,
 
 MainWindow::MainWindow(const GameSet& game_set, const QString& initial_pak_path, bool schedule_updates)
     : game_set_(game_set), schedule_updates_(schedule_updates) {
+  setAcceptDrops(true);
   setup_central();
   load_game_sets();
   rebuild_game_combo();
   setup_menus();
+
+  drop_overlay_ = new DropOverlay(this);
 
   resize(1120, 760);
 
@@ -1252,6 +1312,60 @@ void MainWindow::closeEvent(QCloseEvent* event) {
   event->accept();
   save_workspace_for_current_install();
   QMainWindow::closeEvent(event);
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
+  if (event && event->mimeData() && event->mimeData()->hasUrls()) {
+    if (has_any_supported_archive(event->mimeData()->urls())) {
+      if (drop_overlay_) {
+        drop_overlay_->resize(size());
+        drop_overlay_->show();
+        drop_overlay_->raise();
+      }
+      event->acceptProposedAction();
+      return;
+    }
+  }
+  QMainWindow::dragEnterEvent(event);
+}
+
+void MainWindow::dragLeaveEvent(QDragLeaveEvent* event) {
+  if (drop_overlay_) {
+    drop_overlay_->hide();
+  }
+  QMainWindow::dragLeaveEvent(event);
+}
+
+void MainWindow::dragMoveEvent(QDragMoveEvent* event) {
+  if (event && event->mimeData() && event->mimeData()->hasUrls()) {
+    if (has_any_supported_archive(event->mimeData()->urls())) {
+      event->acceptProposedAction();
+      return;
+    }
+  }
+  QMainWindow::dragMoveEvent(event);
+}
+
+void MainWindow::dropEvent(QDropEvent* event) {
+  if (drop_overlay_) {
+    drop_overlay_->hide();
+  }
+  if (event && event->mimeData() && event->mimeData()->hasUrls()) {
+    const QStringList paths = filter_archive_paths(event->mimeData()->urls());
+    if (!paths.isEmpty()) {
+      open_archives(paths);
+      event->acceptProposedAction();
+      return;
+    }
+  }
+  QMainWindow::dropEvent(event);
+}
+
+void MainWindow::resizeEvent(QResizeEvent* event) {
+  QMainWindow::resizeEvent(event);
+  if (drop_overlay_ && drop_overlay_->isVisible()) {
+    drop_overlay_->resize(size());
+  }
 }
 
 bool MainWindow::maybe_save_tab(PakTab* tab) {
