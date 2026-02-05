@@ -1,6 +1,54 @@
 # Changelog
 
 All notable changes to PakFu are documented here.
+## [0.1.6.1] - 2026-02-05
+### Build
+- compile miniz as static library
+### CI
+- release from auto-version tag
+- trigger release after auto-version
+### Chore
+- trigger test release
+- improve release automation
+- test release pipeline
+### Other
+- Add auto-version workflow and version script
+- Clarify versioning rules and prerelease workflow
+- Add Vulkan 3D previews and mip-level decoding
+- Add Vulkan preview shaders and widget
+- Add selectable 3D preview renderer (Vulkan/OpenGL)
+- Make palette index 255 transparent
+- Add video support & improve preview UI/3D controls
+- handle pak tab smoothing as well
+- filtering preferences
+- drag & drop any archive
+- Add folder archives and OBJ/LWO model support
+- Add BSP map preview support
+- Add Pure PAK Protector preference and enforcement
+- Add C syntax highlighting and preview
+- Rename Game Sets to Installations, add workspace
+- Add ensure_qt6 script and packaging checks
+- Add Qt scripts, model probe, and Q3 skin parsing
+- Add IQM/MD5 model support and thumbnails
+- Model surfaces, WAD mount, colormap & ROQ
+- Add WAD & MIP support; model UVs; ROQ probe
+- Add cinematic, DDS and model format loaders
+- Add archive support, PCX/WAL decoders, CLI
+- Add Game Sets UI, CLI and auto-detect
+- Add Recent Files menu with QSettings
+- Add TGA image loader and CFG syntax highlighter
+- auto-deploy Qt runtime and link entrypoint
+- Add audio preview player
+- Add tab smoke test triggered by env var
+- Add file associations, preview & undo features
+- Add PAK saving, preferences tab, and theme manager
+- Add PAK archive support and tabbed UI for PAK files
+- Refactor update check flow and improve splash handling
+- Add splash screen and CLI update check, improve packaging
+- Add auto-update system and release automation
+- Initial project scaffold with Meson, CLI, and Qt UI
+- Initial commit
+
 ## [0.1.5.1] - 2026-02-05
 ### CI
 - release from auto-version tag
