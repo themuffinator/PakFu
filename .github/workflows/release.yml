@@ -1,16 +1,24 @@
 name: release
 
 on:
+  workflow_run:
+    workflows: ["auto-version"]
+    types: [completed]
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
+    inputs:
+      ref:
+        description: Tag or commit to release (defaults to latest tag)
+        required: false
+        type: string
 
 permissions:
   contents: write
 
 jobs:
   build:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success')
     name: build-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -21,6 +29,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.ref || github.event.workflow_run.head_sha }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -39,8 +50,8 @@ jobs:
       - name: Determine Update Channel
         shell: bash
         run: |
-          tag="${GITHUB_REF_NAME}"
-          if [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          version="$(cat VERSION)"
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "PAKFU_UPDATE_CHANNEL=dev" >> "$GITHUB_ENV"
           else
             echo "PAKFU_UPDATE_CHANNEL=stable" >> "$GITHUB_ENV"
@@ -86,11 +97,15 @@ jobs:
     name: github-release
     runs-on: ubuntu-latest
     needs: build
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.inputs.ref || github.event.workflow_run.head_sha }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -103,11 +118,17 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Resolve Version
+        shell: bash
+        run: |
+          version="$(cat VERSION)"
+          echo "PAKFU_VERSION=$version" >> "$GITHUB_ENV"
+
       - name: Determine Release Type
         shell: bash
         run: |
-          tag="${GITHUB_REF_NAME}"
-          if [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          version="${PAKFU_VERSION}"
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "PAKFU_PRERELEASE=true" >> "$GITHUB_ENV"
           else
             echo "PAKFU_PRERELEASE=false" >> "$GITHUB_ENV"
@@ -116,11 +137,13 @@ jobs:
       - name: Prepare Release Notes
         shell: bash
         run: |
-          python scripts/release_notes.py --version "${GITHUB_REF_NAME}" --output release_notes.md
+          python scripts/release_notes.py --version "v${PAKFU_VERSION}" --output release_notes.md
 
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ env.PAKFU_VERSION }}
+          name: v${{ env.PAKFU_VERSION }}
           files: dist/**
           body_path: release_notes.md
           generate_release_notes: false
