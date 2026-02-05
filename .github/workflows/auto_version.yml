@@ -18,6 +18,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: auto-version
@@ -58,6 +59,7 @@ jobs:
           python scripts/update_changelog.py --version "${{ steps.version.outputs.version }}"
 
       - name: Commit and Tag
+        id: tag
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
@@ -71,3 +73,20 @@ jobs:
           git tag "v${{ steps.version.outputs.version }}"
           git push
           git push --tags
+          echo "tagged=true" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch Release Workflow
+        if: steps.tag.outputs.tagged == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const version = "${{ steps.version.outputs.version }}";
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: "release.yml",
+              ref: "main",
+              inputs: {
+                ref: `v${version}`
+              }
+            });

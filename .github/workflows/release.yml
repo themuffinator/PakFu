@@ -1,9 +1,6 @@
 name: release
 
 on:
-  workflow_run:
-    workflows: ["auto-version"]
-    types: [completed]
   workflow_dispatch:
     inputs:
       ref:
@@ -16,9 +13,6 @@ permissions:
 
 jobs:
   build:
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success')
     name: build-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -36,6 +30,7 @@ jobs:
         shell: bash
         run: |
           ref="${{ github.event.inputs.ref }}"
+          git fetch --tags --force
           if [[ -z "$ref" ]]; then
             ref="$(git describe --tags --abbrev=0)"
           fi
@@ -110,9 +105,6 @@ jobs:
     name: github-release
     runs-on: ubuntu-latest
     needs: build
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -123,6 +115,7 @@ jobs:
         shell: bash
         run: |
           ref="${{ github.event.inputs.ref }}"
+          git fetch --tags --force
           if [[ -z "$ref" ]]; then
             ref="$(git describe --tags --abbrev=0)"
           fi

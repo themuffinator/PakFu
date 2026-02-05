@@ -57,8 +57,9 @@ the updater can select the correct file automatically.
 1. Push to `main` (default: auto-creates a **dev** prerelease).
 2. The `auto-version` workflow computes the next version, updates `VERSION`,
    updates `CHANGELOG.md`, commits, and tags it.
-3. The `release` workflow builds and publishes packages for the tag, using
-   the matching changelog entry as release notes.
+3. The `auto-version` workflow dispatches the `release` workflow, which builds
+   and publishes packages for the tag, using the matching changelog entry as
+   release notes.
 4. For a stable release, run the `auto-version` workflow manually with
    `channel=stable`.
 
