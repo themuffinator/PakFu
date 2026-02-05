@@ -1,6 +1,10 @@
 # Changelog
 
 All notable changes to PakFu are documented here.
+## [0.1.5.1] - 2026-02-05
+### CI
+- release from auto-version tag
+
 ## [0.1.4.1] - 2026-02-05
 ### Build
 - compile miniz as static library
