@@ -1,0 +1,65 @@
+name: auto-version
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Release channel
+        required: true
+        default: dev
+        type: choice
+        options:
+          - stable
+          - beta
+          - dev
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-version
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Compute Version
+        id: version
+        shell: bash
+        run: |
+          channel="${{ github.event.inputs.channel }}"
+          if [[ -z "$channel" ]]; then
+            channel="dev"
+          fi
+          version="$(python scripts/next_version.py --channel "$channel" --write)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and Tag
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add VERSION
+          if git diff --cached --quiet; then
+            echo "VERSION unchanged; nothing to tag."
+            exit 0
+          fi
+          git commit -m "chore(release): v${{ steps.version.outputs.version }} [skip release]"
+          git tag "v${{ steps.version.outputs.version }}"
+          git push
+          git push --tags
