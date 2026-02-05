@@ -38,6 +38,11 @@ Preview the next version locally:
 python scripts/next_version.py --channel dev
 ```
 
+## Changelog
+Release notes come from `CHANGELOG.md`, which is updated automatically during
+the `auto-version` workflow. Keep commit messages concise and descriptive so
+the notes read well.
+
 ## Release Assets
 To enable in-app updates, attach platform packages to each GitHub Release.
 Current packaging targets:
@@ -51,8 +56,9 @@ the updater can select the correct file automatically.
 ## Release Workflow
 1. Push to `main` (default: auto-creates a **dev** prerelease).
 2. The `auto-version` workflow computes the next version, updates `VERSION`,
-   commits, and tags it.
-3. The `release` workflow builds and publishes packages for the tag.
+   updates `CHANGELOG.md`, commits, and tags it.
+3. The `release` workflow builds and publishes packages for the tag, using
+   the matching changelog entry as release notes.
 4. For a stable release, run the `auto-version` workflow manually with
    `channel=stable`.
 

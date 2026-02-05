@@ -6,6 +6,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: build-${{ matrix.os }}
@@ -33,8 +36,18 @@ jobs:
           version: "6.10.1"
           arch: ${{ matrix.os == 'windows-latest' && 'win64_msvc2022_64' || matrix.os == 'macos-latest' && 'clang_64' || 'gcc_64' }}
 
+      - name: Determine Update Channel
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "PAKFU_UPDATE_CHANNEL=dev" >> "$GITHUB_ENV"
+          else
+            echo "PAKFU_UPDATE_CHANNEL=stable" >> "$GITHUB_ENV"
+          fi
+
       - name: Configure
-        run: meson setup build --backend ninja -Dgithub_repo=${{ github.repository }}
+        run: meson setup build --backend ninja -Dgithub_repo=${{ github.repository }} -Dupdate_channel=$PAKFU_UPDATE_CHANNEL
 
       - name: Build
         run: meson compile -C build
@@ -58,13 +71,32 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pakfu-${{ matrix.os }}
-          path: dist/*
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.tgz
+            dist/*.tar.xz
+            dist/*.AppImage
+            dist/*.dmg
+            dist/*.pkg
+            dist/*.exe
+            dist/*.msi
 
   release:
     name: github-release
     runs-on: ubuntu-latest
     needs: build
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
       - name: Download Artifacts
         uses: actions/download-artifact@v4
         with:
@@ -81,9 +113,16 @@ jobs:
             echo "PAKFU_PRERELEASE=false" >> "$GITHUB_ENV"
           fi
 
+      - name: Prepare Release Notes
+        shell: bash
+        run: |
+          python scripts/release_notes.py --version "${GITHUB_REF_NAME}" --output release_notes.md
+
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/**
-          generate_release_notes: true
+          body_path: release_notes.md
+          generate_release_notes: false
+          fail_on_unmatched_files: true
           prerelease: ${{ env.PAKFU_PRERELEASE == 'true' }}
