@@ -57,11 +57,12 @@ the updater can select the correct file automatically.
 1. Push to `main` (default: auto-creates a **dev** prerelease).
 2. The `auto-version` workflow computes the next version, updates `VERSION`,
    updates `CHANGELOG.md`, commits, and tags it.
-3. The `auto-version` workflow dispatches the `release` workflow, which builds
-   and publishes packages for the tag, using the matching changelog entry as
-   release notes.
+3. The same `auto-version` workflow then builds packages and publishes the
+   GitHub Release for that tag, using the matching changelog entry as release
+   notes.
 4. For a stable release, run the `auto-version` workflow manually with
    `channel=stable`.
+5. `release.yml` remains available for manual re-runs if needed.
 
 The release workflow uses the repository name as the update source and publishes
 the artifacts to the GitHub Release matching the tag.
