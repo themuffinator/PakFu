@@ -35,6 +35,97 @@ QVector3D spherical_dir(float yaw_deg, float pitch_deg) {
   return QVector3D(cp * cy, cp * sy, sp);
 }
 
+constexpr float kOrbitSensitivityDegPerPixel = 0.45f;
+
+float orbit_min_distance(float radius) {
+  return std::max(0.01f, radius * 0.001f);
+}
+
+float orbit_max_distance(float radius) {
+  const float min_dist = orbit_min_distance(radius);
+  return std::max(min_dist * 2.0f, std::max(radius, 1.0f) * 500.0f);
+}
+
+QVector3D safe_right_from_forward(const QVector3D& forward) {
+  QVector3D right = QVector3D::crossProduct(forward, QVector3D(0.0f, 0.0f, 1.0f));
+  if (right.lengthSquared() < 1e-6f) {
+    right = QVector3D(1.0f, 0.0f, 0.0f);
+  } else {
+    right.normalize();
+  }
+  return right;
+}
+
+float fit_distance_for_aabb(const QVector3D& half_extents,
+                            const QVector3D& view_forward,
+                            float aspect,
+                            float fov_y_deg) {
+  constexpr float kPi = 3.14159265358979323846f;
+  const QVector3D safe_half(std::max(half_extents.x(), 0.001f),
+                            std::max(half_extents.y(), 0.001f),
+                            std::max(half_extents.z(), 0.001f));
+  const float safe_aspect = std::max(aspect, 0.01f);
+  const float fov_y = fov_y_deg * kPi / 180.0f;
+  const float tan_half_y = std::tan(fov_y * 0.5f);
+  const float tan_half_x = std::max(0.001f, tan_half_y * safe_aspect);
+  const float safe_tan_half_y = std::max(0.001f, tan_half_y);
+
+  const QVector3D fwd = view_forward.normalized();
+  const QVector3D right = safe_right_from_forward(fwd);
+  const QVector3D up = QVector3D::crossProduct(right, fwd).normalized();
+
+  const auto projected_radius = [&](const QVector3D& axis) -> float {
+    return std::abs(axis.x()) * safe_half.x() +
+           std::abs(axis.y()) * safe_half.y() +
+           std::abs(axis.z()) * safe_half.z();
+  };
+
+  const float radius_x = projected_radius(right);
+  const float radius_y = projected_radius(up);
+  const float radius_z = projected_radius(fwd);
+  const float dist_x = radius_x / tan_half_x;
+  const float dist_y = radius_y / safe_tan_half_y;
+  return radius_z + std::max(dist_x, dist_y);
+}
+
+void apply_orbit_zoom(float factor,
+                      float min_dist,
+                      float max_dist,
+                      float* distance,
+                      QVector3D* center,
+                      float yaw_deg,
+                      float pitch_deg) {
+  if (!distance || !center) {
+    return;
+  }
+  const float safe_factor = std::clamp(factor, 0.01f, 100.0f);
+  const float target_distance = (*distance) * safe_factor;
+  if (target_distance < min_dist) {
+    const float push = min_dist - target_distance;
+    if (push > 0.0f) {
+      const QVector3D forward = (-spherical_dir(yaw_deg, pitch_deg)).normalized();
+      *center += forward * push;
+    }
+    *distance = min_dist;
+    return;
+  }
+  *distance = std::clamp(target_distance, min_dist, max_dist);
+}
+
+float quantized_grid_scale(float reference_distance) {
+  const float target = std::max(reference_distance / 16.0f, 1.0f);
+  const float exponent = std::floor(std::log10(target));
+  const float base = std::pow(10.0f, exponent);
+  const float n = target / std::max(base, 1e-6f);
+  float step = base;
+  if (n >= 5.0f) {
+    step = 5.0f * base;
+  } else if (n >= 2.0f) {
+    step = 2.0f * base;
+  }
+  return std::max(step, 1.0f);
+}
+
 QString vertex_shader_source(const QSurfaceFormat& fmt) {
   if (QOpenGLContext::currentContext() && QOpenGLContext::currentContext()->isOpenGLES()) {
     return R"GLSL(
@@ -187,17 +278,22 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
         if (uIsGround > 0.5) {
           if (uGridMode > 0.5) {
             vec3 baseGrid = toLinear(uGroundColor);
-            float scale = max(uGridScale, 0.001);
-            vec2 coord = vPos.xy / scale;
-            vec2 cell = abs(fract(coord) - 0.5);
-            float line = step(cell.x, 0.02) + step(cell.y, 0.02);
-            line = clamp(line, 0.0, 1.0);
-            float axisX = step(abs(vPos.x / scale), 0.04);
-            float axisY = step(abs(vPos.y / scale), 0.04);
+            float minorScale = max(uGridScale, 0.001);
+            float majorScale = minorScale * 10.0;
+            vec2 minorCoord = vPos.xy / minorScale;
+            vec2 majorCoord = vPos.xy / majorScale;
+            vec2 minorCell = abs(fract(minorCoord + 0.5) - 0.5);
+            vec2 majorCell = abs(fract(majorCoord + 0.5) - 0.5);
+            float minorLine = clamp((0.035 - min(minorCell.x, minorCell.y)) / 0.035, 0.0, 1.0);
+            float majorLine = clamp((0.06 - min(majorCell.x, majorCell.y)) / 0.06, 0.0, 1.0);
+            float axisX = clamp((0.05 - abs(vPos.x / minorScale)) / 0.05, 0.0, 1.0);
+            float axisY = clamp((0.05 - abs(vPos.y / minorScale)) / 0.05, 0.0, 1.0);
+            float fade = clamp(1.0 - length(vPos.xy - uShadowCenter.xy) / max(uShadowRadius * 2.2, 1.0), 0.08, 1.0);
             vec3 col = baseGrid;
-            col = mix(col, toLinear(uGridColor), line);
-            col = mix(col, toLinear(uAxisColorX), axisX);
-            col = mix(col, toLinear(uAxisColorY), axisY);
+            col = mix(col, toLinear(uGridColor), minorLine * 0.22 * fade);
+            col = mix(col, toLinear(uGridColor) * 1.35, majorLine * 0.75 * fade);
+            col = mix(col, toLinear(uAxisColorX), axisX * 0.95);
+            col = mix(col, toLinear(uAxisColorY), axisY * 0.95);
             gl_FragColor = vec4(toSrgb(col), 1.0);
             return;
           }
@@ -294,17 +390,22 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
         if (uIsGround > 0.5) {
           if (uGridMode > 0.5) {
             vec3 baseGrid = toLinear(uGroundColor);
-            float scale = max(uGridScale, 0.001);
-            vec2 coord = vPos.xy / scale;
-            vec2 cell = abs(fract(coord) - 0.5);
-            float line = step(cell.x, 0.02) + step(cell.y, 0.02);
-            line = clamp(line, 0.0, 1.0);
-            float axisX = step(abs(vPos.x / scale), 0.04);
-            float axisY = step(abs(vPos.y / scale), 0.04);
+            float minorScale = max(uGridScale, 0.001);
+            float majorScale = minorScale * 10.0;
+            vec2 minorCoord = vPos.xy / minorScale;
+            vec2 majorCoord = vPos.xy / majorScale;
+            vec2 minorCell = abs(fract(minorCoord + 0.5) - 0.5);
+            vec2 majorCell = abs(fract(majorCoord + 0.5) - 0.5);
+            float minorLine = clamp((0.035 - min(minorCell.x, minorCell.y)) / 0.035, 0.0, 1.0);
+            float majorLine = clamp((0.06 - min(majorCell.x, majorCell.y)) / 0.06, 0.0, 1.0);
+            float axisX = clamp((0.05 - abs(vPos.x / minorScale)) / 0.05, 0.0, 1.0);
+            float axisY = clamp((0.05 - abs(vPos.y / minorScale)) / 0.05, 0.0, 1.0);
+            float fade = clamp(1.0 - length(vPos.xy - uShadowCenter.xy) / max(uShadowRadius * 2.2, 1.0), 0.08, 1.0);
             vec3 col = baseGrid;
-            col = mix(col, toLinear(uGridColor), line);
-            col = mix(col, toLinear(uAxisColorX), axisX);
-            col = mix(col, toLinear(uAxisColorY), axisY);
+            col = mix(col, toLinear(uGridColor), minorLine * 0.22 * fade);
+            col = mix(col, toLinear(uGridColor) * 1.35, majorLine * 0.75 * fade);
+            col = mix(col, toLinear(uAxisColorX), axisX * 0.95);
+            col = mix(col, toLinear(uAxisColorY), axisY * 0.95);
             FragColor = vec4(toSrgb(col), 1.0);
             return;
           }
@@ -396,17 +497,22 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
         if (uIsGround > 0.5) {
           if (uGridMode > 0.5) {
             vec3 baseGrid = toLinear(uGroundColor);
-            float scale = max(uGridScale, 0.001);
-            vec2 coord = vPos.xy / scale;
-            vec2 cell = abs(fract(coord) - 0.5);
-            float line = step(cell.x, 0.02) + step(cell.y, 0.02);
-            line = clamp(line, 0.0, 1.0);
-            float axisX = step(abs(vPos.x / scale), 0.04);
-            float axisY = step(abs(vPos.y / scale), 0.04);
+            float minorScale = max(uGridScale, 0.001);
+            float majorScale = minorScale * 10.0;
+            vec2 minorCoord = vPos.xy / minorScale;
+            vec2 majorCoord = vPos.xy / majorScale;
+            vec2 minorCell = abs(fract(minorCoord + 0.5) - 0.5);
+            vec2 majorCell = abs(fract(majorCoord + 0.5) - 0.5);
+            float minorLine = clamp((0.035 - min(minorCell.x, minorCell.y)) / 0.035, 0.0, 1.0);
+            float majorLine = clamp((0.06 - min(majorCell.x, majorCell.y)) / 0.06, 0.0, 1.0);
+            float axisX = clamp((0.05 - abs(vPos.x / minorScale)) / 0.05, 0.0, 1.0);
+            float axisY = clamp((0.05 - abs(vPos.y / minorScale)) / 0.05, 0.0, 1.0);
+            float fade = clamp(1.0 - length(vPos.xy - uShadowCenter.xy) / max(uShadowRadius * 2.2, 1.0), 0.08, 1.0);
             vec3 col = baseGrid;
-            col = mix(col, toLinear(uGridColor), line);
-            col = mix(col, toLinear(uAxisColorX), axisX);
-            col = mix(col, toLinear(uAxisColorY), axisY);
+            col = mix(col, toLinear(uGridColor), minorLine * 0.22 * fade);
+            col = mix(col, toLinear(uGridColor) * 1.35, majorLine * 0.75 * fade);
+            col = mix(col, toLinear(uAxisColorX), axisX * 0.95);
+            col = mix(col, toLinear(uAxisColorY), axisY * 0.95);
             FragColor = vec4(toSrgb(col), 1.0);
             return;
           }
@@ -496,17 +602,22 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       if (uIsGround > 0.5) {
         if (uGridMode > 0.5) {
           vec3 baseGrid = toLinear(uGroundColor);
-          float scale = max(uGridScale, 0.001);
-          vec2 coord = vPos.xy / scale;
-          vec2 cell = abs(fract(coord) - 0.5);
-          float line = step(cell.x, 0.02) + step(cell.y, 0.02);
-          line = clamp(line, 0.0, 1.0);
-          float axisX = step(abs(vPos.x / scale), 0.04);
-          float axisY = step(abs(vPos.y / scale), 0.04);
+          float minorScale = max(uGridScale, 0.001);
+          float majorScale = minorScale * 10.0;
+          vec2 minorCoord = vPos.xy / minorScale;
+          vec2 majorCoord = vPos.xy / majorScale;
+          vec2 minorCell = abs(fract(minorCoord + 0.5) - 0.5);
+          vec2 majorCell = abs(fract(majorCoord + 0.5) - 0.5);
+          float minorLine = clamp((0.035 - min(minorCell.x, minorCell.y)) / 0.035, 0.0, 1.0);
+          float majorLine = clamp((0.06 - min(majorCell.x, majorCell.y)) / 0.06, 0.0, 1.0);
+          float axisX = clamp((0.05 - abs(vPos.x / minorScale)) / 0.05, 0.0, 1.0);
+          float axisY = clamp((0.05 - abs(vPos.y / minorScale)) / 0.05, 0.0, 1.0);
+          float fade = clamp(1.0 - length(vPos.xy - uShadowCenter.xy) / max(uShadowRadius * 2.2, 1.0), 0.08, 1.0);
           vec3 col = baseGrid;
-          col = mix(col, toLinear(uGridColor), line);
-          col = mix(col, toLinear(uAxisColorX), axisX);
-          col = mix(col, toLinear(uAxisColorY), axisY);
+          col = mix(col, toLinear(uGridColor), minorLine * 0.22 * fade);
+          col = mix(col, toLinear(uGridColor) * 1.35, majorLine * 0.75 * fade);
+          col = mix(col, toLinear(uAxisColorX), axisX * 0.95);
+          col = mix(col, toLinear(uAxisColorY), axisY * 0.95);
           gl_FragColor = vec4(toSrgb(col), 1.0);
           return;
         }
@@ -536,11 +647,12 @@ ModelViewerWidget::ModelViewerWidget(QWidget* parent) : QOpenGLWidget(parent) {
   setFocusPolicy(Qt::StrongFocus);
   setToolTip(
     "3D Controls:\n"
-    "- Orbit: Left-drag\n"
-    "- Pan: Shift+Left-drag / Middle-drag / Right-drag\n"
+    "- Orbit: Middle-drag (Alt+Left-drag)\n"
+    "- Pan: Shift+Middle-drag (Alt+Shift+Left-drag)\n"
+    "- Dolly: Ctrl+Middle-drag (Alt+Ctrl+Left-drag)\n"
     "- Zoom: Mouse wheel\n"
     "- Frame: F\n"
-    "- Reset: R");
+    "- Reset: R / Home");
 
   QSettings settings;
   texture_smoothing_ = settings.value("preview/model/textureSmoothing", false).toBool();
@@ -631,9 +743,41 @@ void ModelViewerWidget::set_glow_enabled(bool enabled) {
   glow_enabled_ = enabled;
   if (model_ && !last_model_path_.isEmpty()) {
     QString err;
-    load_file(last_model_path_, last_skin_path_, &err);
+    (void)load_file(last_model_path_, last_skin_path_, &err);
     return;
   }
+  update();
+}
+
+void ModelViewerWidget::set_fov_degrees(int degrees) {
+  const float clamped = std::clamp(static_cast<float>(degrees), 40.0f, 120.0f);
+  if (std::abs(clamped - fov_y_deg_) < 0.001f) {
+    return;
+  }
+  fov_y_deg_ = clamped;
+  ground_extent_ = 0.0f;
+  update();
+}
+
+PreviewCameraState ModelViewerWidget::camera_state() const {
+  PreviewCameraState state;
+  state.center = center_;
+  state.yaw_deg = yaw_deg_;
+  state.pitch_deg = pitch_deg_;
+  state.distance = distance_;
+  state.valid = true;
+  return state;
+}
+
+void ModelViewerWidget::set_camera_state(const PreviewCameraState& state) {
+  if (!state.valid) {
+    return;
+  }
+  center_ = state.center;
+  yaw_deg_ = std::remainder(state.yaw_deg, 360.0f);
+  pitch_deg_ = std::clamp(state.pitch_deg, -89.0f, 89.0f);
+  distance_ = std::clamp(state.distance, orbit_min_distance(radius_), orbit_max_distance(radius_));
+  ground_extent_ = 0.0f;
   update();
 }
 
@@ -867,6 +1011,19 @@ void ModelViewerWidget::initializeGL() {
   glEnable(GL_DEPTH_TEST);
   glDisable(GL_CULL_FACE);
   gl_ready_ = true;
+  // Reparenting (e.g. fullscreen toggle) can recreate the GL context.
+  // Reset GPU handles and force a fresh upload for the new context.
+  destroy_gl_resources();
+  pending_upload_ = model_.has_value();
+  pending_texture_upload_ = (!skin_image_.isNull() || !skin_glow_image_.isNull());
+  if (!pending_texture_upload_) {
+    for (const DrawSurface& s : surfaces_) {
+      if (!s.image.isNull() || !s.glow_image.isNull()) {
+        pending_texture_upload_ = true;
+        break;
+      }
+    }
+  }
   ensure_program();
   upload_mesh_if_possible();
 }
@@ -916,7 +1073,12 @@ void ModelViewerWidget::paintGL() {
   }
   glEnable(GL_DEPTH_TEST);
 
-  if (!model_ || index_count_ <= 0) {
+  if ((!vbo_.isCreated() || !ibo_.isCreated()) && model_ && !pending_upload_) {
+    pending_upload_ = true;
+    upload_mesh_if_possible();
+  }
+
+  if (!model_ || index_count_ <= 0 || !vbo_.isCreated() || !ibo_.isCreated()) {
     program_.release();
     return;
   }
@@ -925,13 +1087,14 @@ void ModelViewerWidget::paintGL() {
   const float aspect = (height() > 0) ? (static_cast<float>(width()) / static_cast<float>(height())) : 1.0f;
   const float near_plane = std::max(0.001f, radius_ * 0.02f);
   const float far_plane = std::max(10.0f, radius_ * 50.0f);
-  proj.perspective(45.0f, aspect, near_plane, far_plane);
+  proj.perspective(fov_y_deg_, aspect, near_plane, far_plane);
 
   const QVector3D dir = spherical_dir(yaw_deg_, pitch_deg_).normalized();
   const QVector3D cam_pos = center_ + dir * distance_;
+  const QVector3D view_target = center_;
 
   QMatrix4x4 view;
-  view.lookAt(cam_pos, center_, QVector3D(0, 0, 1));
+  view.lookAt(cam_pos, view_target, QVector3D(0, 0, 1));
 
   QMatrix4x4 model_m;
   model_m.setToIdentity();
@@ -992,26 +1155,26 @@ void ModelViewerWidget::paintGL() {
 
   program_.setUniformValue("uIsGround", 0.0f);
 
-  if (vao_.isCreated()) {
+  const bool vao_bound = vao_.isCreated();
+  if (vao_bound) {
     vao_.bind();
-  } else {
-    vbo_.bind();
-    ibo_.bind();
-    const int pos_loc = program_.attributeLocation("aPos");
-    const int nrm_loc = program_.attributeLocation("aNormal");
-    const int uv_loc = program_.attributeLocation("aUV");
-    program_.enableAttributeArray(pos_loc);
-    program_.enableAttributeArray(nrm_loc);
-    program_.enableAttributeArray(uv_loc);
-    program_.setAttributeBuffer(pos_loc, GL_FLOAT, offsetof(GpuVertex, px), 3, sizeof(GpuVertex));
-    program_.setAttributeBuffer(nrm_loc, GL_FLOAT, offsetof(GpuVertex, nx), 3, sizeof(GpuVertex));
-    program_.setAttributeBuffer(uv_loc, GL_FLOAT, offsetof(GpuVertex, u), 2, sizeof(GpuVertex));
   }
+  vbo_.bind();
+  ibo_.bind();
+  const int pos_loc = program_.attributeLocation("aPos");
+  const int nrm_loc = program_.attributeLocation("aNormal");
+  const int uv_loc = program_.attributeLocation("aUV");
+  program_.enableAttributeArray(pos_loc);
+  program_.enableAttributeArray(nrm_loc);
+  program_.enableAttributeArray(uv_loc);
+  program_.setAttributeBuffer(pos_loc, GL_FLOAT, offsetof(GpuVertex, px), 3, sizeof(GpuVertex));
+  program_.setAttributeBuffer(nrm_loc, GL_FLOAT, offsetof(GpuVertex, nx), 3, sizeof(GpuVertex));
+  program_.setAttributeBuffer(uv_loc, GL_FLOAT, offsetof(GpuVertex, u), 2, sizeof(GpuVertex));
 
   const int index_size = (index_type_ == GL_UNSIGNED_SHORT) ? 2 : 4;
   const QVector<DrawSurface>& draw_surfaces = surfaces_;
   for (const DrawSurface& s : draw_surfaces) {
-    if (s.index_count <= 0) {
+    if (s.first_index < 0 || s.index_count <= 0 || (s.first_index + s.index_count) > index_count_) {
       continue;
     }
 
@@ -1073,7 +1236,9 @@ void ModelViewerWidget::paintGL() {
 
   apply_wireframe_state(false);
 
-  if (vao_.isCreated()) {
+  vbo_.release();
+  ibo_.release();
+  if (vao_bound) {
     vao_.release();
   }
   program_.release();
@@ -1089,17 +1254,20 @@ void ModelViewerWidget::mousePressEvent(QMouseEvent* event) {
     return;
   }
 
-  if (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton || event->button() == Qt::RightButton) {
+  const Qt::MouseButton button = event->button();
+  const Qt::KeyboardModifiers mods = event->modifiers();
+  const bool mmb = (button == Qt::MiddleButton);
+  const bool alt_lmb = (button == Qt::LeftButton && (mods & Qt::AltModifier));
+  if (mmb || alt_lmb) {
     setFocus(Qt::MouseFocusReason);
     last_mouse_pos_ = event->pos();
-    drag_button_ = event->button();
-
-    if (event->button() == Qt::LeftButton) {
-      drag_mode_ = (event->modifiers() & Qt::ShiftModifier) ? DragMode::Pan : DragMode::Orbit;
-    } else {
+    drag_mode_ = DragMode::Orbit;
+    if (mods & Qt::ControlModifier) {
+      drag_mode_ = DragMode::Dolly;
+    } else if (mods & Qt::ShiftModifier) {
       drag_mode_ = DragMode::Pan;
     }
-
+    drag_buttons_ = button;
     event->accept();
     return;
   }
@@ -1108,9 +1276,10 @@ void ModelViewerWidget::mousePressEvent(QMouseEvent* event) {
 }
 
 void ModelViewerWidget::mouseMoveEvent(QMouseEvent* event) {
-  if (!event || drag_mode_ == DragMode::None || drag_button_ == Qt::NoButton || !(event->buttons() & drag_button_)) {
+  if (!event || drag_mode_ == DragMode::None || drag_buttons_ == Qt::NoButton ||
+      (event->buttons() & drag_buttons_) != drag_buttons_) {
     drag_mode_ = DragMode::None;
-    drag_button_ = Qt::NoButton;
+    drag_buttons_ = Qt::NoButton;
     QOpenGLWidget::mouseMoveEvent(event);
     return;
   }
@@ -1119,11 +1288,13 @@ void ModelViewerWidget::mouseMoveEvent(QMouseEvent* event) {
   last_mouse_pos_ = event->pos();
 
   if (drag_mode_ == DragMode::Orbit) {
-    yaw_deg_ += static_cast<float>(delta.x()) * 0.6f;
-    pitch_deg_ += static_cast<float>(-delta.y()) * 0.6f;
+    yaw_deg_ += static_cast<float>(delta.x()) * kOrbitSensitivityDegPerPixel;
+    pitch_deg_ += static_cast<float>(-delta.y()) * kOrbitSensitivityDegPerPixel;
     pitch_deg_ = std::clamp(pitch_deg_, -89.0f, 89.0f);
   } else if (drag_mode_ == DragMode::Pan) {
     pan_by_pixels(delta);
+  } else if (drag_mode_ == DragMode::Dolly) {
+    dolly_by_pixels(delta);
   }
 
   update();
@@ -1131,9 +1302,11 @@ void ModelViewerWidget::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void ModelViewerWidget::mouseReleaseEvent(QMouseEvent* event) {
-  if (event && event->button() == drag_button_) {
+  if (event && drag_mode_ != DragMode::None && drag_buttons_ != Qt::NoButton &&
+      (Qt::MouseButtons(event->button()) & drag_buttons_) &&
+      (event->buttons() & drag_buttons_) != drag_buttons_) {
     drag_mode_ = DragMode::None;
-    drag_button_ = Qt::NoButton;
+    drag_buttons_ = Qt::NoButton;
     event->accept();
     return;
   }
@@ -1148,8 +1321,14 @@ void ModelViewerWidget::wheelEvent(QWheelEvent* event) {
   if (!num_deg.isNull()) {
     const float steps = static_cast<float>(num_deg.y()) / 15.0f;
     const float factor = std::pow(0.85f, steps);
-    distance_ *= factor;
-    distance_ = std::clamp(distance_, radius_ * 0.4f, radius_ * 50.0f);
+    apply_orbit_zoom(factor,
+                     orbit_min_distance(radius_),
+                     orbit_max_distance(radius_),
+                     &distance_,
+                     &center_,
+                     yaw_deg_,
+                     pitch_deg_);
+    ground_extent_ = 0.0f;
     update();
     event->accept();
     return;
@@ -1163,7 +1342,7 @@ void ModelViewerWidget::keyPressEvent(QKeyEvent* event) {
     return;
   }
 
-  if (event->key() == Qt::Key_R) {
+  if (event->key() == Qt::Key_R || event->key() == Qt::Key_Home) {
     reset_camera_from_mesh();
     update();
     event->accept();
@@ -1180,10 +1359,19 @@ void ModelViewerWidget::keyPressEvent(QKeyEvent* event) {
   QOpenGLWidget::keyPressEvent(event);
 }
 
+void ModelViewerWidget::keyReleaseEvent(QKeyEvent* event) {
+  if (!event) {
+    QOpenGLWidget::keyReleaseEvent(event);
+    return;
+  }
+
+  QOpenGLWidget::keyReleaseEvent(event);
+}
+
 void ModelViewerWidget::reset_camera_from_mesh() {
-  frame_mesh();
   yaw_deg_ = 45.0f;
   pitch_deg_ = 20.0f;
+  frame_mesh();
 }
 
 void ModelViewerWidget::frame_mesh() {
@@ -1198,8 +1386,12 @@ void ModelViewerWidget::frame_mesh() {
   const QVector3D mins = model_->mesh.mins;
   const QVector3D maxs = model_->mesh.maxs;
   center_ = (mins + maxs) * 0.5f;
-  radius_ = std::max(0.001f, (maxs - mins).length() * 0.5f);
-  distance_ = std::max(radius_ * 2.6f, 1.0f);
+  const QVector3D half_extents = (maxs - mins) * 0.5f;
+  radius_ = std::max(0.001f, half_extents.length());
+  const float aspect = (height() > 0) ? (static_cast<float>(width()) / static_cast<float>(height())) : 1.0f;
+  const QVector3D view_forward = (-spherical_dir(yaw_deg_, pitch_deg_)).normalized();
+  const float fit_dist = fit_distance_for_aabb(half_extents, view_forward, aspect, fov_y_deg_);
+  distance_ = std::clamp(fit_dist * 1.05f, orbit_min_distance(radius_), orbit_max_distance(radius_));
   ground_z_ = mins.z() - radius_ * 0.02f;
   ground_extent_ = 0.0f;
 }
@@ -1210,8 +1402,7 @@ void ModelViewerWidget::pan_by_pixels(const QPoint& delta) {
   }
 
   constexpr float kPi = 3.14159265358979323846f;
-  constexpr float fov_deg = 45.0f;
-  const float fov_rad = fov_deg * kPi / 180.0f;
+  const float fov_rad = fov_y_deg_ * kPi / 180.0f;
   const float units_per_px =
       (2.0f * distance_ * std::tan(fov_rad * 0.5f)) / std::max(1.0f, static_cast<float>(height()));
 
@@ -1229,6 +1420,18 @@ void ModelViewerWidget::pan_by_pixels(const QPoint& delta) {
   const QVector3D up = QVector3D::crossProduct(right, forward).normalized();
   center_ += (-right * static_cast<float>(delta.x()) + up * static_cast<float>(delta.y())) * units_per_px;
   ground_extent_ = 0.0f;  // ensure the ground mesh recenters during pan
+}
+
+void ModelViewerWidget::dolly_by_pixels(const QPoint& delta) {
+  const float factor = std::pow(1.01f, static_cast<float>(delta.y()));
+  apply_orbit_zoom(factor,
+                   orbit_min_distance(radius_),
+                   orbit_max_distance(radius_),
+                   &distance_,
+                   &center_,
+                   yaw_deg_,
+                   pitch_deg_);
+  ground_extent_ = 0.0f;
 }
 
 void ModelViewerWidget::ensure_program() {
@@ -1394,7 +1597,8 @@ void ModelViewerWidget::update_background_mesh_if_needed() {
 }
 
 void ModelViewerWidget::update_grid_settings() {
-  grid_scale_ = std::max(radius_ * 0.25f, 0.5f);
+  const float reference = std::max(distance_, radius_ * 0.25f);
+  grid_scale_ = quantized_grid_scale(reference);
 }
 
 void ModelViewerWidget::apply_wireframe_state(bool enabled) {
@@ -1631,3 +1835,4 @@ void ModelViewerWidget::upload_textures_if_possible() {
 
   pending_texture_upload_ = false;
 }
+

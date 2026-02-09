@@ -39,6 +39,10 @@ struct Tri {
   QVector2D ua;
   QVector2D ub;
   QVector2D uc;
+  QVector2D lma;
+  QVector2D lmb;
+  QVector2D lmc;
+  int lightmap_index = -1;
   QColor color;
   QString texture;
   bool uv_normalized = false;
@@ -158,11 +162,110 @@ qint16 read_i16_le(const QByteArray& data, int offset, bool* ok = nullptr) {
   return v;
 }
 
+quint16 read_u16_le(const QByteArray& data, int offset, bool* ok = nullptr) {
+  if (ok) {
+    *ok = false;
+  }
+  if (offset < 0 || offset + 2 > data.size()) {
+    return 0;
+  }
+  const unsigned char* p = reinterpret_cast<const unsigned char*>(data.constData() + offset);
+  const quint16 v = static_cast<quint16>(p[0] | (static_cast<quint16>(p[1]) << 8));
+  if (ok) {
+    *ok = true;
+  }
+  return v;
+}
+
 float read_f32_le(const QByteArray& data, int offset, bool* ok = nullptr) {
   quint32 u = read_u32_le(data, offset, ok);
   float f = 0.0f;
   std::memcpy(&f, &u, sizeof(float));
   return f;
+}
+
+bool lump_in_bounds(const QByteArray& data, const BspLump& lump) {
+  if (lump.offset < 0 || lump.length < 0) {
+    return false;
+  }
+  const qint64 end = static_cast<qint64>(lump.offset) + static_cast<qint64>(lump.length);
+  return end <= data.size();
+}
+
+QHash<QByteArray, BspLump> parse_bspx_lumps(const QByteArray& data, const BspHeader& header) {
+  QHash<QByteArray, BspLump> out;
+  if (header.lumps.isEmpty()) {
+    return out;
+  }
+
+  qint64 max_end = 0;
+  for (const BspLump& lump : header.lumps) {
+    if (lump.offset < 0 || lump.length < 0) {
+      continue;
+    }
+    const qint64 end = static_cast<qint64>(lump.offset) + static_cast<qint64>(lump.length);
+    max_end = std::max(max_end, end);
+  }
+
+  const qint64 bspx_ofs = (max_end + 3LL) & ~3LL;
+  if (bspx_ofs < 0 || bspx_ofs + 8 > data.size()) {
+    return out;
+  }
+
+  char ident[4]{};
+  if (!read_bytes(data, static_cast<int>(bspx_ofs), ident, 4)) {
+    return out;
+  }
+  if (std::memcmp(ident, "BSPX", 4) != 0) {
+    return out;
+  }
+
+  bool ok = false;
+  const quint32 lump_count = read_u32_le(data, static_cast<int>(bspx_ofs + 4), &ok);
+  if (!ok) {
+    return out;
+  }
+  const qint64 table_ofs = bspx_ofs + 8;
+  const qint64 table_bytes = static_cast<qint64>(lump_count) * 32;
+  if (table_ofs < 0 || table_ofs + table_bytes > data.size()) {
+    return out;
+  }
+
+  for (quint32 i = 0; i < lump_count; ++i) {
+    const qint64 base = table_ofs + static_cast<qint64>(i) * 32;
+    if (base < 0 || base + 32 > data.size()) {
+      break;
+    }
+
+    char name_raw[24]{};
+    if (!read_bytes(data, static_cast<int>(base), name_raw, 24)) {
+      continue;
+    }
+    QByteArray name(name_raw, 24);
+    const int nul = name.indexOf('\0');
+    if (nul >= 0) {
+      name.truncate(nul);
+    }
+    name = name.trimmed().toUpper();
+    if (name.isEmpty()) {
+      continue;
+    }
+
+    bool ok_ofs = false;
+    bool ok_len = false;
+    const quint32 file_ofs_u = read_u32_le(data, static_cast<int>(base + 24), &ok_ofs);
+    const quint32 file_len_u = read_u32_le(data, static_cast<int>(base + 28), &ok_len);
+    if (!ok_ofs || !ok_len) {
+      continue;
+    }
+    const BspLump lump{static_cast<int>(file_ofs_u), static_cast<int>(file_len_u)};
+    if (!lump_in_bounds(data, lump)) {
+      continue;
+    }
+    out.insert(name, lump);
+  }
+
+  return out;
 }
 
 bool parse_header(const QByteArray& data, BspHeader* out, QString* error) {
@@ -271,6 +374,27 @@ struct Q2Face {
   int lightofs = -1;
 };
 
+struct Q2DecoupledLightmap {
+  bool valid = false;
+  int width = 0;
+  int height = 0;
+  int offset = -1;
+  float world_to_lm[2][4]{};
+};
+
+enum class Q2LightSampleFormat {
+  None,
+  Gray8,
+  Rgb8,
+  HdrE5Bgr9,
+};
+
+struct Q2LightSampleSource {
+  Q2LightSampleFormat format = Q2LightSampleFormat::None;
+  BspLump lump;
+  float hdr_inv_peak = 1.0f;
+};
+
 struct Edge16 {
   quint16 v0 = 0;
   quint16 v1 = 0;
@@ -279,6 +403,7 @@ struct Edge16 {
 struct Q3Vertex {
   Vec3 pos;
   float st[2]{};
+  float lmst[2]{};
 };
 
 struct Q3Face {
@@ -716,6 +841,14 @@ QVector<Q3Vertex> parse_q3_vertices(const QByteArray& data, const BspLump& lump)
     if (!ok) {
       return out;
     }
+    v.lmst[0] = read_f32_le(data, o + 20, &ok);
+    if (!ok) {
+      return out;
+    }
+    v.lmst[1] = read_f32_le(data, o + 24, &ok);
+    if (!ok) {
+      return out;
+    }
     out.push_back(v);
   }
   return out;
@@ -800,6 +933,62 @@ QVector<Q3Face> parse_q3_faces(const QByteArray& data, const BspLump& lump) {
     if (!ok) {
       return out;
     }
+    f.lmOrigin[0] = read_f32_le(data, o + 48, &ok);
+    if (!ok) {
+      return out;
+    }
+    f.lmOrigin[1] = read_f32_le(data, o + 52, &ok);
+    if (!ok) {
+      return out;
+    }
+    f.lmOrigin[2] = read_f32_le(data, o + 56, &ok);
+    if (!ok) {
+      return out;
+    }
+    f.lmVecs[0][0] = read_f32_le(data, o + 60, &ok);
+    if (!ok) {
+      return out;
+    }
+    f.lmVecs[0][1] = read_f32_le(data, o + 64, &ok);
+    if (!ok) {
+      return out;
+    }
+    f.lmVecs[0][2] = read_f32_le(data, o + 68, &ok);
+    if (!ok) {
+      return out;
+    }
+    f.lmVecs[1][0] = read_f32_le(data, o + 72, &ok);
+    if (!ok) {
+      return out;
+    }
+    f.lmVecs[1][1] = read_f32_le(data, o + 76, &ok);
+    if (!ok) {
+      return out;
+    }
+    f.lmVecs[1][2] = read_f32_le(data, o + 80, &ok);
+    if (!ok) {
+      return out;
+    }
+    f.normal[0] = read_f32_le(data, o + 84, &ok);
+    if (!ok) {
+      return out;
+    }
+    f.normal[1] = read_f32_le(data, o + 88, &ok);
+    if (!ok) {
+      return out;
+    }
+    f.normal[2] = read_f32_le(data, o + 92, &ok);
+    if (!ok) {
+      return out;
+    }
+    f.size[0] = read_i32_le(data, o + 96, &ok);
+    if (!ok) {
+      return out;
+    }
+    f.size[1] = read_i32_le(data, o + 100, &ok);
+    if (!ok) {
+      return out;
+    }
     out.push_back(f);
   }
   return out;
@@ -826,6 +1015,46 @@ QVector<QString> parse_q3_textures(const QByteArray& data, const BspLump& lump) 
     }
     out.push_back(QString::fromLatin1(name_bytes));
   }
+  return out;
+}
+
+QVector<QImage> parse_q3_lightmaps(const QByteArray& data, const BspLump& lump) {
+  QVector<QImage> out;
+  constexpr int kLightmapDim = 128;
+  constexpr int kLightmapChannels = 3;
+  constexpr int kLightmapSize = kLightmapDim * kLightmapDim * kLightmapChannels;
+  if (lump.length < kLightmapSize || lump.offset < 0 || lump.offset >= data.size()) {
+    return out;
+  }
+
+  const int count = lump.length / kLightmapSize;
+  out.reserve(count);
+  for (int i = 0; i < count; ++i) {
+    const int base = lump.offset + i * kLightmapSize;
+    if (base < 0 || base + kLightmapSize > data.size()) {
+      break;
+    }
+
+    QImage img(kLightmapDim, kLightmapDim, QImage::Format_RGBA8888);
+    if (img.isNull()) {
+      continue;
+    }
+
+    const unsigned char* src = reinterpret_cast<const unsigned char*>(data.constData() + base);
+    for (int y = 0; y < kLightmapDim; ++y) {
+      unsigned char* dst = img.scanLine(y);
+      for (int x = 0; x < kLightmapDim; ++x) {
+        const int s = (y * kLightmapDim + x) * kLightmapChannels;
+        const int d = x * 4;
+        dst[d + 0] = src[s + 0];
+        dst[d + 1] = src[s + 1];
+        dst[d + 2] = src[s + 2];
+        dst[d + 3] = 255;
+      }
+    }
+    out.push_back(std::move(img));
+  }
+
   return out;
 }
 
@@ -860,6 +1089,434 @@ QVector<QColor> parse_q3_lightmap_colors(const QByteArray& data, const BspLump& 
   return out;
 }
 
+QVector3D unpack_e5bgr9(quint32 packed) {
+  const quint32 biased_exponent = packed >> 27;
+  const int exponent = static_cast<int>(biased_exponent) - 24;
+  const float multiplier = std::ldexp(1.0f, exponent);
+
+  const float blue = static_cast<float>((packed >> 18) & 0x1FF) * multiplier;
+  const float green = static_cast<float>((packed >> 9) & 0x1FF) * multiplier;
+  const float red = static_cast<float>(packed & 0x1FF) * multiplier;
+  return QVector3D(red, green, blue);
+}
+
+unsigned char linear_to_srgb_u8(float linear) {
+  linear = std::max(0.0f, linear);
+  const float srgb = std::pow(std::min(linear, 1.0f), 1.0f / 2.2f);
+  const int v = static_cast<int>(std::lround(srgb * 255.0f));
+  return static_cast<unsigned char>(std::clamp(v, 0, 255));
+}
+
+int q2_light_stride_bytes(Q2LightSampleFormat format) {
+  switch (format) {
+    case Q2LightSampleFormat::Gray8:
+      return 1;
+    case Q2LightSampleFormat::Rgb8:
+      return 3;
+    case Q2LightSampleFormat::HdrE5Bgr9:
+      return 4;
+    case Q2LightSampleFormat::None:
+    default:
+      break;
+  }
+  return 0;
+}
+
+Q2LightSampleSource select_q2_light_source(const QByteArray& data,
+                                           const BspHeader& header,
+                                           const QHash<QByteArray, BspLump>& bspx) {
+  Q2LightSampleSource out;
+
+  auto choose_hdr = [&](const BspLump& lump) -> bool {
+    if (!lump_in_bounds(data, lump) || lump.length < 4) {
+      return false;
+    }
+
+    float peak = 0.0f;
+    const int count = lump.length / 4;
+    for (int i = 0; i < count; ++i) {
+      bool ok = false;
+      const quint32 packed = read_u32_le(data, lump.offset + i * 4, &ok);
+      if (!ok) {
+        break;
+      }
+      const QVector3D rgb = unpack_e5bgr9(packed);
+      peak = std::max(peak, std::max(rgb.x(), std::max(rgb.y(), rgb.z())));
+    }
+
+    out.format = Q2LightSampleFormat::HdrE5Bgr9;
+    out.lump = lump;
+    out.hdr_inv_peak = (peak > 1e-6f) ? (1.0f / peak) : 1.0f;
+    return true;
+  };
+
+  if (const auto it = bspx.constFind("LIGHTING_E5BGR9"); it != bspx.constEnd()) {
+    if (choose_hdr(*it)) {
+      return out;
+    }
+  }
+
+  if (const auto it = bspx.constFind("RGBLIGHTING"); it != bspx.constEnd()) {
+    if (lump_in_bounds(data, *it) && it->length >= 3) {
+      out.format = Q2LightSampleFormat::Rgb8;
+      out.lump = *it;
+      out.hdr_inv_peak = 1.0f;
+      return out;
+    }
+  }
+
+  if (header.lumps.size() > Q2_LIGHTING) {
+    const BspLump base = header.lumps[Q2_LIGHTING];
+    if (lump_in_bounds(data, base) && base.length > 0) {
+      out.lump = base;
+      out.hdr_inv_peak = 1.0f;
+      // Quake2 stores internal lightmaps as RGB; some tools may add trailing pad bytes.
+      out.format = (base.length >= 3) ? Q2LightSampleFormat::Rgb8 : Q2LightSampleFormat::Gray8;
+    }
+  }
+
+  return out;
+}
+
+QVector<QVector<int>> parse_q2_face_styles(const QByteArray& data,
+                                           const QVector<Q2Face>& faces,
+                                           const QHash<QByteArray, BspLump>& bspx) {
+  QVector<QVector<int>> out;
+  out.resize(faces.size());
+  if (faces.isEmpty()) {
+    return out;
+  }
+
+  auto fill_default = [&]() {
+    for (int i = 0; i < faces.size(); ++i) {
+      QVector<int> styles;
+      styles.reserve(4);
+      for (int s = 0; s < 4; ++s) {
+        const int style = static_cast<int>(faces[i].styles[s]);
+        if (style == 255) {
+          break;
+        }
+        styles.push_back(style);
+      }
+      out[i] = std::move(styles);
+    }
+  };
+
+  auto parse_lmstyle16 = [&](const BspLump& lump) -> bool {
+    if (!lump_in_bounds(data, lump) || lump.length < static_cast<int>(faces.size() * 2)) {
+      return false;
+    }
+    const int entries = lump.length / 2;
+    const int styles_per_face = entries / faces.size();
+    if (styles_per_face <= 0) {
+      return false;
+    }
+    for (int i = 0; i < faces.size(); ++i) {
+      QVector<int> styles;
+      styles.reserve(styles_per_face);
+      for (int s = 0; s < styles_per_face; ++s) {
+        bool ok = false;
+        const quint16 raw = read_u16_le(data, lump.offset + (i * styles_per_face + s) * 2, &ok);
+        if (!ok || raw == 0xFFFFu) {
+          break;
+        }
+        styles.push_back(static_cast<int>(raw));
+      }
+      out[i] = std::move(styles);
+    }
+    return true;
+  };
+
+  auto parse_lmstyle8 = [&](const BspLump& lump) -> bool {
+    if (!lump_in_bounds(data, lump) || lump.length < faces.size()) {
+      return false;
+    }
+    const int entries = lump.length;
+    const int styles_per_face = entries / faces.size();
+    if (styles_per_face <= 0) {
+      return false;
+    }
+    for (int i = 0; i < faces.size(); ++i) {
+      QVector<int> styles;
+      styles.reserve(styles_per_face);
+      for (int s = 0; s < styles_per_face; ++s) {
+        const int ofs = lump.offset + (i * styles_per_face + s);
+        if (ofs < 0 || ofs >= data.size()) {
+          break;
+        }
+        const unsigned char raw = static_cast<unsigned char>(data.at(ofs));
+        if (raw == 255u) {
+          break;
+        }
+        styles.push_back(static_cast<int>(raw));
+      }
+      out[i] = std::move(styles);
+    }
+    return true;
+  };
+
+  bool parsed = false;
+  if (const auto it = bspx.constFind("LMSTYLE16"); it != bspx.constEnd()) {
+    parsed = parse_lmstyle16(*it);
+  }
+  if (!parsed) {
+    if (const auto it = bspx.constFind("LMSTYLE"); it != bspx.constEnd()) {
+      parsed = parse_lmstyle8(*it);
+    }
+  }
+  if (!parsed) {
+    fill_default();
+  }
+  return out;
+}
+
+QVector<int> parse_q2_light_offsets(const QByteArray& data,
+                                    const QVector<Q2Face>& faces,
+                                    const QHash<QByteArray, BspLump>& bspx) {
+  QVector<int> out;
+  out.reserve(faces.size());
+  for (const Q2Face& f : faces) {
+    out.push_back(f.lightofs);
+  }
+
+  if (faces.isEmpty()) {
+    return out;
+  }
+
+  const auto it = bspx.constFind("LMOFFSET");
+  if (it == bspx.constEnd()) {
+    return out;
+  }
+  const BspLump lump = *it;
+  if (!lump_in_bounds(data, lump) || lump.length < static_cast<int>(faces.size() * 4)) {
+    return out;
+  }
+
+  for (int i = 0; i < faces.size(); ++i) {
+    bool ok = false;
+    const int ofs = read_i32_le(data, lump.offset + i * 4, &ok);
+    if (ok) {
+      out[i] = ofs;
+    }
+  }
+
+  return out;
+}
+
+QVector<Q2DecoupledLightmap> parse_q2_decoupled_lightmaps(const QByteArray& data,
+                                                          const QVector<Q2Face>& faces,
+                                                          const QHash<QByteArray, BspLump>& bspx) {
+  QVector<Q2DecoupledLightmap> out;
+  out.resize(faces.size());
+  if (faces.isEmpty()) {
+    return out;
+  }
+
+  const auto it = bspx.constFind("DECOUPLED_LM");
+  if (it == bspx.constEnd()) {
+    return out;
+  }
+  const BspLump lump = *it;
+  constexpr int kStride = 40;  // uint16 w, uint16 h, int32 ofs, float[2][4]
+  if (!lump_in_bounds(data, lump) || lump.length < static_cast<int>(faces.size() * kStride)) {
+    return out;
+  }
+
+  for (int i = 0; i < faces.size(); ++i) {
+    const int base = lump.offset + i * kStride;
+    bool ok = false;
+    Q2DecoupledLightmap d{};
+    d.width = static_cast<int>(read_u16_le(data, base + 0, &ok));
+    if (!ok) {
+      continue;
+    }
+    d.height = static_cast<int>(read_u16_le(data, base + 2, &ok));
+    if (!ok) {
+      continue;
+    }
+    d.offset = read_i32_le(data, base + 4, &ok);
+    if (!ok) {
+      continue;
+    }
+    bool matrix_ok = true;
+    for (int r = 0; r < 2 && matrix_ok; ++r) {
+      for (int c = 0; c < 4; ++c) {
+        d.world_to_lm[r][c] = read_f32_le(data, base + 8 + (r * 4 + c) * 4, &ok);
+        if (!ok) {
+          matrix_ok = false;
+          break;
+        }
+      }
+    }
+    d.valid = matrix_ok && d.width > 0 && d.height > 0 && d.offset >= 0;
+    out[i] = d;
+  }
+
+  return out;
+}
+
+bool q2_resolve_style_base_offset(const Q2LightSampleSource& source,
+                                  int lightofs,
+                                  int style_slot,
+                                  int samples,
+                                  qint64* out_offset) {
+  if (!out_offset || source.format == Q2LightSampleFormat::None || source.lump.length <= 0) {
+    return false;
+  }
+  if (lightofs < 0 || style_slot < 0 || samples <= 0) {
+    return false;
+  }
+
+  const int stride = q2_light_stride_bytes(source.format);
+  if (stride <= 0) {
+    return false;
+  }
+
+  const qint64 sample_span = static_cast<qint64>(samples) * static_cast<qint64>(stride);
+  const qint64 rel_byte_offset = static_cast<qint64>(lightofs) + static_cast<qint64>(style_slot) * sample_span;
+  const qint64 rel_sample_offset = (static_cast<qint64>(lightofs) + static_cast<qint64>(style_slot) * samples) *
+                                   static_cast<qint64>(stride);
+
+  auto in_range = [&](qint64 rel) {
+    return rel >= 0 && rel + sample_span <= source.lump.length;
+  };
+
+  // Some tools encode HDR offsets in sample units, while legacy data stores byte offsets.
+  if (source.format == Q2LightSampleFormat::HdrE5Bgr9) {
+    if (in_range(rel_sample_offset)) {
+      *out_offset = static_cast<qint64>(source.lump.offset) + rel_sample_offset;
+      return true;
+    }
+    if (in_range(rel_byte_offset)) {
+      *out_offset = static_cast<qint64>(source.lump.offset) + rel_byte_offset;
+      return true;
+    }
+    return false;
+  }
+
+  if (in_range(rel_byte_offset)) {
+    *out_offset = static_cast<qint64>(source.lump.offset) + rel_byte_offset;
+    return true;
+  }
+  if (stride > 1 && in_range(rel_sample_offset)) {
+    *out_offset = static_cast<qint64>(source.lump.offset) + rel_sample_offset;
+    return true;
+  }
+  return false;
+}
+
+bool q2_read_light_rgb(const QByteArray& data,
+                       const Q2LightSampleSource& source,
+                       qint64 style_base_offset,
+                       int sample_index,
+                       unsigned char* r,
+                       unsigned char* g,
+                       unsigned char* b) {
+  if (!r || !g || !b || sample_index < 0 || style_base_offset < 0) {
+    return false;
+  }
+  const int stride = q2_light_stride_bytes(source.format);
+  if (stride <= 0) {
+    return false;
+  }
+  const qint64 ofs = style_base_offset + static_cast<qint64>(sample_index) * stride;
+  if (ofs < 0 || ofs + stride > data.size()) {
+    return false;
+  }
+
+  switch (source.format) {
+    case Q2LightSampleFormat::Gray8: {
+      const unsigned char v = static_cast<unsigned char>(data.at(static_cast<int>(ofs)));
+      *r = v;
+      *g = v;
+      *b = v;
+      return true;
+    }
+    case Q2LightSampleFormat::Rgb8: {
+      const unsigned char* p = reinterpret_cast<const unsigned char*>(data.constData() + ofs);
+      *r = p[0];
+      *g = p[1];
+      *b = p[2];
+      return true;
+    }
+    case Q2LightSampleFormat::HdrE5Bgr9: {
+      bool ok = false;
+      const quint32 packed = read_u32_le(data, static_cast<int>(ofs), &ok);
+      if (!ok) {
+        return false;
+      }
+      const QVector3D linear = unpack_e5bgr9(packed) * source.hdr_inv_peak;
+      *r = linear_to_srgb_u8(linear.x());
+      *g = linear_to_srgb_u8(linear.y());
+      *b = linear_to_srgb_u8(linear.z());
+      return true;
+    }
+    case Q2LightSampleFormat::None:
+    default:
+      break;
+  }
+  return false;
+}
+
+struct PatchSample {
+  QVector3D pos;
+  QVector2D st;
+  QVector2D lmst;
+};
+
+template <typename T>
+T bezier3(const T& p0, const T& p1, const T& p2, float t) {
+  const float it = 1.0f - t;
+  return p0 * (it * it) + p1 * (2.0f * it * t) + p2 * (t * t);
+}
+
+PatchSample evaluate_patch_sample(const Q3Vertex (&ctrl)[3][3], float u, float v) {
+  QVector3D pos_rows[3];
+  QVector2D st_rows[3];
+  QVector2D lm_rows[3];
+  for (int r = 0; r < 3; ++r) {
+    const QVector3D p0(ctrl[r][0].pos.x, ctrl[r][0].pos.y, ctrl[r][0].pos.z);
+    const QVector3D p1(ctrl[r][1].pos.x, ctrl[r][1].pos.y, ctrl[r][1].pos.z);
+    const QVector3D p2(ctrl[r][2].pos.x, ctrl[r][2].pos.y, ctrl[r][2].pos.z);
+    pos_rows[r] = bezier3(p0, p1, p2, u);
+    st_rows[r] = bezier3(QVector2D(ctrl[r][0].st[0], ctrl[r][0].st[1]),
+                         QVector2D(ctrl[r][1].st[0], ctrl[r][1].st[1]),
+                         QVector2D(ctrl[r][2].st[0], ctrl[r][2].st[1]),
+                         u);
+    lm_rows[r] = bezier3(QVector2D(ctrl[r][0].lmst[0], ctrl[r][0].lmst[1]),
+                         QVector2D(ctrl[r][1].lmst[0], ctrl[r][1].lmst[1]),
+                         QVector2D(ctrl[r][2].lmst[0], ctrl[r][2].lmst[1]),
+                         u);
+  }
+
+  PatchSample out;
+  out.pos = bezier3(pos_rows[0], pos_rows[1], pos_rows[2], v);
+  out.st = bezier3(st_rows[0], st_rows[1], st_rows[2], v);
+  out.lmst = bezier3(lm_rows[0], lm_rows[1], lm_rows[2], v);
+  return out;
+}
+
+int patch_subdivisions(const Q3Vertex (&ctrl)[3][3]) {
+  float max_len = 0.0f;
+  auto dist = [&](int x0, int y0, int x1, int y1) {
+    const QVector3D a(ctrl[y0][x0].pos.x, ctrl[y0][x0].pos.y, ctrl[y0][x0].pos.z);
+    const QVector3D b(ctrl[y1][x1].pos.x, ctrl[y1][x1].pos.y, ctrl[y1][x1].pos.z);
+    max_len = std::max(max_len, (b - a).length());
+  };
+
+  for (int y = 0; y < 3; ++y) {
+    dist(0, y, 1, y);
+    dist(1, y, 2, y);
+  }
+  for (int x = 0; x < 3; ++x) {
+    dist(x, 0, x, 1);
+    dist(x, 1, x, 2);
+  }
+
+  const int adaptive = 4 + static_cast<int>(max_len / 96.0f);
+  return std::clamp(adaptive, 6, 20);
+}
+
 void append_tri(QVector<Tri>& tris,
                 const Vec3& a,
                 const Vec3& b,
@@ -869,7 +1526,11 @@ void append_tri(QVector<Tri>& tris,
                 const QVector2D& uc,
                 const QColor& color,
                 const QString& texture,
-                bool uv_normalized) {
+                bool uv_normalized,
+                const QVector2D& lma = QVector2D(0.0f, 0.0f),
+                const QVector2D& lmb = QVector2D(0.0f, 0.0f),
+                const QVector2D& lmc = QVector2D(0.0f, 0.0f),
+                int lightmap_index = -1) {
   Tri t;
   t.a = QVector3D(a.x, a.y, a.z);
   t.b = QVector3D(b.x, b.y, b.z);
@@ -877,6 +1538,10 @@ void append_tri(QVector<Tri>& tris,
   t.ua = ua;
   t.ub = ub;
   t.uc = uc;
+  t.lma = lma;
+  t.lmb = lmb;
+  t.lmc = lmc;
+  t.lightmap_index = lightmap_index;
   t.color = color;
   t.texture = texture;
   t.uv_normalized = uv_normalized;
@@ -892,7 +1557,11 @@ void append_tri(QVector<Tri>& tris,
                 const QVector2D& uc,
                 const QColor& color,
                 const QString& texture,
-                bool uv_normalized) {
+                bool uv_normalized,
+                const QVector2D& lma = QVector2D(0.0f, 0.0f),
+                const QVector2D& lmb = QVector2D(0.0f, 0.0f),
+                const QVector2D& lmc = QVector2D(0.0f, 0.0f),
+                int lightmap_index = -1) {
   Tri t;
   t.a = a;
   t.b = b;
@@ -900,6 +1569,10 @@ void append_tri(QVector<Tri>& tris,
   t.ua = ua;
   t.ub = ub;
   t.uc = uc;
+  t.lma = lma;
+  t.lmb = lmb;
+  t.lmc = lmc;
+  t.lightmap_index = lightmap_index;
   t.color = color;
   t.texture = texture;
   t.uv_normalized = uv_normalized;
@@ -1020,7 +1693,8 @@ bool build_mesh_from_tris(const QVector<Tri>& tris, BspMesh* out) {
   for (const Tri& t : tris) {
     if (!has_surface ||
         current_surface.texture != t.texture ||
-        current_surface.uv_normalized != t.uv_normalized) {
+        current_surface.uv_normalized != t.uv_normalized ||
+        current_surface.lightmap_index != t.lightmap_index) {
       if (has_surface) {
         out->surfaces.push_back(current_surface);
       }
@@ -1029,6 +1703,7 @@ bool build_mesh_from_tris(const QVector<Tri>& tris, BspMesh* out) {
       current_surface.index_count = 0;
       current_surface.texture = t.texture;
       current_surface.uv_normalized = t.uv_normalized;
+      current_surface.lightmap_index = t.lightmap_index;
       has_surface = true;
     }
 
@@ -1042,12 +1717,13 @@ bool build_mesh_from_tris(const QVector<Tri>& tris, BspMesh* out) {
     n /= len;
 
     const int base = out->vertices.size();
-    const auto add_vert = [&](const QVector3D& p, const QVector2D& uv) {
+    const auto add_vert = [&](const QVector3D& p, const QVector2D& uv, const QVector2D& lm_uv) {
       BspMeshVertex v;
       v.pos = p;
       v.normal = n;
       v.color = t.color;
       v.uv = uv;
+      v.lightmap_uv = lm_uv;
       out->vertices.push_back(v);
       out->mins.setX(qMin(out->mins.x(), p.x()));
       out->mins.setY(qMin(out->mins.y(), p.y()));
@@ -1057,9 +1733,9 @@ bool build_mesh_from_tris(const QVector<Tri>& tris, BspMesh* out) {
       out->maxs.setZ(qMax(out->maxs.z(), p.z()));
     };
 
-    add_vert(t.a, t.ua);
-    add_vert(t.b, t.ub);
-    add_vert(t.c, t.uc);
+    add_vert(t.a, t.ua, t.lma);
+    add_vert(t.b, t.ub, t.lmb);
+    add_vert(t.c, t.uc, t.lmc);
 
     out->indices.push_back(static_cast<std::uint32_t>(base + 0));
     out->indices.push_back(static_cast<std::uint32_t>(base + 1));
@@ -1168,7 +1844,11 @@ QVector<Tri> build_q1_mesh(const QByteArray& data, const BspHeader& header, bool
   return tris;
 }
 
-QVector<Tri> build_q2_mesh(const QByteArray& data, const BspHeader& header, bool lightmapped, QString* error) {
+QVector<Tri> build_q2_mesh(const QByteArray& data,
+                           const BspHeader& header,
+                           bool lightmapped,
+                           QString* error,
+                           QVector<QImage>* out_lightmaps = nullptr) {
   QVector<Tri> tris;
   if (header.lumps.size() < kQ2LumpCount) {
     if (error) {
@@ -1176,13 +1856,23 @@ QVector<Tri> build_q2_mesh(const QByteArray& data, const BspHeader& header, bool
     }
     return tris;
   }
+  if (out_lightmaps) {
+    out_lightmaps->clear();
+  }
 
   const QVector<Vec3> verts = parse_q1_vertices(data, header.lumps[Q2_VERTICES]);
   const QVector<Edge16> edges = parse_q1_edges(data, header.lumps[Q2_EDGES]);
   const QVector<int> surfedges = parse_surfedges(data, header.lumps[Q2_SURFEDGES]);
   const QVector<Q2TexInfo> texinfo = parse_q2_texinfo(data, header.lumps[Q2_TEXINFO]);
   const QVector<Q2Face> faces = parse_q2_faces(data, header.lumps[Q2_FACES]);
-  const QByteArray lightdata = data.mid(header.lumps[Q2_LIGHTING].offset, header.lumps[Q2_LIGHTING].length);
+  const QByteArray base_lightdata = lump_in_bounds(data, header.lumps[Q2_LIGHTING])
+                                      ? data.mid(header.lumps[Q2_LIGHTING].offset, header.lumps[Q2_LIGHTING].length)
+                                      : QByteArray();
+  const QHash<QByteArray, BspLump> bspx = parse_bspx_lumps(data, header);
+  const Q2LightSampleSource light_source = select_q2_light_source(data, header, bspx);
+  const QVector<QVector<int>> face_styles = parse_q2_face_styles(data, faces, bspx);
+  const QVector<int> face_lightofs = parse_q2_light_offsets(data, faces, bspx);
+  const QVector<Q2DecoupledLightmap> decoupled = parse_q2_decoupled_lightmaps(data, faces, bspx);
 
   if (verts.isEmpty() || faces.isEmpty() || edges.isEmpty() || surfedges.isEmpty()) {
     if (error) {
@@ -1194,7 +1884,8 @@ QVector<Tri> build_q2_mesh(const QByteArray& data, const BspHeader& header, bool
   tris.reserve(faces.size() * 2);
   constexpr int SURF_NODRAW = 0x80;
 
-  for (const Q2Face& f : faces) {
+  for (int face_index = 0; face_index < faces.size(); ++face_index) {
+    const Q2Face& f = faces[face_index];
     if (f.texinfo < 0 || f.texinfo >= texinfo.size()) {
       continue;
     }
@@ -1213,8 +1904,16 @@ QVector<Tri> build_q2_mesh(const QByteArray& data, const BspHeader& header, bool
 
     QVector<Vec3> poly;
     QVector<QVector2D> poly_uv;
+    QVector<QVector2D> poly_decoupled_lm;
     poly.reserve(f.numedges);
     poly_uv.reserve(f.numedges);
+    poly_decoupled_lm.reserve(f.numedges);
+
+    const bool has_decoupled = (face_index >= 0 &&
+                                face_index < decoupled.size() &&
+                                decoupled[face_index].valid);
+    const Q2DecoupledLightmap* decoupled_lm = has_decoupled ? &decoupled[face_index] : nullptr;
+
     for (int i = 0; i < f.numedges; ++i) {
       const int se = surfedges[f.firstedge + i];
       const int edge_index = (se >= 0) ? se : -se;
@@ -1237,6 +1936,17 @@ QVector<Tri> build_q2_mesh(const QByteArray& data, const BspHeader& header, bool
                       + tx.vecs[1][3];
       poly.push_back(v);
       poly_uv.push_back(QVector2D(s, t));
+      if (decoupled_lm) {
+        const float ls = v.x * decoupled_lm->world_to_lm[0][0] +
+                         v.y * decoupled_lm->world_to_lm[0][1] +
+                         v.z * decoupled_lm->world_to_lm[0][2] +
+                         decoupled_lm->world_to_lm[0][3];
+        const float lt = v.x * decoupled_lm->world_to_lm[1][0] +
+                         v.y * decoupled_lm->world_to_lm[1][1] +
+                         v.z * decoupled_lm->world_to_lm[1][2] +
+                         decoupled_lm->world_to_lm[1][3];
+        poly_decoupled_lm.push_back(QVector2D(ls, lt));
+      }
     }
     if (poly.size() < 3 || poly_uv.size() != poly.size()) {
       continue;
@@ -1253,11 +1963,127 @@ QVector<Tri> build_q2_mesh(const QByteArray& data, const BspHeader& header, bool
     q1f.lightofs = f.lightofs;
 
     float light = 0.7f;
-    if (lightmapped) {
-      light = average_light_q1q2(verts, edges, surfedges, tmp, q1f, lightdata);
+    if (lightmapped && !base_lightdata.isEmpty()) {
+      light = average_light_q1q2(verts, edges, surfedges, tmp, q1f, base_lightdata);
     }
     const int shade = static_cast<int>(qBound(40.0f, 40.0f + light * 180.0f, 240.0f));
-    const QColor color(shade, shade, shade, 220);
+    QColor color(shade, shade, shade, 220);
+
+    int lightmap_index = -1;
+    QVector<QVector2D> poly_lm_uv(poly_uv.size(), QVector2D(0.0f, 0.0f));
+
+    if (lightmapped && !poly_uv.isEmpty() && light_source.format != Q2LightSampleFormat::None) {
+      int lm_w = 0;
+      int lm_h = 0;
+      int lm_lightofs = (face_index >= 0 && face_index < face_lightofs.size()) ? face_lightofs[face_index] : f.lightofs;
+      QVector<QVector2D> lm_coord(poly_uv.size(), QVector2D(0.0f, 0.0f));
+
+      if (decoupled_lm && poly_decoupled_lm.size() == poly_uv.size()) {
+        lm_w = decoupled_lm->width;
+        lm_h = decoupled_lm->height;
+        lm_lightofs = decoupled_lm->offset;
+        lm_coord = poly_decoupled_lm;
+      } else {
+        float min_s = poly_uv[0].x();
+        float max_s = min_s;
+        float min_t = poly_uv[0].y();
+        float max_t = min_t;
+        for (int i = 1; i < poly_uv.size(); ++i) {
+          const QVector2D uv = poly_uv[i];
+          min_s = std::min(min_s, uv.x());
+          max_s = std::max(max_s, uv.x());
+          min_t = std::min(min_t, uv.y());
+          max_t = std::max(max_t, uv.y());
+        }
+
+        const int smin = static_cast<int>(std::floor(min_s / 16.0f));
+        const int smax = static_cast<int>(std::ceil(max_s / 16.0f));
+        const int tmin = static_cast<int>(std::floor(min_t / 16.0f));
+        const int tmax = static_cast<int>(std::ceil(max_t / 16.0f));
+        lm_w = smax - smin + 1;
+        lm_h = tmax - tmin + 1;
+
+        for (int i = 0; i < poly_uv.size(); ++i) {
+          const float ls = poly_uv[i].x() / 16.0f - static_cast<float>(smin);
+          const float lt = poly_uv[i].y() / 16.0f - static_cast<float>(tmin);
+          lm_coord[i] = QVector2D(ls, lt);
+        }
+      }
+
+      if (lm_w > 0 && lm_h > 0 && lm_lightofs >= 0) {
+        const int samples = lm_w * lm_h;
+        const QVector<int>& styles = (face_index >= 0 && face_index < face_styles.size())
+                                       ? face_styles[face_index]
+                                       : QVector<int>();
+        int style_slot = -1;
+        for (int i = 0; i < styles.size(); ++i) {
+          if (styles[i] >= 0) {
+            style_slot = i;
+            break;
+          }
+        }
+
+        qint64 style_base = -1;
+        if (style_slot >= 0 &&
+            q2_resolve_style_base_offset(light_source, lm_lightofs, style_slot, samples, &style_base)) {
+          qint64 sum_r = 0;
+          qint64 sum_g = 0;
+          qint64 sum_b = 0;
+          int valid_samples = 0;
+
+          QImage lm_img;
+          if (out_lightmaps) {
+            lm_img = QImage(lm_w, lm_h, QImage::Format_RGBA8888);
+            if (!lm_img.isNull()) {
+              lm_img.fill(Qt::black);
+            }
+          }
+
+          for (int y = 0; y < lm_h; ++y) {
+            unsigned char* dst = lm_img.isNull() ? nullptr : lm_img.scanLine(y);
+            for (int x = 0; x < lm_w; ++x) {
+              const int sample_index = y * lm_w + x;
+              unsigned char r = 0;
+              unsigned char g = 0;
+              unsigned char b = 0;
+              if (!q2_read_light_rgb(data, light_source, style_base, sample_index, &r, &g, &b)) {
+                continue;
+              }
+
+              sum_r += r;
+              sum_g += g;
+              sum_b += b;
+              ++valid_samples;
+
+              if (dst) {
+                const int d = x * 4;
+                dst[d + 0] = r;
+                dst[d + 1] = g;
+                dst[d + 2] = b;
+                dst[d + 3] = 255;
+              }
+            }
+          }
+
+          if (valid_samples > 0) {
+            color = QColor(static_cast<int>(sum_r / valid_samples),
+                           static_cast<int>(sum_g / valid_samples),
+                           static_cast<int>(sum_b / valid_samples),
+                           220);
+            if (out_lightmaps && !lm_img.isNull()) {
+              lightmap_index = out_lightmaps->size();
+              out_lightmaps->push_back(std::move(lm_img));
+            }
+          }
+
+          for (int i = 0; i < lm_coord.size(); ++i) {
+            const float u = (lm_coord[i].x() + 0.5f) / static_cast<float>(lm_w);
+            const float v = (lm_coord[i].y() + 0.5f) / static_cast<float>(lm_h);
+            poly_lm_uv[i] = QVector2D(std::clamp(u, 0.0f, 1.0f), std::clamp(v, 0.0f, 1.0f));
+          }
+        }
+      }
+    }
 
     const Vec3& v0 = poly[0];
     const QVector2D& uv0 = poly_uv[0];
@@ -1265,13 +2091,23 @@ QVector<Tri> build_q2_mesh(const QByteArray& data, const BspHeader& header, bool
       append_tri(tris,
                  v0, poly[i], poly[i + 1],
                  uv0, poly_uv[i], poly_uv[i + 1],
-                 color, tex_name, false);
+                 color,
+                 tex_name,
+                 false,
+                 poly_lm_uv[0],
+                 poly_lm_uv[i],
+                 poly_lm_uv[i + 1],
+                 lightmap_index);
     }
   }
   return tris;
 }
 
-QVector<Tri> build_q3_mesh(const QByteArray& data, const BspHeader& header, bool lightmapped, QString* error) {
+QVector<Tri> build_q3_mesh(const QByteArray& data,
+                           const BspHeader& header,
+                           bool lightmapped,
+                           QString* error,
+                           QVector<QImage>* out_lightmaps = nullptr) {
   QVector<Tri> tris;
   if (header.lumps.size() < kQ3LumpCount) {
     if (error) {
@@ -1285,6 +2121,12 @@ QVector<Tri> build_q3_mesh(const QByteArray& data, const BspHeader& header, bool
   const QVector<Q3Face> faces = parse_q3_faces(data, header.lumps[Q3_FACES]);
   const QVector<QString> shaders = parse_q3_textures(data, header.lumps[Q3_TEXTURES]);
   const QVector<QColor> lightmap_colors = parse_q3_lightmap_colors(data, header.lumps[Q3_LIGHTMAPS]);
+  if (out_lightmaps) {
+    out_lightmaps->clear();
+    if (lightmapped) {
+      *out_lightmaps = parse_q3_lightmaps(data, header.lumps[Q3_LIGHTMAPS]);
+    }
+  }
 
   if (verts.isEmpty() || faces.isEmpty()) {
     if (error) {
@@ -1326,6 +2168,7 @@ QVector<Tri> build_q3_mesh(const QByteArray& data, const BspHeader& header, bool
     if (f.shader >= 0 && f.shader < shaders.size()) {
       shader_name = shaders[f.shader];
     }
+    const int lightmap_index = lightmapped ? f.lmIndex : -1;
 
     if (f.type == 1 || f.type == 3) {
       if (f.firstVert < 0 || f.numVerts <= 0 || f.firstVert + f.numVerts > verts.size()) {
@@ -1348,7 +2191,13 @@ QVector<Tri> build_q3_mesh(const QByteArray& data, const BspHeader& header, bool
                    QVector2D(verts[a].st[0], verts[a].st[1]),
                    QVector2D(verts[b].st[0], verts[b].st[1]),
                    QVector2D(verts[c].st[0], verts[c].st[1]),
-                   color, shader_name, true);
+                   color,
+                   shader_name,
+                   true,
+                   QVector2D(verts[a].lmst[0], verts[a].lmst[1]),
+                   QVector2D(verts[b].lmst[0], verts[b].lmst[1]),
+                   QVector2D(verts[c].lmst[0], verts[c].lmst[1]),
+                   lightmap_index);
       }
     } else if (f.type == 2) {
       if (f.firstVert < 0 || f.numVerts <= 0 || f.firstVert + f.numVerts > verts.size()) {
@@ -1356,34 +2205,83 @@ QVector<Tri> build_q3_mesh(const QByteArray& data, const BspHeader& header, bool
       }
       const int w = f.size[0];
       const int h = f.size[1];
-      if (w <= 1 || h <= 1) {
+      if (w < 3 || h < 3) {
         continue;
       }
-      for (int y = 0; y + 1 < h; ++y) {
-        for (int x = 0; x + 1 < w; ++x) {
-          const int idx0 = f.firstVert + y * w + x;
-          const int idx1 = idx0 + 1;
-          const int idx2 = idx0 + w;
-          const int idx3 = idx2 + 1;
-          if (idx3 >= verts.size()) {
+
+      for (int py = 0; py + 2 < h; py += 2) {
+        for (int px = 0; px + 2 < w; px += 2) {
+          Q3Vertex ctrl[3][3];
+          bool patch_valid = true;
+          for (int cy = 0; cy < 3 && patch_valid; ++cy) {
+            for (int cx = 0; cx < 3; ++cx) {
+              const int local_idx = (py + cy) * w + (px + cx);
+              if (local_idx < 0 || local_idx >= f.numVerts) {
+                patch_valid = false;
+                break;
+              }
+              const int vi = f.firstVert + local_idx;
+              if (vi < 0 || vi >= verts.size()) {
+                patch_valid = false;
+                break;
+              }
+              ctrl[cy][cx] = verts[vi];
+            }
+          }
+          if (!patch_valid) {
             continue;
           }
-          append_tri(tris,
-                     QVector3D(verts[idx0].pos.x, verts[idx0].pos.y, verts[idx0].pos.z),
-                     QVector3D(verts[idx1].pos.x, verts[idx1].pos.y, verts[idx1].pos.z),
-                     QVector3D(verts[idx2].pos.x, verts[idx2].pos.y, verts[idx2].pos.z),
-                     QVector2D(verts[idx0].st[0], verts[idx0].st[1]),
-                     QVector2D(verts[idx1].st[0], verts[idx1].st[1]),
-                     QVector2D(verts[idx2].st[0], verts[idx2].st[1]),
-                     color, shader_name, true);
-          append_tri(tris,
-                     QVector3D(verts[idx1].pos.x, verts[idx1].pos.y, verts[idx1].pos.z),
-                     QVector3D(verts[idx3].pos.x, verts[idx3].pos.y, verts[idx3].pos.z),
-                     QVector3D(verts[idx2].pos.x, verts[idx2].pos.y, verts[idx2].pos.z),
-                     QVector2D(verts[idx1].st[0], verts[idx1].st[1]),
-                     QVector2D(verts[idx3].st[0], verts[idx3].st[1]),
-                     QVector2D(verts[idx2].st[0], verts[idx2].st[1]),
-                     color, shader_name, true);
+
+          const int subdiv = patch_subdivisions(ctrl);
+          const int stride = subdiv + 1;
+          QVector<PatchSample> patch_verts;
+          patch_verts.resize(stride * stride);
+
+          for (int y = 0; y <= subdiv; ++y) {
+            const float v = static_cast<float>(y) / static_cast<float>(subdiv);
+            for (int x = 0; x <= subdiv; ++x) {
+              const float u = static_cast<float>(x) / static_cast<float>(subdiv);
+              patch_verts[y * stride + x] = evaluate_patch_sample(ctrl, u, v);
+            }
+          }
+
+          for (int y = 0; y < subdiv; ++y) {
+            for (int x = 0; x < subdiv; ++x) {
+              const PatchSample& p00 = patch_verts[y * stride + x];
+              const PatchSample& p10 = patch_verts[y * stride + (x + 1)];
+              const PatchSample& p01 = patch_verts[(y + 1) * stride + x];
+              const PatchSample& p11 = patch_verts[(y + 1) * stride + (x + 1)];
+
+              append_tri(tris,
+                         p00.pos,
+                         p10.pos,
+                         p01.pos,
+                         p00.st,
+                         p10.st,
+                         p01.st,
+                         color,
+                         shader_name,
+                         true,
+                         p00.lmst,
+                         p10.lmst,
+                         p01.lmst,
+                         lightmap_index);
+              append_tri(tris,
+                         p10.pos,
+                         p11.pos,
+                         p01.pos,
+                         p10.st,
+                         p11.st,
+                         p01.st,
+                         color,
+                         shader_name,
+                         true,
+                         p10.lmst,
+                         p11.lmst,
+                         p01.lmst,
+                         lightmap_index);
+            }
+          }
         }
       }
     }
@@ -1478,6 +2376,8 @@ bool load_bsp_mesh_bytes(const QByteArray& bytes,
 
   out->vertices.clear();
   out->indices.clear();
+  out->surfaces.clear();
+  out->lightmaps.clear();
   out->mins = QVector3D(0, 0, 0);
   out->maxs = QVector3D(0, 0, 0);
 
@@ -1507,9 +2407,9 @@ bool load_bsp_mesh_bytes(const QByteArray& bytes,
   if (header.version == kQ1Version) {
     tris = build_q1_mesh(bytes, header, use_lightmap, error);
   } else if (header.version == kQ2Version) {
-    tris = build_q2_mesh(bytes, header, use_lightmap, error);
+    tris = build_q2_mesh(bytes, header, use_lightmap, error, &out->lightmaps);
   } else if (header.version == kQ3Version || header.version == kQLVersion) {
-    tris = build_q3_mesh(bytes, header, use_lightmap, error);
+    tris = build_q3_mesh(bytes, header, use_lightmap, error, &out->lightmaps);
   } else {
     if (error) {
       *error = QString("Unsupported BSP version: %1").arg(header.version);

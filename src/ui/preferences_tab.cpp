@@ -9,6 +9,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
+#include <QSlider>
 #include <QVBoxLayout>
 
 #include "platform/file_associations.h"
@@ -154,6 +155,32 @@ void PreferencesTab::build_ui() {
   model_texture_smoothing_ = new QCheckBox("Texture smoothing (bilinear filtering)", model_card);
   model_layout->addWidget(model_texture_smoothing_);
 
+  auto* fov_row = new QWidget(model_card);
+  auto* fov_layout = new QHBoxLayout(fov_row);
+  fov_layout->setContentsMargins(0, 0, 0, 0);
+  fov_layout->setSpacing(8);
+
+  auto* fov_label = new QLabel("3D FOV", fov_row);
+  fov_label->setStyleSheet("color: rgba(190, 190, 190, 220);");
+  fov_layout->addWidget(fov_label);
+
+  preview_fov_slider_ = new QSlider(Qt::Horizontal, fov_row);
+  preview_fov_slider_->setRange(40, 120);
+  preview_fov_slider_->setSingleStep(1);
+  preview_fov_slider_->setPageStep(5);
+  preview_fov_slider_->setTickInterval(10);
+  preview_fov_slider_->setTickPosition(QSlider::TicksBelow);
+  preview_fov_slider_->setValue(100);
+  preview_fov_slider_->setToolTip("Field of view for 3D BSP/model viewers.");
+  fov_layout->addWidget(preview_fov_slider_, 1);
+
+  preview_fov_value_label_ = new QLabel("100°", fov_row);
+  preview_fov_value_label_->setMinimumWidth(52);
+  preview_fov_value_label_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+  fov_layout->addWidget(preview_fov_value_label_);
+
+  model_layout->addWidget(fov_row);
+
   model_layout->addStretch();
   layout->addWidget(model_card);
 
@@ -247,6 +274,17 @@ void PreferencesTab::build_ui() {
       emit model_texture_smoothing_changed(checked);
     });
   }
+  if (preview_fov_slider_) {
+    connect(preview_fov_slider_, &QSlider::valueChanged, this, [this](int value) {
+      const int clamped = qBound(40, value, 120);
+      if (preview_fov_value_label_) {
+        preview_fov_value_label_->setText(QString("%1°").arg(clamped));
+      }
+      QSettings s;
+      s.setValue("preview/3d/fov", clamped);
+      emit preview_fov_changed(clamped);
+    });
+  }
   if (image_texture_smoothing_) {
     connect(image_texture_smoothing_, &QCheckBox::toggled, this, [this](bool checked) {
       QSettings s;
@@ -294,6 +332,16 @@ void PreferencesTab::load_settings() {
     model_texture_smoothing_->blockSignals(true);
     model_texture_smoothing_->setChecked(smooth);
     model_texture_smoothing_->blockSignals(false);
+  }
+  if (preview_fov_slider_) {
+    QSettings s;
+    const int fov = qBound(40, s.value("preview/3d/fov", 100).toInt(), 120);
+    preview_fov_slider_->blockSignals(true);
+    preview_fov_slider_->setValue(fov);
+    preview_fov_slider_->blockSignals(false);
+    if (preview_fov_value_label_) {
+      preview_fov_value_label_->setText(QString("%1°").arg(fov));
+    }
   }
   if (renderer_combo_) {
     const QString renderer_key = preview_renderer_to_string(load_preview_renderer());

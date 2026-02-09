@@ -27,6 +27,97 @@ QVector3D spherical_dir(float yaw_deg, float pitch_deg) {
 	return QVector3D(cp * cy, cp * sy, sp);
 }
 
+constexpr float kOrbitSensitivityDegPerPixel = 0.45f;
+
+float orbit_min_distance(float radius) {
+	return std::max(0.01f, radius * 0.001f);
+}
+
+float orbit_max_distance(float radius) {
+	const float min_dist = orbit_min_distance(radius);
+	return std::max(min_dist * 2.0f, std::max(radius, 1.0f) * 500.0f);
+}
+
+QVector3D safe_right_from_forward(const QVector3D& forward) {
+	QVector3D right = QVector3D::crossProduct(forward, QVector3D(0.0f, 0.0f, 1.0f));
+	if (right.lengthSquared() < 1e-6f) {
+		right = QVector3D(1.0f, 0.0f, 0.0f);
+	} else {
+		right.normalize();
+	}
+	return right;
+}
+
+float fit_distance_for_aabb(const QVector3D& half_extents,
+							const QVector3D& view_forward,
+							float aspect,
+							float fov_y_deg) {
+	constexpr float kPi = 3.14159265358979323846f;
+	const QVector3D safe_half(std::max(half_extents.x(), 0.001f),
+							  std::max(half_extents.y(), 0.001f),
+							  std::max(half_extents.z(), 0.001f));
+	const float safe_aspect = std::max(aspect, 0.01f);
+	const float fov_y = fov_y_deg * kPi / 180.0f;
+	const float tan_half_y = std::tan(fov_y * 0.5f);
+	const float tan_half_x = std::max(0.001f, tan_half_y * safe_aspect);
+	const float safe_tan_half_y = std::max(0.001f, tan_half_y);
+
+	const QVector3D fwd = view_forward.normalized();
+	const QVector3D right = safe_right_from_forward(fwd);
+	const QVector3D up = QVector3D::crossProduct(right, fwd).normalized();
+
+	const auto projected_radius = [&](const QVector3D& axis) -> float {
+		return std::abs(axis.x()) * safe_half.x() +
+			   std::abs(axis.y()) * safe_half.y() +
+			   std::abs(axis.z()) * safe_half.z();
+	};
+
+	const float radius_x = projected_radius(right);
+	const float radius_y = projected_radius(up);
+	const float radius_z = projected_radius(fwd);
+	const float dist_x = radius_x / tan_half_x;
+	const float dist_y = radius_y / safe_tan_half_y;
+	return radius_z + std::max(dist_x, dist_y);
+}
+
+void apply_orbit_zoom(float factor,
+					  float min_dist,
+					  float max_dist,
+					  float* distance,
+					  QVector3D* center,
+					  float yaw_deg,
+					  float pitch_deg) {
+	if (!distance || !center) {
+		return;
+	}
+	const float safe_factor = std::clamp(factor, 0.01f, 100.0f);
+	const float target_distance = (*distance) * safe_factor;
+	if (target_distance < min_dist) {
+		const float push = min_dist - target_distance;
+		if (push > 0.0f) {
+			const QVector3D forward = (-spherical_dir(yaw_deg, pitch_deg)).normalized();
+			*center += forward * push;
+		}
+		*distance = min_dist;
+		return;
+	}
+	*distance = std::clamp(target_distance, min_dist, max_dist);
+}
+
+float quantized_grid_scale(float reference_distance) {
+	const float target = std::max(reference_distance / 16.0f, 1.0f);
+	const float exponent = std::floor(std::log10(target));
+	const float base = std::pow(10.0f, exponent);
+	const float n = target / std::max(base, 1e-6f);
+	float step = base;
+	if (n >= 5.0f) {
+		step = 5.0f * base;
+	} else if (n >= 2.0f) {
+		step = 2.0f * base;
+	}
+	return std::max(step, 1.0f);
+}
+
 QShader load_shader(const QString& path) {
 	QFile f(path);
 	if (!f.open(QIODevice::ReadOnly)) {
@@ -53,11 +144,12 @@ BspPreviewVulkanWidget::BspPreviewVulkanWidget(QWidget* parent) : QRhiWidget(par
 	setFocusPolicy(Qt::StrongFocus);
 	setToolTip(
 		"3D Controls:\n"
-		"- Orbit: Left-drag\n"
-		"- Pan: Shift+Left-drag / Middle-drag / Right-drag\n"
+		"- Orbit: Middle-drag (Alt+Left-drag)\n"
+		"- Pan: Shift+Middle-drag (Alt+Shift+Left-drag)\n"
+		"- Dolly: Ctrl+Middle-drag (Alt+Ctrl+Left-drag)\n"
 		"- Zoom: Mouse wheel\n"
 		"- Frame: F\n"
-		"- Reset: R");
+		"- Reset: R / Home");
 }
 
 BspPreviewVulkanWidget::~BspPreviewVulkanWidget() {
@@ -84,12 +176,14 @@ void BspPreviewVulkanWidget::set_mesh(BspMesh mesh, QHash<QString, QImage> textu
 		ds.index_count = s.index_count;
 		ds.texture = s.texture;
 		ds.uv_normalized = s.uv_normalized;
+		ds.lightmap_index = s.lightmap_index;
 		surfaces_.push_back(std::move(ds));
 	}
 
 	pending_upload_ = has_mesh_;
 	pending_texture_upload_ = has_mesh_;
 	reset_camera_from_mesh();
+	camera_fit_pending_ = has_mesh_;
 	update();
 }
 
@@ -140,8 +234,44 @@ void BspPreviewVulkanWidget::set_textured_enabled(bool enabled) {
 	update();
 }
 
+void BspPreviewVulkanWidget::set_fov_degrees(int degrees) {
+	const float clamped = std::clamp(static_cast<float>(degrees), 40.0f, 120.0f);
+	if (std::abs(clamped - fov_y_deg_) < 0.001f) {
+		return;
+	}
+	fov_y_deg_ = clamped;
+	pending_ground_upload_ = true;
+	uniform_dirty_ = true;
+	update();
+}
+
+PreviewCameraState BspPreviewVulkanWidget::camera_state() const {
+	PreviewCameraState state;
+	state.center = center_;
+	state.yaw_deg = yaw_deg_;
+	state.pitch_deg = pitch_deg_;
+	state.distance = distance_;
+	state.valid = true;
+	return state;
+}
+
+void BspPreviewVulkanWidget::set_camera_state(const PreviewCameraState& state) {
+	if (!state.valid) {
+		return;
+	}
+	center_ = state.center;
+	yaw_deg_ = std::remainder(state.yaw_deg, 360.0f);
+	pitch_deg_ = std::clamp(state.pitch_deg, -89.0f, 89.0f);
+	distance_ = std::clamp(state.distance, orbit_min_distance(radius_), orbit_max_distance(radius_));
+	camera_fit_pending_ = false;
+	pending_ground_upload_ = true;
+	uniform_dirty_ = true;
+	update();
+}
+
 void BspPreviewVulkanWidget::clear() {
 	has_mesh_ = false;
+	camera_fit_pending_ = false;
 	pending_upload_ = false;
 	pending_texture_upload_ = false;
 	textures_.clear();
@@ -151,7 +281,7 @@ void BspPreviewVulkanWidget::clear() {
 	update();
 }
 
-void BspPreviewVulkanWidget::initialize(QRhiCommandBuffer*) {
+void BspPreviewVulkanWidget::initialize(QRhiCommandBuffer* cb) {
 	vert_shader_ = load_shader(":/assets/shaders/bsp_preview.vert.qsb");
 	frag_shader_ = load_shader(":/assets/shaders/bsp_preview.frag.qsb");
 
@@ -165,6 +295,13 @@ void BspPreviewVulkanWidget::initialize(QRhiCommandBuffer*) {
 
 		white_tex_ = rhi()->newTexture(QRhiTexture::RGBA8, QSize(1, 1), 1);
 		white_tex_->create();
+		if (cb) {
+			QRhiResourceUpdateBatch* updates = rhi()->nextResourceUpdateBatch();
+			QImage white(1, 1, QImage::Format_RGBA8888);
+			white.fill(Qt::white);
+			updates->uploadTexture(white_tex_, white);
+			cb->resourceUpdate(updates);
+		}
 	}
 
 	ensure_pipeline();
@@ -207,19 +344,24 @@ void BspPreviewVulkanWidget::render(QRhiCommandBuffer* cb) {
 	const int surface_count = draw_surfaces ? (surfaces_.isEmpty() ? 1 : surfaces_.size()) : 0;
 	const int draw_count = 1 + (draw_ground ? 1 : 0) + surface_count;
 	ensure_uniform_buffer(draw_count);
+	if (camera_fit_pending_ && has_mesh_ && width() > 0 && height() > 0) {
+		frame_mesh();
+		camera_fit_pending_ = false;
+	}
 
 	const float aspect = (height() > 0) ? (static_cast<float>(width()) / static_cast<float>(height())) : 1.0f;
 	const float near_plane = std::max(radius_ * 0.01f, 0.01f);
 	const float far_plane = std::max(radius_ * 200.0f, near_plane + 10.0f);
 
 	QMatrix4x4 proj;
-	proj.perspective(45.0f, aspect, near_plane, far_plane);
+	proj.perspective(fov_y_deg_, aspect, near_plane, far_plane);
 
 	const QVector3D dir = spherical_dir(yaw_deg_, pitch_deg_).normalized();
 	const QVector3D cam_pos = center_ + dir * distance_;
+	const QVector3D view_target = center_;
 
 	QMatrix4x4 view;
-	view.lookAt(cam_pos, center_, QVector3D(0, 0, 1));
+	view.lookAt(cam_pos, view_target, QVector3D(0, 0, 1));
 
 	QMatrix4x4 model;
 	model.setToIdentity();
@@ -242,7 +384,13 @@ void BspPreviewVulkanWidget::render(QRhiCommandBuffer* cb) {
 	udata.resize(static_cast<int>(ubuf_stride_ * draw_count));
 	udata.fill(0);
 
-	auto write_uniform = [&](int i, const QVector2D& tex_scale, const QVector2D& tex_offset, bool has_tex, bool is_ground, bool is_background) {
+	auto write_uniform = [&](int i,
+						 const QVector2D& tex_scale,
+						 const QVector2D& tex_offset,
+						 bool has_tex,
+						 bool has_lightmap,
+						 bool is_ground,
+						 bool is_background) {
 		UniformBlock u;
 		u.mvp = is_background ? bg_mvp : mvp;
 		u.model = model;
@@ -259,23 +407,27 @@ void BspPreviewVulkanWidget::render(QRhiCommandBuffer* cb) {
 		u.axis_color_y = QVector4D(axis_y, 0.0f);
 		u.bg_top = QVector4D(bg_top, 0.0f);
 		u.bg_bottom = QVector4D(bg_bottom, 0.0f);
-		u.misc = QVector4D(lightmap_enabled_ ? 1.0f : 0.0f, has_tex ? 1.0f : 0.0f, is_background ? 1.0f : 0.0f, 0.0f);
+		u.misc = QVector4D(lightmap_enabled_ ? 1.0f : 0.0f,
+						  has_tex ? 1.0f : 0.0f,
+						  is_background ? 1.0f : 0.0f,
+						  has_lightmap ? 1.0f : 0.0f);
 		std::memcpy(udata.data() + static_cast<int>(i * ubuf_stride_), &u, sizeof(UniformBlock));
 	};
 
 	int uidx = 0;
-	write_uniform(uidx++, QVector2D(1.0f, 1.0f), QVector2D(0.0f, 0.0f), false, false, true);
+	write_uniform(uidx++, QVector2D(1.0f, 1.0f), QVector2D(0.0f, 0.0f), false, false, false, true);
 	if (draw_ground) {
-		write_uniform(uidx++, QVector2D(1.0f, 1.0f), QVector2D(0.0f, 0.0f), false, true, false);
+		write_uniform(uidx++, QVector2D(1.0f, 1.0f), QVector2D(0.0f, 0.0f), false, false, true, false);
 	}
 	if (draw_surfaces) {
 		if (surfaces_.isEmpty()) {
-			write_uniform(uidx++, QVector2D(1.0f, 1.0f), QVector2D(0.0f, 0.0f), false, false, false);
+			write_uniform(uidx++, QVector2D(1.0f, 1.0f), QVector2D(0.0f, 0.0f), false, false, false, false);
 		} else {
 			for (int i = 0; i < surfaces_.size(); ++i) {
 				const DrawSurface& s = surfaces_[i];
 				const bool use_tex = textured_enabled_ && s.has_texture;
-				write_uniform(uidx++, s.tex_scale, s.tex_offset, use_tex, false, false);
+				const bool use_lightmap = lightmap_enabled_ && s.has_lightmap;
+				write_uniform(uidx++, s.tex_scale, s.tex_offset, use_tex, use_lightmap, false, false);
 			}
 		}
 	}
@@ -347,6 +499,10 @@ void BspPreviewVulkanWidget::releaseResources() {
 
 void BspPreviewVulkanWidget::resizeEvent(QResizeEvent* event) {
 	QRhiWidget::resizeEvent(event);
+	if (camera_fit_pending_ && has_mesh_ && width() > 0 && height() > 0) {
+		frame_mesh();
+		camera_fit_pending_ = false;
+	}
 	pipeline_dirty_ = true;
 	update();
 }
@@ -357,16 +513,20 @@ void BspPreviewVulkanWidget::mousePressEvent(QMouseEvent* event) {
 		return;
 	}
 
-	if (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton || event->button() == Qt::RightButton) {
+	const Qt::MouseButton button = event->button();
+	const Qt::KeyboardModifiers mods = event->modifiers();
+	const bool mmb = (button == Qt::MiddleButton);
+	const bool alt_lmb = (button == Qt::LeftButton && (mods & Qt::AltModifier));
+	if (mmb || alt_lmb) {
 		setFocus(Qt::MouseFocusReason);
 		last_mouse_pos_ = event->pos();
-		drag_button_ = event->button();
-
-		if (event->button() == Qt::LeftButton) {
-			drag_mode_ = (event->modifiers() & Qt::ShiftModifier) ? DragMode::Pan : DragMode::Orbit;
-		} else {
+		drag_mode_ = DragMode::Orbit;
+		if (mods & Qt::ControlModifier) {
+			drag_mode_ = DragMode::Dolly;
+		} else if (mods & Qt::ShiftModifier) {
 			drag_mode_ = DragMode::Pan;
 		}
+		drag_buttons_ = button;
 		event->accept();
 		return;
 	}
@@ -380,7 +540,10 @@ void BspPreviewVulkanWidget::mouseMoveEvent(QMouseEvent* event) {
 		return;
 	}
 
-	if (drag_mode_ == DragMode::None) {
+	if (drag_mode_ == DragMode::None || drag_buttons_ == Qt::NoButton ||
+		(event->buttons() & drag_buttons_) != drag_buttons_) {
+		drag_mode_ = DragMode::None;
+		drag_buttons_ = Qt::NoButton;
 		QRhiWidget::mouseMoveEvent(event);
 		return;
 	}
@@ -389,8 +552,8 @@ void BspPreviewVulkanWidget::mouseMoveEvent(QMouseEvent* event) {
 	last_mouse_pos_ = event->pos();
 
 	if (drag_mode_ == DragMode::Orbit) {
-		yaw_deg_ += delta.x() * 0.4f;
-		pitch_deg_ = std::clamp(pitch_deg_ - delta.y() * 0.4f, -89.0f, 89.0f);
+		yaw_deg_ += static_cast<float>(delta.x()) * kOrbitSensitivityDegPerPixel;
+		pitch_deg_ = std::clamp(pitch_deg_ - static_cast<float>(delta.y()) * kOrbitSensitivityDegPerPixel, -89.0f, 89.0f);
 		update();
 		event->accept();
 		return;
@@ -398,6 +561,13 @@ void BspPreviewVulkanWidget::mouseMoveEvent(QMouseEvent* event) {
 
 	if (drag_mode_ == DragMode::Pan) {
 		pan_by_pixels(delta);
+		update();
+		event->accept();
+		return;
+	}
+
+	if (drag_mode_ == DragMode::Dolly) {
+		dolly_by_pixels(delta);
 		update();
 		event->accept();
 		return;
@@ -412,9 +582,11 @@ void BspPreviewVulkanWidget::mouseReleaseEvent(QMouseEvent* event) {
 		return;
 	}
 
-	if (drag_mode_ != DragMode::None && event->button() == drag_button_) {
+	if (drag_mode_ != DragMode::None && drag_buttons_ != Qt::NoButton &&
+		(Qt::MouseButtons(event->button()) & drag_buttons_) &&
+		(event->buttons() & drag_buttons_) != drag_buttons_) {
 		drag_mode_ = DragMode::None;
-		drag_button_ = Qt::NoButton;
+		drag_buttons_ = Qt::NoButton;
 		event->accept();
 		return;
 	}
@@ -430,8 +602,15 @@ void BspPreviewVulkanWidget::wheelEvent(QWheelEvent* event) {
 
 	const QPoint num_deg = event->angleDelta() / 8;
 	if (!num_deg.isNull()) {
-		distance_ *= std::pow(0.92f, num_deg.y() / 15.0f);
-		distance_ = std::clamp(distance_, radius_ * 0.2f, radius_ * 20.0f);
+		const float factor = std::pow(0.85f, static_cast<float>(num_deg.y()) / 15.0f);
+		apply_orbit_zoom(factor,
+						orbit_min_distance(radius_),
+						orbit_max_distance(radius_),
+						&distance_,
+						&center_,
+						yaw_deg_,
+						pitch_deg_);
+		pending_ground_upload_ = true;
 		update();
 		event->accept();
 		return;
@@ -448,11 +627,13 @@ void BspPreviewVulkanWidget::keyPressEvent(QKeyEvent* event) {
 
 	if (event->key() == Qt::Key_F) {
 		frame_mesh();
+		update();
 		event->accept();
 		return;
 	}
-	if (event->key() == Qt::Key_R) {
+	if (event->key() == Qt::Key_R || event->key() == Qt::Key_Home) {
 		reset_camera_from_mesh();
+		update();
 		event->accept();
 		return;
 	}
@@ -460,35 +641,76 @@ void BspPreviewVulkanWidget::keyPressEvent(QKeyEvent* event) {
 	QRhiWidget::keyPressEvent(event);
 }
 
-void BspPreviewVulkanWidget::reset_camera_from_mesh() {
-	if (!has_mesh_) {
-		center_ = QVector3D(0, 0, 0);
-		radius_ = 1.0f;
-		ground_z_ = 0.0f;
-	} else {
-		center_ = (mesh_.mins + mesh_.maxs) * 0.5f;
-		const QVector3D ext = (mesh_.maxs - mesh_.mins);
-		radius_ = std::max(0.01f, 0.5f * ext.length());
-		ground_z_ = mesh_.mins.z() - radius_ * 0.02f;
+void BspPreviewVulkanWidget::keyReleaseEvent(QKeyEvent* event) {
+	if (!event) {
+		QRhiWidget::keyReleaseEvent(event);
+		return;
 	}
+
+	QRhiWidget::keyReleaseEvent(event);
+}
+
+void BspPreviewVulkanWidget::reset_camera_from_mesh() {
 	yaw_deg_ = 45.0f;
-	pitch_deg_ = 20.0f;
-	distance_ = std::max(1.0f, radius_ * 2.0f);
-	pending_ground_upload_ = true;
+	pitch_deg_ = 55.0f;
+	camera_fit_pending_ = false;
+	frame_mesh();
 }
 
 void BspPreviewVulkanWidget::frame_mesh() {
-	reset_camera_from_mesh();
-	update();
+	if (!has_mesh_) {
+		center_ = QVector3D(0, 0, 0);
+		radius_ = 1.0f;
+		distance_ = 3.0f;
+		ground_z_ = 0.0f;
+		ground_extent_ = 0.0f;
+		pending_ground_upload_ = true;
+		return;
+	}
+	center_ = (mesh_.mins + mesh_.maxs) * 0.5f;
+	const QVector3D half_extents = (mesh_.maxs - mesh_.mins) * 0.5f;
+	radius_ = std::max(0.01f, half_extents.length());
+	const float aspect = (height() > 0) ? (static_cast<float>(width()) / static_cast<float>(height())) : 1.0f;
+	const QVector3D view_forward = (-spherical_dir(yaw_deg_, pitch_deg_)).normalized();
+	const float fit_dist = fit_distance_for_aabb(half_extents, view_forward, aspect, fov_y_deg_);
+	distance_ = std::clamp(fit_dist * 1.05f, orbit_min_distance(radius_), orbit_max_distance(radius_));
+	ground_z_ = mesh_.mins.z() - radius_ * 0.02f;
+	ground_extent_ = 0.0f;
+	pending_ground_upload_ = true;
 }
 
 void BspPreviewVulkanWidget::pan_by_pixels(const QPoint& delta) {
-	const float scale = std::max(0.001f, radius_ * 0.0025f);
+	if (height() <= 0) {
+		return;
+	}
+
+	constexpr float kPi = 3.14159265358979323846f;
+	const float fov_rad = fov_y_deg_ * kPi / 180.0f;
+	const float units_per_px =
+		(2.0f * distance_ * std::tan(fov_rad * 0.5f)) / std::max(1.0f, static_cast<float>(height()));
+
 	const QVector3D dir = spherical_dir(yaw_deg_, pitch_deg_).normalized();
-	const QVector3D right = QVector3D::crossProduct(dir, QVector3D(0, 0, 1)).normalized();
-	const QVector3D up = QVector3D::crossProduct(right, dir).normalized();
-	center_ -= right * (delta.x() * scale);
-	center_ += up * (delta.y() * scale);
+	const QVector3D forward = (-dir).normalized();
+	QVector3D right = QVector3D::crossProduct(forward, QVector3D(0.0f, 0.0f, 1.0f));
+	if (right.lengthSquared() < 1e-6f) {
+		right = QVector3D(1.0f, 0.0f, 0.0f);
+	} else {
+		right.normalize();
+	}
+	const QVector3D up = QVector3D::crossProduct(right, forward).normalized();
+	center_ += (-right * static_cast<float>(delta.x()) + up * static_cast<float>(delta.y())) * units_per_px;
+	pending_ground_upload_ = true;
+}
+
+void BspPreviewVulkanWidget::dolly_by_pixels(const QPoint& delta) {
+	const float factor = std::pow(1.01f, static_cast<float>(delta.y()));
+	apply_orbit_zoom(factor,
+					orbit_min_distance(radius_),
+					orbit_max_distance(radius_),
+					&distance_,
+					&center_,
+					yaw_deg_,
+					pitch_deg_);
 	pending_ground_upload_ = true;
 }
 
@@ -512,7 +734,8 @@ void BspPreviewVulkanWidget::upload_mesh(QRhiResourceUpdateBatch* updates) {
 			v.pos.x(), v.pos.y(), v.pos.z(),
 			v.normal.x(), v.normal.y(), v.normal.z(),
 			c.redF(), c.greenF(), c.blueF(),
-			v.uv.x(), v.uv.y()};
+			v.uv.x(), v.uv.y(),
+			v.lightmap_uv.x(), v.lightmap_uv.y()};
 	}
 
 	if (vbuf_) {
@@ -552,16 +775,26 @@ void BspPreviewVulkanWidget::upload_textures(QRhiResourceUpdateBatch* updates) {
 			s.srb = nullptr;
 		}
 		s.has_texture = false;
+		s.has_lightmap = false;
 		s.tex_scale = QVector2D(1.0f, 1.0f);
 		s.tex_offset = QVector2D(0.0f, 0.0f);
 	}
+	for (QRhiTexture*& lm : lightmap_textures_) {
+		if (lm) {
+			delete lm;
+			lm = nullptr;
+		}
+	}
+	lightmap_textures_.clear();
 
-	ensure_uniform_buffer(std::max(1, static_cast<int>(surfaces_.size())));
+	const int surface_slots = std::max(1, static_cast<int>(surfaces_.size()));
+	ensure_uniform_buffer(surface_slots + 2);
 
 	if (!white_tex_) {
 		white_tex_ = rhi()->newTexture(QRhiTexture::RGBA8, QSize(1, 1), 1);
 		white_tex_->create();
-		const QImage white(1, 1, QImage::Format_RGBA8888);
+		QImage white(1, 1, QImage::Format_RGBA8888);
+		white.fill(Qt::white);
 		updates->uploadTexture(white_tex_, white);
 	}
 	ensure_default_srb(updates);
@@ -587,15 +820,46 @@ void BspPreviewVulkanWidget::upload_textures(QRhiResourceUpdateBatch* updates) {
 				}
 			}
 		}
+	}
 
-		if (s.has_texture && s.texture_handle) {
-			s.srb = rhi()->newShaderResourceBindings();
-			s.srb->setBindings({
-				QRhiShaderResourceBinding::uniformBufferWithDynamicOffset(0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, ubuf_, sizeof(UniformBlock)),
-				QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, s.texture_handle, sampler_),
-			});
-			s.srb->create();
+	lightmap_textures_.resize(mesh_.lightmaps.size());
+	for (int i = 0; i < mesh_.lightmaps.size(); ++i) {
+		QImage converted = mesh_.lightmaps[i].convertToFormat(QImage::Format_RGBA8888);
+		if (converted.isNull()) {
+			lightmap_textures_[i] = nullptr;
+			continue;
 		}
+		QRhiTexture* lm_tex = rhi()->newTexture(QRhiTexture::RGBA8, converted.size(), 1);
+		lm_tex->create();
+		updates->uploadTexture(lm_tex, converted);
+		lightmap_textures_[i] = lm_tex;
+	}
+
+	for (DrawSurface& s : surfaces_) {
+		if (s.lightmap_index >= 0 && s.lightmap_index < lightmap_textures_.size()) {
+			s.has_lightmap = (lightmap_textures_[s.lightmap_index] != nullptr);
+		}
+
+		QRhiTexture* diffuse_tex = (s.has_texture && s.texture_handle) ? s.texture_handle : white_tex_;
+		QRhiTexture* lm_tex = white_tex_;
+		if (s.has_lightmap && s.lightmap_index >= 0 && s.lightmap_index < lightmap_textures_.size()) {
+			QRhiTexture* handle = lightmap_textures_[s.lightmap_index];
+			if (handle) {
+				lm_tex = handle;
+			}
+		}
+
+		if (!diffuse_tex || !lm_tex) {
+			continue;
+		}
+
+		s.srb = rhi()->newShaderResourceBindings();
+		s.srb->setBindings({
+			QRhiShaderResourceBinding::uniformBufferWithDynamicOffset(0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, ubuf_, sizeof(UniformBlock)),
+			QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, diffuse_tex, sampler_),
+			QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage, lm_tex, sampler_),
+		});
+		s.srb->create();
 	}
 }
 
@@ -621,10 +885,10 @@ void BspPreviewVulkanWidget::update_ground_mesh_if_needed(QRhiResourceUpdateBatc
 
 	ground_vertices_.clear();
 	ground_vertices_.reserve(4);
-	ground_vertices_.push_back(GpuVertex{minx, miny, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f});
-	ground_vertices_.push_back(GpuVertex{maxx, miny, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f});
-	ground_vertices_.push_back(GpuVertex{maxx, maxy, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f});
-	ground_vertices_.push_back(GpuVertex{minx, maxy, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f});
+	ground_vertices_.push_back(GpuVertex{minx, miny, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f});
+	ground_vertices_.push_back(GpuVertex{maxx, miny, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f});
+	ground_vertices_.push_back(GpuVertex{maxx, maxy, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f});
+	ground_vertices_.push_back(GpuVertex{minx, maxy, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f});
 
 	ground_indices_ = {0, 1, 2, 0, 2, 3};
 
@@ -660,12 +924,12 @@ void BspPreviewVulkanWidget::update_background_mesh_if_needed(QRhiResourceUpdate
 
 	bg_vertices_.clear();
 	bg_vertices_.reserve(6);
-	bg_vertices_.push_back(GpuVertex{-1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f});
-	bg_vertices_.push_back(GpuVertex{ 1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f});
-	bg_vertices_.push_back(GpuVertex{ 1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f});
-	bg_vertices_.push_back(GpuVertex{-1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f});
-	bg_vertices_.push_back(GpuVertex{ 1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f});
-	bg_vertices_.push_back(GpuVertex{-1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f});
+	bg_vertices_.push_back(GpuVertex{-1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f});
+	bg_vertices_.push_back(GpuVertex{ 1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f});
+	bg_vertices_.push_back(GpuVertex{ 1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f});
+	bg_vertices_.push_back(GpuVertex{-1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f});
+	bg_vertices_.push_back(GpuVertex{ 1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f});
+	bg_vertices_.push_back(GpuVertex{-1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f});
 
 	bg_vbuf_ = rhi()->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer,
 								 bg_vertices_.size() * sizeof(GpuVertex));
@@ -727,7 +991,8 @@ void BspPreviewVulkanWidget::update_grid_colors(QVector3D* grid, QVector3D* axis
 }
 
 void BspPreviewVulkanWidget::update_grid_settings() {
-	grid_scale_ = std::max(radius_ * 0.35f, 1.0f);
+	const float reference = std::max(distance_, radius_ * 0.25f);
+	grid_scale_ = quantized_grid_scale(reference);
 }
 
 void BspPreviewVulkanWidget::destroy_mesh_resources() {
@@ -764,7 +1029,15 @@ void BspPreviewVulkanWidget::destroy_mesh_resources() {
 			delete s.srb;
 			s.srb = nullptr;
 		}
+		s.has_lightmap = false;
 	}
+	for (QRhiTexture*& lm : lightmap_textures_) {
+		if (lm) {
+			delete lm;
+			lm = nullptr;
+		}
+	}
+	lightmap_textures_.clear();
 	if (default_srb_) {
 		delete default_srb_;
 		default_srb_ = nullptr;
@@ -813,6 +1086,7 @@ void BspPreviewVulkanWidget::ensure_pipeline() {
 		QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float3, offsetof(GpuVertex, nx)),
 		QRhiVertexInputAttribute(0, 2, QRhiVertexInputAttribute::Float3, offsetof(GpuVertex, r)),
 		QRhiVertexInputAttribute(0, 3, QRhiVertexInputAttribute::Float2, offsetof(GpuVertex, u)),
+		QRhiVertexInputAttribute(0, 4, QRhiVertexInputAttribute::Float2, offsetof(GpuVertex, lu)),
 	});
 	pipeline_->setVertexInputLayout(input_layout);
 	pipeline_->setShaderResourceBindings(default_srb_);
@@ -847,7 +1121,8 @@ void BspPreviewVulkanWidget::ensure_default_srb(QRhiResourceUpdateBatch* updates
 		white_tex_ = rhi()->newTexture(QRhiTexture::RGBA8, QSize(1, 1), 1);
 		white_tex_->create();
 		if (updates) {
-			const QImage white(1, 1, QImage::Format_RGBA8888);
+			QImage white(1, 1, QImage::Format_RGBA8888);
+			white.fill(Qt::white);
 			updates->uploadTexture(white_tex_, white);
 		}
 	}
@@ -861,6 +1136,7 @@ void BspPreviewVulkanWidget::ensure_default_srb(QRhiResourceUpdateBatch* updates
 	default_srb_->setBindings({
 		QRhiShaderResourceBinding::uniformBufferWithDynamicOffset(0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, ubuf_, sizeof(UniformBlock)),
 		QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, white_tex_, sampler_),
+		QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage, white_tex_, sampler_),
 	});
 	default_srb_->create();
 	pipeline_dirty_ = true;

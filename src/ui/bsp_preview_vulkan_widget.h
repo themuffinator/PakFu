@@ -38,6 +38,9 @@ public:
 	void set_background_mode(PreviewBackgroundMode mode, const QColor& custom_color);
 	void set_wireframe_enabled(bool enabled);
 	void set_textured_enabled(bool enabled);
+	void set_fov_degrees(int degrees);
+	[[nodiscard]] PreviewCameraState camera_state() const;
+	void set_camera_state(const PreviewCameraState& state);
 	void clear();
 
 protected:
@@ -51,6 +54,7 @@ protected:
 	void mouseReleaseEvent(QMouseEvent* event) override;
 	void wheelEvent(QWheelEvent* event) override;
 	void keyPressEvent(QKeyEvent* event) override;
+	void keyReleaseEvent(QKeyEvent* event) override;
 
 private:
 	struct GpuVertex {
@@ -58,6 +62,7 @@ private:
 		float nx, ny, nz;
 		float r, g, b;
 		float u, v;
+		float lu, lv;
 	};
 
 	struct DrawSurface {
@@ -65,9 +70,11 @@ private:
 		int index_count = 0;
 		QString texture;
 		bool uv_normalized = false;
+		int lightmap_index = -1;
 		QVector2D tex_scale = QVector2D(1.0f, 1.0f);
 		QVector2D tex_offset = QVector2D(0.0f, 0.0f);
 		bool has_texture = false;
+		bool has_lightmap = false;
 		QImage image;
 		QRhiTexture* texture_handle = nullptr;
 		QRhiShaderResourceBindings* srb = nullptr;
@@ -95,6 +102,7 @@ private:
 	void reset_camera_from_mesh();
 	void frame_mesh();
 	void pan_by_pixels(const QPoint& delta);
+	void dolly_by_pixels(const QPoint& delta);
 	void upload_mesh(QRhiResourceUpdateBatch* updates);
 	void upload_textures(QRhiResourceUpdateBatch* updates);
 	void update_ground_mesh_if_needed(QRhiResourceUpdateBatch* updates);
@@ -112,6 +120,7 @@ private:
 		None,
 		Orbit,
 		Pan,
+		Dolly,
 	};
 
 	BspMesh mesh_;
@@ -128,6 +137,7 @@ private:
 	bool pending_background_upload_ = false;
 
 	QHash<QString, QImage> textures_;
+	QVector<QRhiTexture*> lightmap_textures_;
 	QVector<DrawSurface> surfaces_;
 
 	QVector3D center_ = QVector3D(0, 0, 0);
@@ -135,13 +145,15 @@ private:
 	float yaw_deg_ = 45.0f;
 	float pitch_deg_ = 20.0f;
 	float distance_ = 3.0f;
+	float fov_y_deg_ = 100.0f;
+	bool camera_fit_pending_ = false;
 	float ground_z_ = 0.0f;
 	float ground_extent_ = 0.0f;
 	float grid_scale_ = 1.0f;
 
 	QPoint last_mouse_pos_;
 	DragMode drag_mode_ = DragMode::None;
-	Qt::MouseButton drag_button_ = Qt::NoButton;
+	Qt::MouseButtons drag_buttons_ = Qt::NoButton;
 
 	QShader vert_shader_;
 	QShader frag_shader_;

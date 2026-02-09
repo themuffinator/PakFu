@@ -36,6 +36,97 @@ QVector3D spherical_dir(float yaw_deg, float pitch_deg) {
 	return QVector3D(cp * cy, cp * sy, sp);
 }
 
+constexpr float kOrbitSensitivityDegPerPixel = 0.45f;
+
+float orbit_min_distance(float radius) {
+	return std::max(0.01f, radius * 0.001f);
+}
+
+float orbit_max_distance(float radius) {
+	const float min_dist = orbit_min_distance(radius);
+	return std::max(min_dist * 2.0f, std::max(radius, 1.0f) * 500.0f);
+}
+
+QVector3D safe_right_from_forward(const QVector3D& forward) {
+	QVector3D right = QVector3D::crossProduct(forward, QVector3D(0.0f, 0.0f, 1.0f));
+	if (right.lengthSquared() < 1e-6f) {
+		right = QVector3D(1.0f, 0.0f, 0.0f);
+	} else {
+		right.normalize();
+	}
+	return right;
+}
+
+float fit_distance_for_aabb(const QVector3D& half_extents,
+							const QVector3D& view_forward,
+							float aspect,
+							float fov_y_deg) {
+	constexpr float kPi = 3.14159265358979323846f;
+	const QVector3D safe_half(std::max(half_extents.x(), 0.001f),
+							  std::max(half_extents.y(), 0.001f),
+							  std::max(half_extents.z(), 0.001f));
+	const float safe_aspect = std::max(aspect, 0.01f);
+	const float fov_y = fov_y_deg * kPi / 180.0f;
+	const float tan_half_y = std::tan(fov_y * 0.5f);
+	const float tan_half_x = std::max(0.001f, tan_half_y * safe_aspect);
+	const float safe_tan_half_y = std::max(0.001f, tan_half_y);
+
+	const QVector3D fwd = view_forward.normalized();
+	const QVector3D right = safe_right_from_forward(fwd);
+	const QVector3D up = QVector3D::crossProduct(right, fwd).normalized();
+
+	const auto projected_radius = [&](const QVector3D& axis) -> float {
+		return std::abs(axis.x()) * safe_half.x() +
+			   std::abs(axis.y()) * safe_half.y() +
+			   std::abs(axis.z()) * safe_half.z();
+	};
+
+	const float radius_x = projected_radius(right);
+	const float radius_y = projected_radius(up);
+	const float radius_z = projected_radius(fwd);
+	const float dist_x = radius_x / tan_half_x;
+	const float dist_y = radius_y / safe_tan_half_y;
+	return radius_z + std::max(dist_x, dist_y);
+}
+
+void apply_orbit_zoom(float factor,
+					  float min_dist,
+					  float max_dist,
+					  float* distance,
+					  QVector3D* center,
+					  float yaw_deg,
+					  float pitch_deg) {
+	if (!distance || !center) {
+		return;
+	}
+	const float safe_factor = std::clamp(factor, 0.01f, 100.0f);
+	const float target_distance = (*distance) * safe_factor;
+	if (target_distance < min_dist) {
+		const float push = min_dist - target_distance;
+		if (push > 0.0f) {
+			const QVector3D forward = (-spherical_dir(yaw_deg, pitch_deg)).normalized();
+			*center += forward * push;
+		}
+		*distance = min_dist;
+		return;
+	}
+	*distance = std::clamp(target_distance, min_dist, max_dist);
+}
+
+float quantized_grid_scale(float reference_distance) {
+	const float target = std::max(reference_distance / 16.0f, 1.0f);
+	const float exponent = std::floor(std::log10(target));
+	const float base = std::pow(10.0f, exponent);
+	const float n = target / std::max(base, 1e-6f);
+	float step = base;
+	if (n >= 5.0f) {
+		step = 5.0f * base;
+	} else if (n >= 2.0f) {
+		step = 2.0f * base;
+	}
+	return std::max(step, 1.0f);
+}
+
 QShader load_shader(const QString& path) {
 	QFile f(path);
 	if (!f.open(QIODevice::ReadOnly)) {
@@ -62,11 +153,12 @@ ModelViewerVulkanWidget::ModelViewerVulkanWidget(QWidget* parent) : QRhiWidget(p
 	setFocusPolicy(Qt::StrongFocus);
 	setToolTip(
 		"3D Controls:\n"
-		"- Orbit: Left-drag\n"
-		"- Pan: Shift+Left-drag / Middle-drag / Right-drag\n"
+		"- Orbit: Middle-drag (Alt+Left-drag)\n"
+		"- Pan: Shift+Middle-drag (Alt+Shift+Left-drag)\n"
+		"- Dolly: Ctrl+Middle-drag (Alt+Ctrl+Left-drag)\n"
 		"- Zoom: Mouse wheel\n"
 		"- Frame: F\n"
-		"- Reset: R");
+		"- Reset: R / Home");
 
 	QSettings settings;
 	texture_smoothing_ = settings.value("preview/model/textureSmoothing", false).toBool();
@@ -135,6 +227,38 @@ void ModelViewerVulkanWidget::set_glow_enabled(bool enabled) {
 		(void)load_file(last_model_path_, last_skin_path_, &err);
 		return;
 	}
+	update();
+}
+
+void ModelViewerVulkanWidget::set_fov_degrees(int degrees) {
+	const float clamped = std::clamp(static_cast<float>(degrees), 40.0f, 120.0f);
+	if (std::abs(clamped - fov_y_deg_) < 0.001f) {
+		return;
+	}
+	fov_y_deg_ = clamped;
+	pending_ground_upload_ = true;
+	update();
+}
+
+PreviewCameraState ModelViewerVulkanWidget::camera_state() const {
+	PreviewCameraState state;
+	state.center = center_;
+	state.yaw_deg = yaw_deg_;
+	state.pitch_deg = pitch_deg_;
+	state.distance = distance_;
+	state.valid = true;
+	return state;
+}
+
+void ModelViewerVulkanWidget::set_camera_state(const PreviewCameraState& state) {
+	if (!state.valid) {
+		return;
+	}
+	center_ = state.center;
+	yaw_deg_ = std::remainder(state.yaw_deg, 360.0f);
+	pitch_deg_ = std::clamp(state.pitch_deg, -89.0f, 89.0f);
+	distance_ = std::clamp(state.distance, orbit_min_distance(radius_), orbit_max_distance(radius_));
+	pending_ground_upload_ = true;
 	update();
 }
 
@@ -424,13 +548,14 @@ void ModelViewerVulkanWidget::render(QRhiCommandBuffer* cb) {
 	const float far_plane = std::max(radius_ * 200.0f, near_plane + 10.0f);
 
 	QMatrix4x4 proj;
-	proj.perspective(45.0f, aspect, near_plane, far_plane);
+	proj.perspective(fov_y_deg_, aspect, near_plane, far_plane);
 
 	const QVector3D dir = spherical_dir(yaw_deg_, pitch_deg_).normalized();
 	const QVector3D cam_pos = center_ + dir * distance_;
+	const QVector3D view_target = center_;
 
 	QMatrix4x4 view;
-	view.lookAt(cam_pos, center_, QVector3D(0, 0, 1));
+	view.lookAt(cam_pos, view_target, QVector3D(0, 0, 1));
 
 	QMatrix4x4 model_m;
 	model_m.setToIdentity();
@@ -577,16 +702,20 @@ void ModelViewerVulkanWidget::mousePressEvent(QMouseEvent* event) {
 		return;
 	}
 
-	if (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton || event->button() == Qt::RightButton) {
+	const Qt::MouseButton button = event->button();
+	const Qt::KeyboardModifiers mods = event->modifiers();
+	const bool mmb = (button == Qt::MiddleButton);
+	const bool alt_lmb = (button == Qt::LeftButton && (mods & Qt::AltModifier));
+	if (mmb || alt_lmb) {
 		setFocus(Qt::MouseFocusReason);
 		last_mouse_pos_ = event->pos();
-		drag_button_ = event->button();
-
-		if (event->button() == Qt::LeftButton) {
-			drag_mode_ = (event->modifiers() & Qt::ShiftModifier) ? DragMode::Pan : DragMode::Orbit;
-		} else {
+		drag_mode_ = DragMode::Orbit;
+		if (mods & Qt::ControlModifier) {
+			drag_mode_ = DragMode::Dolly;
+		} else if (mods & Qt::ShiftModifier) {
 			drag_mode_ = DragMode::Pan;
 		}
+		drag_buttons_ = button;
 		event->accept();
 		return;
 	}
@@ -600,7 +729,10 @@ void ModelViewerVulkanWidget::mouseMoveEvent(QMouseEvent* event) {
 		return;
 	}
 
-	if (drag_mode_ == DragMode::None) {
+	if (drag_mode_ == DragMode::None || drag_buttons_ == Qt::NoButton ||
+		(event->buttons() & drag_buttons_) != drag_buttons_) {
+		drag_mode_ = DragMode::None;
+		drag_buttons_ = Qt::NoButton;
 		QRhiWidget::mouseMoveEvent(event);
 		return;
 	}
@@ -609,8 +741,8 @@ void ModelViewerVulkanWidget::mouseMoveEvent(QMouseEvent* event) {
 	last_mouse_pos_ = event->pos();
 
 	if (drag_mode_ == DragMode::Orbit) {
-		yaw_deg_ += delta.x() * 0.4f;
-		pitch_deg_ = std::clamp(pitch_deg_ - delta.y() * 0.4f, -89.0f, 89.0f);
+		yaw_deg_ += static_cast<float>(delta.x()) * kOrbitSensitivityDegPerPixel;
+		pitch_deg_ = std::clamp(pitch_deg_ - static_cast<float>(delta.y()) * kOrbitSensitivityDegPerPixel, -89.0f, 89.0f);
 		update();
 		event->accept();
 		return;
@@ -618,6 +750,13 @@ void ModelViewerVulkanWidget::mouseMoveEvent(QMouseEvent* event) {
 
 	if (drag_mode_ == DragMode::Pan) {
 		pan_by_pixels(delta);
+		update();
+		event->accept();
+		return;
+	}
+
+	if (drag_mode_ == DragMode::Dolly) {
+		dolly_by_pixels(delta);
 		update();
 		event->accept();
 		return;
@@ -632,9 +771,11 @@ void ModelViewerVulkanWidget::mouseReleaseEvent(QMouseEvent* event) {
 		return;
 	}
 
-	if (drag_mode_ != DragMode::None && event->button() == drag_button_) {
+	if (drag_mode_ != DragMode::None && drag_buttons_ != Qt::NoButton &&
+		(Qt::MouseButtons(event->button()) & drag_buttons_) &&
+		(event->buttons() & drag_buttons_) != drag_buttons_) {
 		drag_mode_ = DragMode::None;
-		drag_button_ = Qt::NoButton;
+		drag_buttons_ = Qt::NoButton;
 		event->accept();
 		return;
 	}
@@ -650,8 +791,15 @@ void ModelViewerVulkanWidget::wheelEvent(QWheelEvent* event) {
 
 	const QPoint num_deg = event->angleDelta() / 8;
 	if (!num_deg.isNull()) {
-		distance_ *= std::pow(0.92f, num_deg.y() / 15.0f);
-		distance_ = std::clamp(distance_, radius_ * 0.2f, radius_ * 20.0f);
+		const float factor = std::pow(0.85f, static_cast<float>(num_deg.y()) / 15.0f);
+		apply_orbit_zoom(factor,
+						orbit_min_distance(radius_),
+						orbit_max_distance(radius_),
+						&distance_,
+						&center_,
+						yaw_deg_,
+						pitch_deg_);
+		pending_ground_upload_ = true;
 		update();
 		event->accept();
 		return;
@@ -671,8 +819,9 @@ void ModelViewerVulkanWidget::keyPressEvent(QKeyEvent* event) {
 		event->accept();
 		return;
 	}
-	if (event->key() == Qt::Key_R) {
+	if (event->key() == Qt::Key_R || event->key() == Qt::Key_Home) {
 		reset_camera_from_mesh();
+		update();
 		event->accept();
 		return;
 	}
@@ -680,20 +829,33 @@ void ModelViewerVulkanWidget::keyPressEvent(QKeyEvent* event) {
 	QRhiWidget::keyPressEvent(event);
 }
 
+void ModelViewerVulkanWidget::keyReleaseEvent(QKeyEvent* event) {
+	if (!event) {
+		QRhiWidget::keyReleaseEvent(event);
+		return;
+	}
+
+	QRhiWidget::keyReleaseEvent(event);
+}
+
 void ModelViewerVulkanWidget::reset_camera_from_mesh() {
+	yaw_deg_ = 45.0f;
+	pitch_deg_ = 20.0f;
 	if (!model_) {
 		center_ = QVector3D(0, 0, 0);
 		radius_ = 1.0f;
+		distance_ = 3.0f;
 		ground_z_ = 0.0f;
 	} else {
 		center_ = (model_->mesh.mins + model_->mesh.maxs) * 0.5f;
-		const QVector3D ext = (model_->mesh.maxs - model_->mesh.mins);
-		radius_ = std::max(0.01f, 0.5f * ext.length());
-		ground_z_ = model_->mesh.mins.z() - std::max(radius_ * 0.18f, 0.05f);
+		const QVector3D half_extents = (model_->mesh.maxs - model_->mesh.mins) * 0.5f;
+		radius_ = std::max(0.01f, half_extents.length());
+		const float aspect = (height() > 0) ? (static_cast<float>(width()) / static_cast<float>(height())) : 1.0f;
+		const QVector3D view_forward = (-spherical_dir(yaw_deg_, pitch_deg_)).normalized();
+		const float fit_dist = fit_distance_for_aabb(half_extents, view_forward, aspect, fov_y_deg_);
+		distance_ = std::clamp(fit_dist * 1.05f, orbit_min_distance(radius_), orbit_max_distance(radius_));
+		ground_z_ = model_->mesh.mins.z() - std::max(radius_ * 0.02f, 0.05f);
 	}
-	yaw_deg_ = 45.0f;
-	pitch_deg_ = 20.0f;
-	distance_ = std::max(1.0f, radius_ * 2.0f);
 	pending_ground_upload_ = true;
 }
 
@@ -703,12 +865,38 @@ void ModelViewerVulkanWidget::frame_mesh() {
 }
 
 void ModelViewerVulkanWidget::pan_by_pixels(const QPoint& delta) {
-	const float scale = std::max(0.001f, radius_ * 0.0025f);
+	if (height() <= 0) {
+		return;
+	}
+
+	constexpr float kPi = 3.14159265358979323846f;
+	const float fov_rad = fov_y_deg_ * kPi / 180.0f;
+	const float units_per_px =
+		(2.0f * distance_ * std::tan(fov_rad * 0.5f)) / std::max(1.0f, static_cast<float>(height()));
+
 	const QVector3D dir = spherical_dir(yaw_deg_, pitch_deg_).normalized();
-	const QVector3D right = QVector3D::crossProduct(dir, QVector3D(0, 0, 1)).normalized();
-	const QVector3D up = QVector3D::crossProduct(right, dir).normalized();
-	center_ -= right * (delta.x() * scale);
-	center_ += up * (delta.y() * scale);
+	const QVector3D forward = (-dir).normalized();
+	QVector3D right = QVector3D::crossProduct(forward, QVector3D(0.0f, 0.0f, 1.0f));
+	if (right.lengthSquared() < 1e-6f) {
+		right = QVector3D(1.0f, 0.0f, 0.0f);
+	} else {
+		right.normalize();
+	}
+	const QVector3D up = QVector3D::crossProduct(right, forward).normalized();
+	center_ += (-right * static_cast<float>(delta.x()) + up * static_cast<float>(delta.y())) * units_per_px;
+	pending_ground_upload_ = true;
+}
+
+void ModelViewerVulkanWidget::dolly_by_pixels(const QPoint& delta) {
+	const float factor = std::pow(1.01f, static_cast<float>(delta.y()));
+	apply_orbit_zoom(factor,
+					orbit_min_distance(radius_),
+					orbit_max_distance(radius_),
+					&distance_,
+					&center_,
+					yaw_deg_,
+					pitch_deg_);
+	pending_ground_upload_ = true;
 }
 
 void ModelViewerVulkanWidget::upload_mesh(QRhiResourceUpdateBatch* updates) {
@@ -948,7 +1136,8 @@ void ModelViewerVulkanWidget::update_background_mesh_if_needed(QRhiResourceUpdat
 }
 
 void ModelViewerVulkanWidget::update_grid_settings() {
-	grid_scale_ = std::max(radius_ * 0.25f, 0.5f);
+	const float reference = std::max(distance_, radius_ * 0.25f);
+	grid_scale_ = quantized_grid_scale(reference);
 }
 
 void ModelViewerVulkanWidget::update_background_colors(QVector3D* top, QVector3D* bottom, QVector3D* base) const {

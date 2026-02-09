@@ -101,7 +101,16 @@ sources += moc_sources
 
 pakfu_link_args = []
 pakfu_win_subsystem = 'console'
+pakfu_win_resources = []
 if host_machine.system() == 'windows'
+  rc = find_program('rc', required: false)
+  windres = find_program('windres', required: false)
+  if rc.found() or windres.found()
+    windows = import('windows')
+    pakfu_win_resources += windows.compile_resources('pakfu.rc')
+  else
+    warning('No Windows resource compiler found; skipping embedded .exe icon resource.')
+  endif
   pakfu_win_subsystem = 'windows'
 
   qt_libdir = qt6_dep.get_variable(configtool: 'QT_INSTALL_LIBS')
@@ -114,7 +123,7 @@ endif
 
 pakfu = executable(
   'pakfu',
-  sources,
+  sources + pakfu_win_resources,
   include_directories: pakfu_includes,
   dependencies: [qt6_dep],
   link_with: [miniz_lib],

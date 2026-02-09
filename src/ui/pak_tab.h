@@ -70,6 +70,7 @@ public:
   void set_model_texture_smoothing(bool enabled);
   void set_image_texture_smoothing(bool enabled);
   void set_preview_renderer(PreviewRenderer renderer);
+  void set_3d_fov_degrees(int degrees);
   void set_game_id(GameId id);
   void set_pure_pak_protector(bool enabled, bool is_official);
   bool is_editable() const;

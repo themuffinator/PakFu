@@ -26,6 +26,97 @@ QVector3D spherical_dir(float yaw_deg, float pitch_deg) {
   return QVector3D(cp * cy, cp * sy, sp);
 }
 
+constexpr float kOrbitSensitivityDegPerPixel = 0.45f;
+
+float orbit_min_distance(float radius) {
+  return std::max(0.01f, radius * 0.001f);
+}
+
+float orbit_max_distance(float radius) {
+  const float min_dist = orbit_min_distance(radius);
+  return std::max(min_dist * 2.0f, std::max(radius, 1.0f) * 500.0f);
+}
+
+QVector3D safe_right_from_forward(const QVector3D& forward) {
+  QVector3D right = QVector3D::crossProduct(forward, QVector3D(0.0f, 0.0f, 1.0f));
+  if (right.lengthSquared() < 1e-6f) {
+    right = QVector3D(1.0f, 0.0f, 0.0f);
+  } else {
+    right.normalize();
+  }
+  return right;
+}
+
+float fit_distance_for_aabb(const QVector3D& half_extents,
+                            const QVector3D& view_forward,
+                            float aspect,
+                            float fov_y_deg) {
+  constexpr float kPi = 3.14159265358979323846f;
+  const QVector3D safe_half(std::max(half_extents.x(), 0.001f),
+                            std::max(half_extents.y(), 0.001f),
+                            std::max(half_extents.z(), 0.001f));
+  const float safe_aspect = std::max(aspect, 0.01f);
+  const float fov_y = fov_y_deg * kPi / 180.0f;
+  const float tan_half_y = std::tan(fov_y * 0.5f);
+  const float tan_half_x = std::max(0.001f, tan_half_y * safe_aspect);
+  const float safe_tan_half_y = std::max(0.001f, tan_half_y);
+
+  const QVector3D fwd = view_forward.normalized();
+  const QVector3D right = safe_right_from_forward(fwd);
+  const QVector3D up = QVector3D::crossProduct(right, fwd).normalized();
+
+  const auto projected_radius = [&](const QVector3D& axis) -> float {
+    return std::abs(axis.x()) * safe_half.x() +
+           std::abs(axis.y()) * safe_half.y() +
+           std::abs(axis.z()) * safe_half.z();
+  };
+
+  const float radius_x = projected_radius(right);
+  const float radius_y = projected_radius(up);
+  const float radius_z = projected_radius(fwd);
+  const float dist_x = radius_x / tan_half_x;
+  const float dist_y = radius_y / safe_tan_half_y;
+  return radius_z + std::max(dist_x, dist_y);
+}
+
+void apply_orbit_zoom(float factor,
+                      float min_dist,
+                      float max_dist,
+                      float* distance,
+                      QVector3D* center,
+                      float yaw_deg,
+                      float pitch_deg) {
+  if (!distance || !center) {
+    return;
+  }
+  const float safe_factor = std::clamp(factor, 0.01f, 100.0f);
+  const float target_distance = (*distance) * safe_factor;
+  if (target_distance < min_dist) {
+    const float push = min_dist - target_distance;
+    if (push > 0.0f) {
+      const QVector3D forward = (-spherical_dir(yaw_deg, pitch_deg)).normalized();
+      *center += forward * push;
+    }
+    *distance = min_dist;
+    return;
+  }
+  *distance = std::clamp(target_distance, min_dist, max_dist);
+}
+
+float quantized_grid_scale(float reference_distance) {
+  const float target = std::max(reference_distance / 16.0f, 1.0f);
+  const float exponent = std::floor(std::log10(target));
+  const float base = std::pow(10.0f, exponent);
+  const float n = target / std::max(base, 1e-6f);
+  float step = base;
+  if (n >= 5.0f) {
+    step = 5.0f * base;
+  } else if (n >= 2.0f) {
+    step = 2.0f * base;
+  }
+  return std::max(step, 1.0f);
+}
+
 QString vertex_shader_source(const QSurfaceFormat& fmt) {
   if (QOpenGLContext::currentContext() && QOpenGLContext::currentContext()->isOpenGLES()) {
     return R"GLSL(
@@ -33,6 +124,7 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
       attribute highp vec3 aNormal;
       attribute highp vec3 aColor;
       attribute highp vec2 aUV;
+      attribute highp vec2 aUV2;
       uniform highp mat4 uMvp;
       uniform highp mat4 uModel;
       uniform highp vec2 uTexScale;
@@ -40,12 +132,14 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
       varying highp vec3 vNormal;
       varying highp vec3 vColor;
       varying highp vec2 vUV;
+      varying highp vec2 vUV2;
       varying highp vec3 vPos;
       void main() {
         gl_Position = uMvp * vec4(aPos, 1.0);
         vNormal = (uModel * vec4(aNormal, 0.0)).xyz;
         vColor = aColor;
         vUV = aUV * uTexScale + uTexOffset;
+        vUV2 = aUV2;
         vPos = (uModel * vec4(aPos, 1.0)).xyz;
       }
     )GLSL";
@@ -63,6 +157,7 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
       layout(location = 1) in vec3 aNormal;
       layout(location = 2) in vec3 aColor;
       layout(location = 3) in vec2 aUV;
+      layout(location = 4) in vec2 aUV2;
       uniform mat4 uMvp;
       uniform mat4 uModel;
       uniform vec2 uTexScale;
@@ -70,12 +165,14 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
       out vec3 vNormal;
       out vec3 vColor;
       out vec2 vUV;
+      out vec2 vUV2;
       out vec3 vPos;
       void main() {
         gl_Position = uMvp * vec4(aPos, 1.0);
         vNormal = (uModel * vec4(aNormal, 0.0)).xyz;
         vColor = aColor;
         vUV = aUV * uTexScale + uTexOffset;
+        vUV2 = aUV2;
         vPos = (uModel * vec4(aPos, 1.0)).xyz;
       }
     )GLSL";
@@ -88,6 +185,7 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
       in vec3 aNormal;
       in vec3 aColor;
       in vec2 aUV;
+      in vec2 aUV2;
       uniform mat4 uMvp;
       uniform mat4 uModel;
       uniform vec2 uTexScale;
@@ -95,12 +193,14 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
       out vec3 vNormal;
       out vec3 vColor;
       out vec2 vUV;
+      out vec2 vUV2;
       out vec3 vPos;
       void main() {
         gl_Position = uMvp * vec4(aPos, 1.0);
         vNormal = (uModel * vec4(aNormal, 0.0)).xyz;
         vColor = aColor;
         vUV = aUV * uTexScale + uTexOffset;
+        vUV2 = aUV2;
         vPos = (uModel * vec4(aPos, 1.0)).xyz;
       }
     )GLSL";
@@ -112,6 +212,7 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
     attribute vec3 aNormal;
     attribute vec3 aColor;
     attribute vec2 aUV;
+    attribute vec2 aUV2;
     uniform mat4 uMvp;
     uniform mat4 uModel;
     uniform vec2 uTexScale;
@@ -119,12 +220,14 @@ QString vertex_shader_source(const QSurfaceFormat& fmt) {
     varying vec3 vNormal;
     varying vec3 vColor;
     varying vec2 vUV;
+    varying vec2 vUV2;
     varying vec3 vPos;
     void main() {
       gl_Position = uMvp * vec4(aPos, 1.0);
       vNormal = (uModel * vec4(aNormal, 0.0)).xyz;
       vColor = aColor;
       vUV = aUV * uTexScale + uTexOffset;
+      vUV2 = aUV2;
       vPos = (uModel * vec4(aPos, 1.0)).xyz;
     }
   )GLSL";
@@ -137,6 +240,7 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       varying mediump vec3 vNormal;
       varying mediump vec3 vColor;
       varying mediump vec2 vUV;
+      varying mediump vec2 vUV2;
       varying mediump vec3 vPos;
       uniform mediump vec3 uLightDir;
       uniform mediump vec3 uFillDir;
@@ -157,7 +261,9 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       uniform mediump vec3 uBgTop;
       uniform mediump vec3 uBgBottom;
       uniform sampler2D uTex;
+      uniform sampler2D uLightmapTex;
       uniform int uHasTexture;
+      uniform int uHasLightmap;
 
       vec3 toLinear(vec3 c) { return pow(c, vec3(2.2)); }
       vec3 toSrgb(vec3 c) { return pow(c, vec3(1.0 / 2.2)); }
@@ -175,17 +281,22 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
         if (uIsGround > 0.5) {
           if (uGridMode > 0.5) {
             vec3 baseGrid = toLinear(uGroundColor);
-            float scale = max(uGridScale, 0.001);
-            vec2 coord = vPos.xy / scale;
-            vec2 cell = abs(fract(coord) - 0.5);
-            float line = step(cell.x, 0.02) + step(cell.y, 0.02);
-            line = clamp(line, 0.0, 1.0);
-            float axisX = step(abs(vPos.x / scale), 0.04);
-            float axisY = step(abs(vPos.y / scale), 0.04);
+            float minorScale = max(uGridScale, 0.001);
+            float majorScale = minorScale * 10.0;
+            vec2 minorCoord = vPos.xy / minorScale;
+            vec2 majorCoord = vPos.xy / majorScale;
+            vec2 minorCell = abs(fract(minorCoord + 0.5) - 0.5);
+            vec2 majorCell = abs(fract(majorCoord + 0.5) - 0.5);
+            float minorLine = clamp((0.035 - min(minorCell.x, minorCell.y)) / 0.035, 0.0, 1.0);
+            float majorLine = clamp((0.06 - min(majorCell.x, majorCell.y)) / 0.06, 0.0, 1.0);
+            float axisX = clamp((0.05 - abs(vPos.x / minorScale)) / 0.05, 0.0, 1.0);
+            float axisY = clamp((0.05 - abs(vPos.y / minorScale)) / 0.05, 0.0, 1.0);
+            float fade = clamp(1.0 - length(vPos.xy - uShadowCenter.xy) / max(uShadowRadius * 2.2, 1.0), 0.08, 1.0);
             vec3 col = baseGrid;
-            col = mix(col, toLinear(uGridColor), line);
-            col = mix(col, toLinear(uAxisColorX), axisX);
-            col = mix(col, toLinear(uAxisColorY), axisY);
+            col = mix(col, toLinear(uGridColor), minorLine * 0.22 * fade);
+            col = mix(col, toLinear(uGridColor) * 1.35, majorLine * 0.75 * fade);
+            col = mix(col, toLinear(uAxisColorX), axisX * 0.95);
+            col = mix(col, toLinear(uAxisColorY), axisY * 0.95);
             gl_FragColor = vec4(toSrgb(col), 1.0);
             return;
           }
@@ -203,7 +314,8 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
         }
 
         vec3 tex = (uHasTexture == 1) ? texture2D(uTex, vUV).rgb : vec3(1.0);
-        vec3 lm = mix(vec3(1.0), vColor, uLightmapStrength);
+        vec3 lm_src = (uHasLightmap == 1) ? texture2D(uLightmapTex, vUV2).rgb : vColor;
+        vec3 lm = mix(vec3(1.0), lm_src, uLightmapStrength);
         vec3 base = toLinear(lm) * toLinear(tex);
         vec3 lit = base * (uAmbient + ndl * 0.8 + ndl2 * 0.4);
         lit = min(lit, vec3(1.0));
@@ -223,6 +335,7 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       in vec3 vNormal;
       in vec3 vColor;
       in vec2 vUV;
+      in vec2 vUV2;
       in vec3 vPos;
       uniform vec3 uLightDir;
       uniform vec3 uFillDir;
@@ -243,7 +356,9 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       uniform vec3 uBgTop;
       uniform vec3 uBgBottom;
       uniform sampler2D uTex;
+      uniform sampler2D uLightmapTex;
       uniform int uHasTexture;
+      uniform int uHasLightmap;
       out vec4 fragColor;
 
       vec3 toLinear(vec3 c) { return pow(c, vec3(2.2)); }
@@ -262,17 +377,22 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
         if (uIsGround > 0.5) {
           if (uGridMode > 0.5) {
             vec3 baseGrid = toLinear(uGroundColor);
-            float scale = max(uGridScale, 0.001);
-            vec2 coord = vPos.xy / scale;
-            vec2 cell = abs(fract(coord) - 0.5);
-            float line = step(cell.x, 0.02) + step(cell.y, 0.02);
-            line = clamp(line, 0.0, 1.0);
-            float axisX = step(abs(vPos.x / scale), 0.04);
-            float axisY = step(abs(vPos.y / scale), 0.04);
+            float minorScale = max(uGridScale, 0.001);
+            float majorScale = minorScale * 10.0;
+            vec2 minorCoord = vPos.xy / minorScale;
+            vec2 majorCoord = vPos.xy / majorScale;
+            vec2 minorCell = abs(fract(minorCoord + 0.5) - 0.5);
+            vec2 majorCell = abs(fract(majorCoord + 0.5) - 0.5);
+            float minorLine = clamp((0.035 - min(minorCell.x, minorCell.y)) / 0.035, 0.0, 1.0);
+            float majorLine = clamp((0.06 - min(majorCell.x, majorCell.y)) / 0.06, 0.0, 1.0);
+            float axisX = clamp((0.05 - abs(vPos.x / minorScale)) / 0.05, 0.0, 1.0);
+            float axisY = clamp((0.05 - abs(vPos.y / minorScale)) / 0.05, 0.0, 1.0);
+            float fade = clamp(1.0 - length(vPos.xy - uShadowCenter.xy) / max(uShadowRadius * 2.2, 1.0), 0.08, 1.0);
             vec3 col = baseGrid;
-            col = mix(col, toLinear(uGridColor), line);
-            col = mix(col, toLinear(uAxisColorX), axisX);
-            col = mix(col, toLinear(uAxisColorY), axisY);
+            col = mix(col, toLinear(uGridColor), minorLine * 0.22 * fade);
+            col = mix(col, toLinear(uGridColor) * 1.35, majorLine * 0.75 * fade);
+            col = mix(col, toLinear(uAxisColorX), axisX * 0.95);
+            col = mix(col, toLinear(uAxisColorY), axisY * 0.95);
             fragColor = vec4(toSrgb(col), 1.0);
             return;
           }
@@ -290,7 +410,8 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
         }
 
         vec3 tex = (uHasTexture == 1) ? texture(uTex, vUV).rgb : vec3(1.0);
-        vec3 lm = mix(vec3(1.0), vColor, uLightmapStrength);
+        vec3 lm_src = (uHasLightmap == 1) ? texture(uLightmapTex, vUV2).rgb : vColor;
+        vec3 lm = mix(vec3(1.0), lm_src, uLightmapStrength);
         vec3 base = toLinear(lm) * toLinear(tex);
         vec3 lit = base * (uAmbient + ndl * 0.8 + ndl2 * 0.4);
         lit = min(lit, vec3(1.0));
@@ -305,6 +426,7 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       in vec3 vNormal;
       in vec3 vColor;
       in vec2 vUV;
+      in vec2 vUV2;
       in vec3 vPos;
       uniform vec3 uLightDir;
       uniform vec3 uFillDir;
@@ -325,7 +447,9 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       uniform vec3 uBgTop;
       uniform vec3 uBgBottom;
       uniform sampler2D uTex;
+      uniform sampler2D uLightmapTex;
       uniform int uHasTexture;
+      uniform int uHasLightmap;
       out vec4 fragColor;
 
       vec3 toLinear(vec3 c) { return pow(c, vec3(2.2)); }
@@ -344,17 +468,22 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
         if (uIsGround > 0.5) {
           if (uGridMode > 0.5) {
             vec3 baseGrid = toLinear(uGroundColor);
-            float scale = max(uGridScale, 0.001);
-            vec2 coord = vPos.xy / scale;
-            vec2 cell = abs(fract(coord) - 0.5);
-            float line = step(cell.x, 0.02) + step(cell.y, 0.02);
-            line = clamp(line, 0.0, 1.0);
-            float axisX = step(abs(vPos.x / scale), 0.04);
-            float axisY = step(abs(vPos.y / scale), 0.04);
+            float minorScale = max(uGridScale, 0.001);
+            float majorScale = minorScale * 10.0;
+            vec2 minorCoord = vPos.xy / minorScale;
+            vec2 majorCoord = vPos.xy / majorScale;
+            vec2 minorCell = abs(fract(minorCoord + 0.5) - 0.5);
+            vec2 majorCell = abs(fract(majorCoord + 0.5) - 0.5);
+            float minorLine = clamp((0.035 - min(minorCell.x, minorCell.y)) / 0.035, 0.0, 1.0);
+            float majorLine = clamp((0.06 - min(majorCell.x, majorCell.y)) / 0.06, 0.0, 1.0);
+            float axisX = clamp((0.05 - abs(vPos.x / minorScale)) / 0.05, 0.0, 1.0);
+            float axisY = clamp((0.05 - abs(vPos.y / minorScale)) / 0.05, 0.0, 1.0);
+            float fade = clamp(1.0 - length(vPos.xy - uShadowCenter.xy) / max(uShadowRadius * 2.2, 1.0), 0.08, 1.0);
             vec3 col = baseGrid;
-            col = mix(col, toLinear(uGridColor), line);
-            col = mix(col, toLinear(uAxisColorX), axisX);
-            col = mix(col, toLinear(uAxisColorY), axisY);
+            col = mix(col, toLinear(uGridColor), minorLine * 0.22 * fade);
+            col = mix(col, toLinear(uGridColor) * 1.35, majorLine * 0.75 * fade);
+            col = mix(col, toLinear(uAxisColorX), axisX * 0.95);
+            col = mix(col, toLinear(uAxisColorY), axisY * 0.95);
             fragColor = vec4(toSrgb(col), 1.0);
             return;
           }
@@ -372,7 +501,8 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
         }
 
         vec3 tex = (uHasTexture == 1) ? texture(uTex, vUV).rgb : vec3(1.0);
-        vec3 lm = mix(vec3(1.0), vColor, uLightmapStrength);
+        vec3 lm_src = (uHasLightmap == 1) ? texture(uLightmapTex, vUV2).rgb : vColor;
+        vec3 lm = mix(vec3(1.0), lm_src, uLightmapStrength);
         vec3 base = toLinear(lm) * toLinear(tex);
         vec3 lit = base * (uAmbient + ndl * 0.8 + ndl2 * 0.4);
         lit = min(lit, vec3(1.0));
@@ -386,6 +516,7 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
     varying vec3 vNormal;
     varying vec3 vColor;
     varying vec2 vUV;
+    varying vec2 vUV2;
     varying vec3 vPos;
     uniform vec3 uLightDir;
     uniform vec3 uFillDir;
@@ -406,7 +537,9 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
     uniform vec3 uBgTop;
     uniform vec3 uBgBottom;
     uniform sampler2D uTex;
+    uniform sampler2D uLightmapTex;
     uniform int uHasTexture;
+    uniform int uHasLightmap;
 
     vec3 toLinear(vec3 c) { return pow(c, vec3(2.2)); }
     vec3 toSrgb(vec3 c) { return pow(c, vec3(1.0 / 2.2)); }
@@ -423,20 +556,25 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       float ndl2 = abs(dot(n, normalize(uFillDir)));
       if (uIsGround > 0.5) {
         if (uGridMode > 0.5) {
-          vec3 baseGrid = toLinear(uGroundColor);
-          float scale = max(uGridScale, 0.001);
-          vec2 coord = vPos.xy / scale;
-          vec2 cell = abs(fract(coord) - 0.5);
-          float line = step(cell.x, 0.02) + step(cell.y, 0.02);
-          line = clamp(line, 0.0, 1.0);
-          float axisX = step(abs(vPos.x / scale), 0.04);
-          float axisY = step(abs(vPos.y / scale), 0.04);
-          vec3 col = baseGrid;
-          col = mix(col, toLinear(uGridColor), line);
-          col = mix(col, toLinear(uAxisColorX), axisX);
-          col = mix(col, toLinear(uAxisColorY), axisY);
-          gl_FragColor = vec4(toSrgb(col), 1.0);
-          return;
+            vec3 baseGrid = toLinear(uGroundColor);
+            float minorScale = max(uGridScale, 0.001);
+            float majorScale = minorScale * 10.0;
+            vec2 minorCoord = vPos.xy / minorScale;
+            vec2 majorCoord = vPos.xy / majorScale;
+            vec2 minorCell = abs(fract(minorCoord + 0.5) - 0.5);
+            vec2 majorCell = abs(fract(majorCoord + 0.5) - 0.5);
+            float minorLine = clamp((0.035 - min(minorCell.x, minorCell.y)) / 0.035, 0.0, 1.0);
+            float majorLine = clamp((0.06 - min(majorCell.x, majorCell.y)) / 0.06, 0.0, 1.0);
+            float axisX = clamp((0.05 - abs(vPos.x / minorScale)) / 0.05, 0.0, 1.0);
+            float axisY = clamp((0.05 - abs(vPos.y / minorScale)) / 0.05, 0.0, 1.0);
+            float fade = clamp(1.0 - length(vPos.xy - uShadowCenter.xy) / max(uShadowRadius * 2.2, 1.0), 0.08, 1.0);
+            vec3 col = baseGrid;
+            col = mix(col, toLinear(uGridColor), minorLine * 0.22 * fade);
+            col = mix(col, toLinear(uGridColor) * 1.35, majorLine * 0.75 * fade);
+            col = mix(col, toLinear(uAxisColorX), axisX * 0.95);
+            col = mix(col, toLinear(uAxisColorY), axisY * 0.95);
+            gl_FragColor = vec4(toSrgb(col), 1.0);
+            return;
         }
         vec3 groundLin = toLinear(uGroundColor);
         float gdiff = ndl * 0.5 + ndl2 * 0.2;
@@ -452,7 +590,8 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
       }
 
       vec3 tex = (uHasTexture == 1) ? texture2D(uTex, vUV).rgb : vec3(1.0);
-      vec3 lm = mix(vec3(1.0), vColor, uLightmapStrength);
+      vec3 lm_src = (uHasLightmap == 1) ? texture2D(uLightmapTex, vUV2).rgb : vColor;
+      vec3 lm = mix(vec3(1.0), lm_src, uLightmapStrength);
       vec3 base = toLinear(lm) * toLinear(tex);
       vec3 lit = base * (uAmbient + ndl * 0.8 + ndl2 * 0.4);
       lit = min(lit, vec3(1.0));
@@ -467,11 +606,12 @@ BspPreviewWidget::BspPreviewWidget(QWidget* parent) : QOpenGLWidget(parent) {
   setFocusPolicy(Qt::StrongFocus);
   setToolTip(
     "3D Controls:\n"
-    "- Orbit: Left-drag\n"
-    "- Pan: Shift+Left-drag / Middle-drag / Right-drag\n"
+    "- Orbit: Middle-drag (Alt+Left-drag)\n"
+    "- Pan: Shift+Middle-drag (Alt+Shift+Left-drag)\n"
+    "- Dolly: Ctrl+Middle-drag (Alt+Ctrl+Left-drag)\n"
     "- Zoom: Mouse wheel\n"
     "- Frame: F\n"
-    "- Reset: R");
+    "- Reset: R / Home");
 }
 
 BspPreviewWidget::~BspPreviewWidget() {
@@ -505,12 +645,14 @@ void BspPreviewWidget::set_mesh(BspMesh mesh, QHash<QString, QImage> textures) {
     ds.index_count = s.index_count;
     ds.texture = s.texture;
     ds.uv_normalized = s.uv_normalized;
+    ds.lightmap_index = s.lightmap_index;
     surfaces_.push_back(ds);
   }
 
   pending_upload_ = has_mesh_;
   pending_texture_upload_ = has_mesh_;
   reset_camera_from_mesh();
+  camera_fit_pending_ = has_mesh_;
   update();
 }
 
@@ -556,12 +698,47 @@ void BspPreviewWidget::set_textured_enabled(bool enabled) {
   update();
 }
 
+void BspPreviewWidget::set_fov_degrees(int degrees) {
+  const float clamped = std::clamp(static_cast<float>(degrees), 40.0f, 120.0f);
+  if (std::abs(clamped - fov_y_deg_) < 0.001f) {
+    return;
+  }
+  fov_y_deg_ = clamped;
+  ground_extent_ = 0.0f;
+  update();
+}
+
+PreviewCameraState BspPreviewWidget::camera_state() const {
+  PreviewCameraState state;
+  state.center = center_;
+  state.yaw_deg = yaw_deg_;
+  state.pitch_deg = pitch_deg_;
+  state.distance = distance_;
+  state.valid = true;
+  return state;
+}
+
+void BspPreviewWidget::set_camera_state(const PreviewCameraState& state) {
+  if (!state.valid) {
+    return;
+  }
+  center_ = state.center;
+  yaw_deg_ = std::remainder(state.yaw_deg, 360.0f);
+  pitch_deg_ = std::clamp(state.pitch_deg, -89.0f, 89.0f);
+  distance_ = std::clamp(state.distance, orbit_min_distance(radius_), orbit_max_distance(radius_));
+  camera_fit_pending_ = false;
+  ground_extent_ = 0.0f;
+  update();
+}
+
 void BspPreviewWidget::clear() {
   has_mesh_ = false;
+  camera_fit_pending_ = false;
   pending_upload_ = false;
   pending_texture_upload_ = false;
   textures_.clear();
   surfaces_.clear();
+  lightmap_textures_.clear();
   mesh_ = BspMesh{};
   if (gl_ready_ && context()) {
     makeCurrent();
@@ -576,6 +753,11 @@ void BspPreviewWidget::initializeGL() {
   glEnable(GL_DEPTH_TEST);
   glDisable(GL_CULL_FACE);
   gl_ready_ = true;
+  // Reparenting (e.g. fullscreen toggle) can recreate the GL context.
+  // Reset GPU handles and force a fresh upload for the new context.
+  destroy_gl_resources();
+  pending_upload_ = has_mesh_;
+  pending_texture_upload_ = has_mesh_;
   ensure_program();
   upload_mesh_if_possible();
 }
@@ -605,18 +787,24 @@ void BspPreviewWidget::paintGL() {
   QVector3D axis_y;
   update_grid_colors(&grid_color, &axis_x, &axis_y);
 
+  if (camera_fit_pending_ && has_mesh_ && width() > 0 && height() > 0) {
+    frame_mesh();
+    camera_fit_pending_ = false;
+  }
+
   const float aspect = (height() > 0) ? (static_cast<float>(width()) / static_cast<float>(height())) : 1.0f;
   const float near_plane = std::max(radius_ * 0.01f, 0.01f);
   const float far_plane = std::max(radius_ * 200.0f, near_plane + 10.0f);
 
   QMatrix4x4 proj;
-  proj.perspective(45.0f, aspect, near_plane, far_plane);
+  proj.perspective(fov_y_deg_, aspect, near_plane, far_plane);
 
   const QVector3D dir = spherical_dir(yaw_deg_, pitch_deg_).normalized();
   const QVector3D cam_pos = center_ + dir * distance_;
+  const QVector3D view_target = center_;
 
   QMatrix4x4 view;
-  view.lookAt(cam_pos, center_, QVector3D(0, 0, 1));
+  view.lookAt(cam_pos, view_target, QVector3D(0, 0, 1));
 
   QMatrix4x4 model;
   model.setToIdentity();
@@ -631,7 +819,14 @@ void BspPreviewWidget::paintGL() {
   program_.setUniformValue("uBgTop", bg_top);
   program_.setUniformValue("uBgBottom", bg_bottom);
   program_.setUniformValue("uHasTexture", 0);
+  program_.setUniformValue("uHasLightmap", 0);
   program_.setUniformValue("uTex", 0);
+  program_.setUniformValue("uLightmapTex", 1);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  glActiveTexture(GL_TEXTURE1);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  glActiveTexture(GL_TEXTURE0);
 
   glDisable(GL_DEPTH_TEST);
   glDisable(GL_BLEND);
@@ -654,7 +849,14 @@ void BspPreviewWidget::paintGL() {
     upload_textures_if_possible();
   }
 
-  if (index_count_ <= 0) {
+  if (index_count_ <= 0 || !vao_.isCreated() || !vbo_.isCreated() || !ibo_.isCreated()) {
+    if (has_mesh_ && !pending_upload_) {
+      pending_upload_ = true;
+      upload_mesh_if_possible();
+    }
+  }
+
+  if (index_count_ <= 0 || !vao_.isCreated() || !vbo_.isCreated() || !ibo_.isCreated()) {
     program_.release();
     return;
   }
@@ -681,6 +883,9 @@ void BspPreviewWidget::paintGL() {
 
   glActiveTexture(GL_TEXTURE0);
   program_.setUniformValue("uTex", 0);
+  glActiveTexture(GL_TEXTURE1);
+  program_.setUniformValue("uLightmapTex", 1);
+  glActiveTexture(GL_TEXTURE0);
   update_ground_mesh_if_needed();
 
   apply_wireframe_state(wireframe_enabled_);
@@ -688,9 +893,14 @@ void BspPreviewWidget::paintGL() {
   if (grid_mode_ != PreviewGridMode::None && ground_index_count_ > 0 && ground_vbo_.isCreated() && ground_ibo_.isCreated()) {
     program_.setUniformValue("uIsGround", 1.0f);
     program_.setUniformValue("uHasTexture", 0);
+    program_.setUniformValue("uHasLightmap", 0);
     program_.setUniformValue("uTexScale", QVector2D(1.0f, 1.0f));
     program_.setUniformValue("uTexOffset", QVector2D(0.0f, 0.0f));
+    glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
     glDisable(GL_BLEND);
 
     ground_vbo_.bind();
@@ -699,45 +909,98 @@ void BspPreviewWidget::paintGL() {
     const int nrm_loc = program_.attributeLocation("aNormal");
     const int col_loc = program_.attributeLocation("aColor");
     const int uv_loc = program_.attributeLocation("aUV");
+    const int uv2_loc = program_.attributeLocation("aUV2");
     program_.enableAttributeArray(pos_loc);
     program_.enableAttributeArray(nrm_loc);
     program_.enableAttributeArray(col_loc);
     program_.enableAttributeArray(uv_loc);
+    program_.enableAttributeArray(uv2_loc);
     program_.setAttributeBuffer(pos_loc, GL_FLOAT, offsetof(GpuVertex, px), 3, sizeof(GpuVertex));
     program_.setAttributeBuffer(nrm_loc, GL_FLOAT, offsetof(GpuVertex, nx), 3, sizeof(GpuVertex));
     program_.setAttributeBuffer(col_loc, GL_FLOAT, offsetof(GpuVertex, r), 3, sizeof(GpuVertex));
     program_.setAttributeBuffer(uv_loc, GL_FLOAT, offsetof(GpuVertex, u), 2, sizeof(GpuVertex));
+    program_.setAttributeBuffer(uv2_loc, GL_FLOAT, offsetof(GpuVertex, lu), 2, sizeof(GpuVertex));
 
     glDrawElements(GL_TRIANGLES, ground_index_count_, GL_UNSIGNED_SHORT, nullptr);
   }
 
   program_.setUniformValue("uIsGround", 0.0f);
 
-  vao_.bind();
+  const bool vao_bound = vao_.isCreated();
+  if (vao_bound) {
+    vao_.bind();
+  }
+  vbo_.bind();
+  ibo_.bind();
+  const int pos_loc = program_.attributeLocation("aPos");
+  const int nrm_loc = program_.attributeLocation("aNormal");
+  const int col_loc = program_.attributeLocation("aColor");
+  const int uv_loc = program_.attributeLocation("aUV");
+  const int uv2_loc = program_.attributeLocation("aUV2");
+  program_.enableAttributeArray(pos_loc);
+  program_.enableAttributeArray(nrm_loc);
+  program_.enableAttributeArray(col_loc);
+  program_.enableAttributeArray(uv_loc);
+  program_.enableAttributeArray(uv2_loc);
+  program_.setAttributeBuffer(pos_loc, GL_FLOAT, offsetof(GpuVertex, px), 3, sizeof(GpuVertex));
+  program_.setAttributeBuffer(nrm_loc, GL_FLOAT, offsetof(GpuVertex, nx), 3, sizeof(GpuVertex));
+  program_.setAttributeBuffer(col_loc, GL_FLOAT, offsetof(GpuVertex, r), 3, sizeof(GpuVertex));
+  program_.setAttributeBuffer(uv_loc, GL_FLOAT, offsetof(GpuVertex, u), 2, sizeof(GpuVertex));
+  program_.setAttributeBuffer(uv2_loc, GL_FLOAT, offsetof(GpuVertex, lu), 2, sizeof(GpuVertex));
+
   if (surfaces_.isEmpty()) {
     program_.setUniformValue("uHasTexture", 0);
+    program_.setUniformValue("uHasLightmap", 0);
     program_.setUniformValue("uTexScale", QVector2D(1.0f, 1.0f));
     program_.setUniformValue("uTexOffset", QVector2D(0.0f, 0.0f));
+    glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
     glDrawElements(GL_TRIANGLES, index_count_, GL_UNSIGNED_INT, nullptr);
   } else {
     for (const DrawSurface& s : surfaces_) {
+      if (s.first_index < 0 || s.index_count <= 0 || (s.first_index + s.index_count) > index_count_) {
+        continue;
+      }
       const bool use_tex = textured_enabled_ && s.has_texture;
+      const bool use_lightmap = lightmap_enabled_ && s.has_lightmap;
       program_.setUniformValue("uHasTexture", use_tex ? 1 : 0);
+      program_.setUniformValue("uHasLightmap", use_lightmap ? 1 : 0);
       program_.setUniformValue("uTexScale", s.tex_scale);
       program_.setUniformValue("uTexOffset", s.tex_offset);
+      glActiveTexture(GL_TEXTURE0);
       glBindTexture(GL_TEXTURE_2D, use_tex ? s.texture_id : 0);
+      glActiveTexture(GL_TEXTURE1);
+      GLuint lm_tex = 0;
+      if (use_lightmap && s.lightmap_index >= 0 && s.lightmap_index < lightmap_textures_.size()) {
+        lm_tex = lightmap_textures_[s.lightmap_index];
+      }
+      glBindTexture(GL_TEXTURE_2D, lm_tex);
+      glActiveTexture(GL_TEXTURE0);
       const uintptr_t offs = static_cast<uintptr_t>(s.first_index) * sizeof(std::uint32_t);
       glDrawElements(GL_TRIANGLES, s.index_count, GL_UNSIGNED_INT, reinterpret_cast<const void*>(offs));
     }
   }
+  glActiveTexture(GL_TEXTURE1);
   glBindTexture(GL_TEXTURE_2D, 0);
-  vao_.release();
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  vbo_.release();
+  ibo_.release();
+  if (vao_bound) {
+    vao_.release();
+  }
   apply_wireframe_state(false);
   program_.release();
 }
 
 void BspPreviewWidget::resizeGL(int, int) {
+  if (camera_fit_pending_ && has_mesh_ && width() > 0 && height() > 0) {
+    frame_mesh();
+    camera_fit_pending_ = false;
+  }
   update();
 }
 
@@ -747,17 +1010,20 @@ void BspPreviewWidget::mousePressEvent(QMouseEvent* event) {
     return;
   }
 
-  if (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton || event->button() == Qt::RightButton) {
+  const Qt::MouseButton button = event->button();
+  const Qt::KeyboardModifiers mods = event->modifiers();
+  const bool mmb = (button == Qt::MiddleButton);
+  const bool alt_lmb = (button == Qt::LeftButton && (mods & Qt::AltModifier));
+  if (mmb || alt_lmb) {
     setFocus(Qt::MouseFocusReason);
     last_mouse_pos_ = event->pos();
-    drag_button_ = event->button();
-
-    if (event->button() == Qt::LeftButton) {
-      drag_mode_ = (event->modifiers() & Qt::ShiftModifier) ? DragMode::Pan : DragMode::Orbit;
-    } else {
+    drag_mode_ = DragMode::Orbit;
+    if (mods & Qt::ControlModifier) {
+      drag_mode_ = DragMode::Dolly;
+    } else if (mods & Qt::ShiftModifier) {
       drag_mode_ = DragMode::Pan;
     }
-
+    drag_buttons_ = button;
     event->accept();
     return;
   }
@@ -766,9 +1032,10 @@ void BspPreviewWidget::mousePressEvent(QMouseEvent* event) {
 }
 
 void BspPreviewWidget::mouseMoveEvent(QMouseEvent* event) {
-  if (!event || drag_mode_ == DragMode::None || drag_button_ == Qt::NoButton || !(event->buttons() & drag_button_)) {
+  if (!event || drag_mode_ == DragMode::None || drag_buttons_ == Qt::NoButton ||
+      (event->buttons() & drag_buttons_) != drag_buttons_) {
     drag_mode_ = DragMode::None;
-    drag_button_ = Qt::NoButton;
+    drag_buttons_ = Qt::NoButton;
     QOpenGLWidget::mouseMoveEvent(event);
     return;
   }
@@ -777,11 +1044,13 @@ void BspPreviewWidget::mouseMoveEvent(QMouseEvent* event) {
   last_mouse_pos_ = event->pos();
 
   if (drag_mode_ == DragMode::Orbit) {
-    yaw_deg_ += static_cast<float>(delta.x()) * 0.6f;
-    pitch_deg_ += static_cast<float>(-delta.y()) * 0.6f;
+    yaw_deg_ += static_cast<float>(delta.x()) * kOrbitSensitivityDegPerPixel;
+    pitch_deg_ += static_cast<float>(-delta.y()) * kOrbitSensitivityDegPerPixel;
     pitch_deg_ = std::clamp(pitch_deg_, -89.0f, 89.0f);
   } else if (drag_mode_ == DragMode::Pan) {
     pan_by_pixels(delta);
+  } else if (drag_mode_ == DragMode::Dolly) {
+    dolly_by_pixels(delta);
   }
 
   update();
@@ -789,9 +1058,11 @@ void BspPreviewWidget::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void BspPreviewWidget::mouseReleaseEvent(QMouseEvent* event) {
-  if (event && event->button() == drag_button_) {
+  if (event && drag_mode_ != DragMode::None && drag_buttons_ != Qt::NoButton &&
+      (Qt::MouseButtons(event->button()) & drag_buttons_) &&
+      (event->buttons() & drag_buttons_) != drag_buttons_) {
     drag_mode_ = DragMode::None;
-    drag_button_ = Qt::NoButton;
+    drag_buttons_ = Qt::NoButton;
     event->accept();
     return;
   }
@@ -806,8 +1077,14 @@ void BspPreviewWidget::wheelEvent(QWheelEvent* event) {
   if (!num_deg.isNull()) {
     const float steps = static_cast<float>(num_deg.y()) / 15.0f;
     const float factor = std::pow(0.85f, steps);
-    distance_ *= factor;
-    distance_ = std::clamp(distance_, radius_ * 0.4f, radius_ * 50.0f);
+    apply_orbit_zoom(factor,
+                     orbit_min_distance(radius_),
+                     orbit_max_distance(radius_),
+                     &distance_,
+                     &center_,
+                     yaw_deg_,
+                     pitch_deg_);
+    ground_extent_ = 0.0f;
     update();
     event->accept();
     return;
@@ -816,9 +1093,10 @@ void BspPreviewWidget::wheelEvent(QWheelEvent* event) {
 }
 
 void BspPreviewWidget::reset_camera_from_mesh() {
-  frame_mesh();
   yaw_deg_ = 45.0f;
   pitch_deg_ = 55.0f;
+  camera_fit_pending_ = false;
+  frame_mesh();
 }
 
 void BspPreviewWidget::keyPressEvent(QKeyEvent* event) {
@@ -827,7 +1105,7 @@ void BspPreviewWidget::keyPressEvent(QKeyEvent* event) {
     return;
   }
 
-  if (event->key() == Qt::Key_R) {
+  if (event->key() == Qt::Key_R || event->key() == Qt::Key_Home) {
     reset_camera_from_mesh();
     update();
     event->accept();
@@ -844,6 +1122,14 @@ void BspPreviewWidget::keyPressEvent(QKeyEvent* event) {
   QOpenGLWidget::keyPressEvent(event);
 }
 
+void BspPreviewWidget::keyReleaseEvent(QKeyEvent* event) {
+  if (!event) {
+    QOpenGLWidget::keyReleaseEvent(event);
+    return;
+  }
+  QOpenGLWidget::keyReleaseEvent(event);
+}
+
 void BspPreviewWidget::frame_mesh() {
   if (!has_mesh_) {
     center_ = QVector3D(0, 0, 0);
@@ -856,8 +1142,12 @@ void BspPreviewWidget::frame_mesh() {
   const QVector3D mins = mesh_.mins;
   const QVector3D maxs = mesh_.maxs;
   center_ = (mins + maxs) * 0.5f;
-  radius_ = std::max(0.001f, (maxs - mins).length() * 0.5f);
-  distance_ = std::max(radius_ * 2.8f, 1.0f);
+  const QVector3D half_extents = (maxs - mins) * 0.5f;
+  radius_ = std::max(0.001f, half_extents.length());
+  const float aspect = (height() > 0) ? (static_cast<float>(width()) / static_cast<float>(height())) : 1.0f;
+  const QVector3D view_forward = (-spherical_dir(yaw_deg_, pitch_deg_)).normalized();
+  const float fit_dist = fit_distance_for_aabb(half_extents, view_forward, aspect, fov_y_deg_);
+  distance_ = std::clamp(fit_dist * 1.05f, orbit_min_distance(radius_), orbit_max_distance(radius_));
   ground_z_ = mins.z() - radius_ * 0.02f;
   ground_extent_ = 0.0f;
 }
@@ -868,8 +1158,7 @@ void BspPreviewWidget::pan_by_pixels(const QPoint& delta) {
   }
 
   constexpr float kPi = 3.14159265358979323846f;
-  constexpr float fov_deg = 45.0f;
-  const float fov_rad = fov_deg * kPi / 180.0f;
+  const float fov_rad = fov_y_deg_ * kPi / 180.0f;
   const float units_per_px =
       (2.0f * distance_ * std::tan(fov_rad * 0.5f)) / std::max(1.0f, static_cast<float>(height()));
 
@@ -886,6 +1175,18 @@ void BspPreviewWidget::pan_by_pixels(const QPoint& delta) {
 
   const QVector3D up = QVector3D::crossProduct(right, forward).normalized();
   center_ += (-right * static_cast<float>(delta.x()) + up * static_cast<float>(delta.y())) * units_per_px;
+  ground_extent_ = 0.0f;
+}
+
+void BspPreviewWidget::dolly_by_pixels(const QPoint& delta) {
+  const float factor = std::pow(1.01f, static_cast<float>(delta.y()));
+  apply_orbit_zoom(factor,
+                   orbit_min_distance(radius_),
+                   orbit_max_distance(radius_),
+                   &distance_,
+                   &center_,
+                   yaw_deg_,
+                   pitch_deg_);
   ground_extent_ = 0.0f;
 }
 
@@ -924,6 +1225,8 @@ void BspPreviewWidget::upload_mesh_if_possible() {
     gv.b = v.color.blueF();
     gv.u = v.uv.x();
     gv.v = v.uv.y();
+    gv.lu = v.lightmap_uv.x();
+    gv.lv = v.lightmap_uv.y();
     verts.push_back(gv);
   }
 
@@ -941,6 +1244,8 @@ void BspPreviewWidget::upload_mesh_if_possible() {
   glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(GpuVertex), reinterpret_cast<void*>(offsetof(GpuVertex, r)));
   glEnableVertexAttribArray(3);
   glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(GpuVertex), reinterpret_cast<void*>(offsetof(GpuVertex, u)));
+  glEnableVertexAttribArray(4);
+  glVertexAttribPointer(4, 2, GL_FLOAT, GL_FALSE, sizeof(GpuVertex), reinterpret_cast<void*>(offsetof(GpuVertex, lu)));
 
   vao_.release();
   vbo_.release();
@@ -966,11 +1271,16 @@ void BspPreviewWidget::upload_textures_if_possible() {
   for (DrawSurface& s : surfaces_) {
     delete_tex(&s.texture_id);
     s.has_texture = false;
+    s.has_lightmap = false;
     s.tex_scale = QVector2D(1.0f, 1.0f);
     s.tex_offset = QVector2D(0.0f, 0.0f);
   }
+  for (GLuint& id : lightmap_textures_) {
+    delete_tex(&id);
+  }
+  lightmap_textures_.clear();
 
-  auto upload = [&](const QImage& src, GLuint* out_id) -> bool {
+  auto upload = [&](const QImage& src, GLuint* out_id, bool flip_vertical, GLint wrap_mode) -> bool {
     if (!out_id) {
       return false;
     }
@@ -978,9 +1288,15 @@ void BspPreviewWidget::upload_textures_if_possible() {
     if (src.isNull()) {
       return false;
     }
-    QImage img = src.convertToFormat(QImage::Format_RGBA8888).flipped(Qt::Vertical);
+    QImage img = src.convertToFormat(QImage::Format_RGBA8888);
     if (img.isNull()) {
       return false;
+    }
+    if (flip_vertical) {
+      img = img.flipped(Qt::Vertical);
+      if (img.isNull()) {
+        return false;
+      }
     }
     glGenTextures(1, out_id);
     if (*out_id == 0) {
@@ -989,8 +1305,8 @@ void BspPreviewWidget::upload_textures_if_possible() {
     glBindTexture(GL_TEXTURE_2D, *out_id);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap_mode);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap_mode);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D,
                  0,
@@ -1008,7 +1324,7 @@ void BspPreviewWidget::upload_textures_if_possible() {
   for (DrawSurface& s : surfaces_) {
     const QString key = s.texture.toLower();
     const QImage img = textures_.value(key);
-    if (!img.isNull() && upload(img, &s.texture_id)) {
+    if (!img.isNull() && upload(img, &s.texture_id, true, GL_REPEAT)) {
       s.has_texture = true;
       if (s.uv_normalized) {
         s.tex_scale = QVector2D(1.0f, 1.0f);
@@ -1020,6 +1336,24 @@ void BspPreviewWidget::upload_textures_if_possible() {
         s.tex_offset = QVector2D(0.0f, 0.0f);
       }
     }
+  }
+
+  lightmap_textures_.resize(mesh_.lightmaps.size());
+  for (int i = 0; i < mesh_.lightmaps.size(); ++i) {
+    GLuint lm_id = 0;
+    if (upload(mesh_.lightmaps[i], &lm_id, false, GL_CLAMP_TO_EDGE)) {
+      lightmap_textures_[i] = lm_id;
+    } else {
+      lightmap_textures_[i] = 0;
+    }
+  }
+
+  for (DrawSurface& s : surfaces_) {
+    if (s.lightmap_index < 0 || s.lightmap_index >= lightmap_textures_.size()) {
+      s.has_lightmap = false;
+      continue;
+    }
+    s.has_lightmap = (lightmap_textures_[s.lightmap_index] != 0);
   }
 
   pending_texture_upload_ = false;
@@ -1034,7 +1368,15 @@ void BspPreviewWidget::destroy_gl_resources() {
       s.texture_id = 0;
       s.has_texture = false;
     }
+    s.has_lightmap = false;
   }
+  for (GLuint& id : lightmap_textures_) {
+    if (id != 0) {
+      glDeleteTextures(1, &id);
+      id = 0;
+    }
+  }
+  lightmap_textures_.clear();
   if (vbo_.isCreated()) {
     vbo_.destroy();
   }
@@ -1078,6 +1420,7 @@ void BspPreviewWidget::ensure_program() {
   program_.bindAttributeLocation("aNormal", 1);
   program_.bindAttributeLocation("aColor", 2);
   program_.bindAttributeLocation("aUV", 3);
+  program_.bindAttributeLocation("aUV2", 4);
 
   if (!vs_ok || !fs_ok || !program_.link()) {
     qWarning() << "BspPreviewWidget shader compile/link failed:" << program_.log();
@@ -1105,10 +1448,10 @@ void BspPreviewWidget::update_ground_mesh_if_needed() {
 
   QVector<GpuVertex> verts;
   verts.reserve(4);
-  verts.push_back(GpuVertex{minx, miny, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f});
-  verts.push_back(GpuVertex{maxx, miny, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f});
-  verts.push_back(GpuVertex{maxx, maxy, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f});
-  verts.push_back(GpuVertex{minx, maxy, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f});
+  verts.push_back(GpuVertex{minx, miny, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f});
+  verts.push_back(GpuVertex{maxx, miny, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f});
+  verts.push_back(GpuVertex{maxx, maxy, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f});
+  verts.push_back(GpuVertex{minx, maxy, z, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f});
 
   const std::uint16_t idx[6] = {0, 1, 2, 0, 2, 3};
 
@@ -1146,12 +1489,12 @@ void BspPreviewWidget::update_background_mesh_if_needed() {
   }
 
   const GpuVertex verts[6] = {
-    {-1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f},
-    { 1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f},
-    { 1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f},
-    {-1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f},
-    { 1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f},
-    {-1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f},
+    {-1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+    { 1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f},
+    { 1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+    {-1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+    { 1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+    {-1.0f,  1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f},
   };
 
   bg_vao_.bind();
@@ -1162,14 +1505,17 @@ void BspPreviewWidget::update_background_mesh_if_needed() {
   const int nrm_loc = program_.attributeLocation("aNormal");
   const int col_loc = program_.attributeLocation("aColor");
   const int uv_loc = program_.attributeLocation("aUV");
+  const int uv2_loc = program_.attributeLocation("aUV2");
   program_.enableAttributeArray(pos_loc);
   program_.enableAttributeArray(nrm_loc);
   program_.enableAttributeArray(col_loc);
   program_.enableAttributeArray(uv_loc);
+  program_.enableAttributeArray(uv2_loc);
   program_.setAttributeBuffer(pos_loc, GL_FLOAT, offsetof(GpuVertex, px), 3, sizeof(GpuVertex));
   program_.setAttributeBuffer(nrm_loc, GL_FLOAT, offsetof(GpuVertex, nx), 3, sizeof(GpuVertex));
   program_.setAttributeBuffer(col_loc, GL_FLOAT, offsetof(GpuVertex, r), 3, sizeof(GpuVertex));
   program_.setAttributeBuffer(uv_loc, GL_FLOAT, offsetof(GpuVertex, u), 2, sizeof(GpuVertex));
+  program_.setAttributeBuffer(uv2_loc, GL_FLOAT, offsetof(GpuVertex, lu), 2, sizeof(GpuVertex));
 
   bg_vao_.release();
   bg_vbo_.release();
@@ -1177,7 +1523,8 @@ void BspPreviewWidget::update_background_mesh_if_needed() {
 }
 
 void BspPreviewWidget::update_grid_settings() {
-  grid_scale_ = std::max(radius_ * 0.35f, 1.0f);
+  const float reference = std::max(distance_, radius_ * 0.25f);
+  grid_scale_ = quantized_grid_scale(reference);
 }
 
 void BspPreviewWidget::apply_wireframe_state(bool enabled) {
@@ -1245,3 +1592,4 @@ void BspPreviewWidget::update_grid_colors(QVector3D* grid, QVector3D* axis_x, QV
     *axis_y = QVector3D(axis_y_color.redF(), axis_y_color.greenF(), axis_y_color.blueF());
   }
 }
+

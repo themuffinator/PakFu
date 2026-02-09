@@ -27,6 +27,9 @@ class BspPreviewWidget final : public QOpenGLWidget, protected QOpenGLFunctions 
   void set_background_mode(PreviewBackgroundMode mode, const QColor& custom_color);
   void set_wireframe_enabled(bool enabled);
   void set_textured_enabled(bool enabled);
+  void set_fov_degrees(int degrees);
+  [[nodiscard]] PreviewCameraState camera_state() const;
+  void set_camera_state(const PreviewCameraState& state);
   void clear();
 
  protected:
@@ -35,6 +38,7 @@ class BspPreviewWidget final : public QOpenGLWidget, protected QOpenGLFunctions 
   void mouseReleaseEvent(QMouseEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
   void keyPressEvent(QKeyEvent* event) override;
+  void keyReleaseEvent(QKeyEvent* event) override;
   void initializeGL() override;
   void paintGL() override;
   void resizeGL(int w, int h) override;
@@ -45,6 +49,7 @@ class BspPreviewWidget final : public QOpenGLWidget, protected QOpenGLFunctions 
     float nx, ny, nz;
     float r, g, b;
     float u, v;
+    float lu, lv;
   };
 
   struct DrawSurface {
@@ -52,15 +57,18 @@ class BspPreviewWidget final : public QOpenGLWidget, protected QOpenGLFunctions 
     int index_count = 0;
     QString texture;
     bool uv_normalized = false;
+    int lightmap_index = -1;
     QVector2D tex_scale = QVector2D(1.0f, 1.0f);
     QVector2D tex_offset = QVector2D(0.0f, 0.0f);
     GLuint texture_id = 0;
     bool has_texture = false;
+    bool has_lightmap = false;
   };
 
   void reset_camera_from_mesh();
   void frame_mesh();
   void pan_by_pixels(const QPoint& delta);
+  void dolly_by_pixels(const QPoint& delta);
   void upload_mesh_if_possible();
   void upload_textures_if_possible();
   void destroy_gl_resources();
@@ -76,6 +84,7 @@ class BspPreviewWidget final : public QOpenGLWidget, protected QOpenGLFunctions 
     None,
     Orbit,
     Pan,
+    Dolly,
   };
 
   BspMesh mesh_;
@@ -98,6 +107,7 @@ class BspPreviewWidget final : public QOpenGLWidget, protected QOpenGLFunctions 
   float ground_z_ = 0.0f;
   float grid_scale_ = 1.0f;
   QVector<DrawSurface> surfaces_;
+  QVector<GLuint> lightmap_textures_;
   QHash<QString, QImage> textures_;
 
   bool lightmap_enabled_ = true;
@@ -111,8 +121,10 @@ class BspPreviewWidget final : public QOpenGLWidget, protected QOpenGLFunctions 
   float yaw_deg_ = 45.0f;
   float pitch_deg_ = 55.0f;
   float distance_ = 3.0f;
+  float fov_y_deg_ = 100.0f;
+  bool camera_fit_pending_ = false;
 
   QPoint last_mouse_pos_;
   DragMode drag_mode_ = DragMode::None;
-  Qt::MouseButton drag_button_ = Qt::NoButton;
+  Qt::MouseButtons drag_buttons_ = Qt::NoButton;
 };

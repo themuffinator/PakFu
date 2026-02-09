@@ -9,6 +9,7 @@ class QComboBox;
 class QCheckBox;
 class QLabel;
 class QPushButton;
+class QSlider;
 
 class PreferencesTab : public QWidget {
   Q_OBJECT
@@ -20,6 +21,7 @@ signals:
   void theme_changed(AppTheme theme);
   void model_texture_smoothing_changed(bool enabled);
   void image_texture_smoothing_changed(bool enabled);
+  void preview_fov_changed(int degrees);
   void pure_pak_protector_changed(bool enabled);
   void preview_renderer_changed(PreviewRenderer renderer);
 
@@ -37,6 +39,8 @@ private:
   QPushButton* assoc_apply_ = nullptr;
   QPushButton* assoc_details_ = nullptr;
   QCheckBox* model_texture_smoothing_ = nullptr;
+  QSlider* preview_fov_slider_ = nullptr;
+  QLabel* preview_fov_value_label_ = nullptr;
   QCheckBox* image_texture_smoothing_ = nullptr;
   QCheckBox* pure_pak_protector_ = nullptr;
 };

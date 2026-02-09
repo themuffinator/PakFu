@@ -48,6 +48,7 @@ public:
 	~PreviewPane() override;
 
 	void set_preview_renderer(PreviewRenderer renderer);
+	void set_3d_fov_degrees(int degrees);
 	void set_model_texture_smoothing(bool enabled);
 	void set_image_texture_smoothing(bool enabled);
 	void set_model_palettes(const QVector<QRgb>& quake1_palette, const QVector<QRgb>& quake2_palette);
@@ -86,6 +87,7 @@ signals:
 
 protected:
 	void resizeEvent(QResizeEvent* event) override;
+	bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
 	void build_ui();
@@ -116,6 +118,12 @@ private:
 	void apply_3d_settings();
 	void update_3d_bg_button();
 	void apply_3d_bg_color_button_state();
+	void update_3d_fullscreen_button();
+	void toggle_3d_fullscreen();
+	void enter_3d_fullscreen();
+	void exit_3d_fullscreen();
+	[[nodiscard]] QWidget* active_3d_widget() const;
+	[[nodiscard]] QWidget* active_3d_page() const;
 	void set_audio_source(const QString& file_path);
 	void sync_audio_controls();
 	void update_audio_tooltip();
@@ -215,6 +223,7 @@ private:
 	QToolButton* three_d_bg_color_button_ = nullptr;
 	QToolButton* three_d_wireframe_button_ = nullptr;
 	QToolButton* three_d_textured_button_ = nullptr;
+	QToolButton* three_d_fullscreen_button_ = nullptr;
 	QToolButton* bsp_lightmap_button_ = nullptr;
 	bool bsp_lightmapping_enabled_ = true;
 	PreviewGridMode three_d_grid_mode_ = PreviewGridMode::Floor;
@@ -222,10 +231,23 @@ private:
 	QColor three_d_bg_color_;
 	bool three_d_wireframe_enabled_ = false;
 	bool three_d_textured_enabled_ = true;
+	int three_d_fov_degrees_ = 100;
 	bool glow_enabled_ = false;
 
 	QWidget* model_page_ = nullptr;
 	QWidget* model_widget_ = nullptr;
+	QWidget* three_d_fullscreen_window_ = nullptr;
+	QWidget* three_d_fullscreen_widget_ = nullptr;
+	QWidget* three_d_fullscreen_page_ = nullptr;
+	bool model_texture_smoothing_ = false;
+	QVector<QRgb> model_palette_quake1_;
+	QVector<QRgb> model_palette_quake2_;
+	BspMesh cached_bsp_mesh_;
+	QHash<QString, QImage> cached_bsp_textures_;
+	bool has_cached_bsp_ = false;
+	QString cached_model_file_path_;
+	QString cached_model_skin_path_;
+	bool has_cached_model_ = false;
 
 	PreviewRenderer renderer_requested_ = PreviewRenderer::Vulkan;
 	PreviewRenderer renderer_effective_ = PreviewRenderer::Vulkan;

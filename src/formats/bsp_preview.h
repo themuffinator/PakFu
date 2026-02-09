@@ -29,6 +29,7 @@ struct BspMeshVertex {
   QVector3D normal;
   QColor color;
   QVector2D uv;
+  QVector2D lightmap_uv = QVector2D(0.0f, 0.0f);
 };
 
 struct BspMeshSurface {
@@ -36,12 +37,14 @@ struct BspMeshSurface {
   int index_count = 0;
   QString texture;
   bool uv_normalized = false;
+  int lightmap_index = -1;
 };
 
 struct BspMesh {
   QVector<BspMeshVertex> vertices;
   QVector<std::uint32_t> indices;
   QVector<BspMeshSurface> surfaces;
+  QVector<QImage> lightmaps;
   QVector3D mins;
   QVector3D maxs;
 };

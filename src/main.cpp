@@ -2,6 +2,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QIcon>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -249,6 +250,47 @@ QPixmap load_logo_pixmap() {
   return pixmap;
 }
 
+QIcon load_app_icon() {
+  QStringList candidates;
+#if defined(Q_OS_WIN)
+  candidates = {
+      ":/assets/img/pakfu-icon-256.ico",
+      ":/assets/img/pakfu-icon-256.png",
+      "assets/img/pakfu-icon-256.ico",
+      "assets/img/pakfu-icon-256.png",
+  };
+#elif defined(Q_OS_MACOS)
+  candidates = {
+      ":/assets/img/pakfu-icon-256.icns",
+      ":/assets/img/pakfu-icon-256.png",
+      "assets/img/pakfu-icon-256.icns",
+      "assets/img/pakfu-icon-256.png",
+  };
+#elif defined(Q_OS_LINUX)
+  candidates = {
+      ":/assets/img/pakfu-icon-256.png",
+      ":/assets/img/pakfu-icon.png",
+      "assets/img/pakfu-icon-256.png",
+      "assets/img/pakfu-icon.png",
+  };
+#else
+  candidates = {
+      ":/assets/img/pakfu-icon-256.png",
+      "assets/img/pakfu-icon-256.png",
+      ":/assets/img/pakfu-icon-256.ico",
+      "assets/img/pakfu-icon-256.ico",
+  };
+#endif
+
+  for (const QString& candidate : candidates) {
+    QIcon icon(candidate);
+    if (!icon.isNull()) {
+      return icon;
+    }
+  }
+  return {};
+}
+
 SplashScreen* show_splash(QApplication& app) {
   QPixmap logo = load_logo_pixmap();
   if (logo.isNull()) {
@@ -392,6 +434,10 @@ int main(int argc, char** argv) {
 #endif
 
   QApplication app(argc, argv);
+  const QIcon app_icon = load_app_icon();
+  if (!app_icon.isNull()) {
+    app.setWindowIcon(app_icon);
+  }
   set_app_metadata(app);
   prefer_qt_ffmpeg_backend_if_available();
   const QString server_name = single_instance_server_name();

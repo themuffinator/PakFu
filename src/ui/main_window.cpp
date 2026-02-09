@@ -1316,6 +1316,16 @@ void MainWindow::open_preferences() {
       }
     }
   });
+  connect(preferences_tab_, &PreferencesTab::preview_fov_changed, this, [this](int degrees) {
+    if (!tabs_) {
+      return;
+    }
+    for (int i = 0; i < tabs_->count(); ++i) {
+      if (auto* pak_tab = qobject_cast<PakTab*>(tabs_->widget(i))) {
+        pak_tab->set_3d_fov_degrees(degrees);
+      }
+    }
+  });
   connect(preferences_tab_, &PreferencesTab::preview_renderer_changed, this, [this](PreviewRenderer renderer) {
     if (!tabs_) {
       return;

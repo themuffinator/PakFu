@@ -1246,6 +1246,12 @@ void PakTab::set_preview_renderer(PreviewRenderer renderer) {
   }
 }
 
+void PakTab::set_3d_fov_degrees(int degrees) {
+  if (preview_) {
+    preview_->set_3d_fov_degrees(degrees);
+  }
+}
+
 void PakTab::set_game_id(GameId id) {
   if (game_id_ == id) {
     return;
