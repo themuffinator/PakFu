@@ -93,7 +93,8 @@ bool is_supported_archive_extension(const QString& path) {
   const QString lower = path.toLower();
   return lower.endsWith(".pak") || lower.endsWith(".pk3") ||
          lower.endsWith(".pk4") || lower.endsWith(".pkz") ||
-         lower.endsWith(".zip") || lower.endsWith(".wad");
+         lower.endsWith(".zip") || lower.endsWith(".wad") ||
+         lower.endsWith(".wad2") || lower.endsWith(".wad3");
 }
 
 struct OpenableDropPaths {
@@ -894,9 +895,9 @@ void MainWindow::open_pak_dialog() {
   dialog.setWindowTitle("Open Archive");
   dialog.setFileMode(QFileDialog::ExistingFile);
   dialog.setNameFilters({
-    "Archives (*.pak *.pk3 *.pk4 *.pkz *.zip *.wad)",
+    "Archives (*.pak *.pk3 *.pk4 *.pkz *.zip *.wad *.wad2 *.wad3)",
     "Quake PAK (*.pak)",
-    "Quake WAD (*.wad)",
+    "Quake WAD (WAD2/WAD3) (*.wad *.wad2 *.wad3)",
     "ZIP-based (PK3/PK4/PKZ/ZIP) (*.pk3 *.pk4 *.pkz *.zip)",
     "All files (*.*)",
   });
@@ -1564,11 +1565,17 @@ bool MainWindow::save_tab_as(PakTab* tab) {
     if (is_new || fmt == Archive::Format::Unknown || fmt == Archive::Format::Directory) {
       filters = {
         "Quake PAK (*.pak)",
+        "Quake WAD2 (*.wad *.wad2)",
         "PK3 (ZIP) (*.pk3)",
         "PK3 (Quake Live encrypted) (*.pk3)",
         "PK4 (ZIP) (*.pk4)",
         "PKZ (ZIP) (*.pkz)",
         "ZIP (*.zip)",
+        "All files (*.*)",
+      };
+    } else if (fmt == Archive::Format::Wad) {
+      filters = {
+        "Quake WAD2 (*.wad *.wad2)",
         "All files (*.*)",
       };
     } else if (fmt == Archive::Format::Pak) {
@@ -1611,6 +1618,9 @@ bool MainWindow::save_tab_as(PakTab* tab) {
     options.format = Archive::Format::Zip;
     options.quakelive_encrypt_pk3 = true;
     want_ext = ".pk3";
+  } else if (filter.contains("WAD", Qt::CaseInsensitive)) {
+    options.format = Archive::Format::Wad;
+    want_ext = ".wad";
   } else if (filter.contains("PK3", Qt::CaseInsensitive)) {
     options.format = Archive::Format::Zip;
     want_ext = ".pk3";
@@ -1632,10 +1642,11 @@ bool MainWindow::save_tab_as(PakTab* tab) {
     const int sep = std::max(dest.lastIndexOf('/'), dest.lastIndexOf('\\'));
     const int dot = dest.lastIndexOf('.');
     const QString current_ext = (dot > sep) ? dest.mid(dot).toLower() : QString();
-    const QSet<QString> known_exts = {".pak", ".pk3", ".pk4", ".pkz", ".zip"};
-    if (known_exts.contains(current_ext) && dot > sep) {
+    const QSet<QString> known_exts = {".pak", ".wad", ".wad2", ".wad3", ".pk3", ".pk4", ".pkz", ".zip"};
+    const bool keep_wad2_ext = (options.format == Archive::Format::Wad && current_ext == ".wad2");
+    if (!keep_wad2_ext && known_exts.contains(current_ext) && dot > sep) {
       dest = dest.left(dot) + want_ext;
-    } else {
+    } else if (!keep_wad2_ext) {
       dest += want_ext;
     }
   }

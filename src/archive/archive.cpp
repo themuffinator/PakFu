@@ -9,6 +9,10 @@ QString file_ext_lower(const QString& name) {
 	const int dot = lower.lastIndexOf('.');
 	return dot >= 0 ? lower.mid(dot + 1) : QString();
 }
+
+bool is_wad_extension(const QString& ext) {
+	return ext == "wad" || ext == "wad2" || ext == "wad3";
+}
 }  // namespace
 
 const QVector<ArchiveEntry>& Archive::entries() const {
@@ -69,7 +73,7 @@ bool Archive::load(const QString& path, QString* error) {
 	const QString ext = file_ext_lower(abs);
 	const bool looks_zip = (ext == "zip" || ext == "pk3" || ext == "pk4" || ext == "pkz");
 	const bool looks_pak = (ext == "pak");
-	const bool looks_wad = (ext == "wad");
+	const bool looks_wad = is_wad_extension(ext);
 
 	QString err;
 	if (looks_wad && wad_.load(abs, &err)) {

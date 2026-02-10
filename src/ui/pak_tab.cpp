@@ -89,6 +89,8 @@ struct ChildListing {
 };
 
 QString normalize_pak_path(QString path);
+bool is_wad_archive_ext(const QString& ext);
+bool is_wad_archive_file_name(const QString& name);
 
 [[nodiscard]] size_t mz_read_qfile(void* opaque, mz_uint64 file_ofs, void* buf, size_t n) {
   auto* f = static_cast<QFile*>(opaque);
@@ -381,6 +383,115 @@ QVector<ChildListing> list_children(const QVector<ArchiveEntry>& entries,
 constexpr int kPakHeaderSize = 12;
 constexpr int kPakDirEntrySize = 64;
 constexpr int kPakNameBytes = 56;
+constexpr int kWadHeaderSize = 12;
+constexpr int kWadDirEntrySize = 32;
+constexpr int kWadNameBytes = 16;
+constexpr quint8 kWadTypeNone = 0;
+constexpr quint8 kWadTypeQpic = static_cast<quint8>('B');
+constexpr quint8 kWadTypeMiptexWad2 = static_cast<quint8>('D');
+constexpr quint8 kWadTypeLumpy = 64;
+
+[[nodiscard]] quint32 read_u32_le_from(const char* p) {
+  const quint32 b0 = static_cast<quint8>(p[0]);
+  const quint32 b1 = static_cast<quint8>(p[1]);
+  const quint32 b2 = static_cast<quint8>(p[2]);
+  const quint32 b3 = static_cast<quint8>(p[3]);
+  return (b0) | (b1 << 8) | (b2 << 16) | (b3 << 24);
+}
+
+[[nodiscard]] bool looks_like_qpic_lump_bytes(const QByteArray& bytes) {
+  if (bytes.size() < 8) {
+    return false;
+  }
+  const quint32 w = read_u32_le_from(bytes.constData() + 0);
+  const quint32 h = read_u32_le_from(bytes.constData() + 4);
+  if (w == 0 || h == 0) {
+    return false;
+  }
+  constexpr quint32 kMaxDim = 16384;
+  if (w > kMaxDim || h > kMaxDim) {
+    return false;
+  }
+  const quint64 want = 8ULL + static_cast<quint64>(w) * static_cast<quint64>(h);
+  return want == static_cast<quint64>(bytes.size());
+}
+
+bool derive_wad2_lump_name(const QString& entry_name_in, QString* out_lump_name, QString* error) {
+  if (error) {
+    error->clear();
+  }
+
+  const QString entry_name = normalize_pak_path(entry_name_in);
+  if (entry_name.isEmpty()) {
+    if (error) {
+      *error = "WAD entry name is empty.";
+    }
+    return false;
+  }
+  if (entry_name.contains('/')) {
+    if (error) {
+      *error = QString("WAD entries cannot contain folders: %1").arg(entry_name);
+    }
+    return false;
+  }
+
+  QString lump_name = entry_name;
+  const int dot = lump_name.lastIndexOf('.');
+  if (dot > 0) {
+    const QString ext = lump_name.mid(dot + 1).toLower();
+    if (ext == "mip" || ext == "lmp") {
+      lump_name = lump_name.left(dot);
+    }
+  }
+
+  if (lump_name.isEmpty()) {
+    if (error) {
+      *error = QString("WAD entry has an invalid lump name: %1").arg(entry_name);
+    }
+    return false;
+  }
+
+  const QByteArray lump_latin1 = lump_name.toLatin1();
+  if (QString::fromLatin1(lump_latin1) != lump_name) {
+    if (error) {
+      *error = QString("WAD entry name must be Latin-1: %1").arg(entry_name);
+    }
+    return false;
+  }
+  if (lump_latin1.size() > kWadNameBytes) {
+    if (error) {
+      *error = QString("WAD lump names are limited to %1 bytes: %2").arg(kWadNameBytes).arg(lump_name);
+    }
+    return false;
+  }
+
+  if (out_lump_name) {
+    *out_lump_name = lump_name;
+  }
+  return true;
+}
+
+[[nodiscard]] quint8 derive_wad2_lump_type(const QString& entry_name_in,
+                                           const QString& lump_name,
+                                           const QByteArray* bytes = nullptr) {
+  const QString lower = normalize_pak_path(entry_name_in).toLower();
+  if (lower.endsWith(".mip")) {
+    return kWadTypeMiptexWad2;
+  }
+  if (lower.endsWith(".lmp")) {
+    if (lump_name.compare("palette", Qt::CaseInsensitive) == 0) {
+      return kWadTypeLumpy;
+    }
+    if (bytes && looks_like_qpic_lump_bytes(*bytes)) {
+      return kWadTypeQpic;
+    }
+    return kWadTypeQpic;
+  }
+  if (bytes && looks_like_qpic_lump_bytes(*bytes)) {
+    return kWadTypeQpic;
+  }
+  return kWadTypeNone;
+}
 
 void write_u32_le(QByteArray* bytes, int offset, quint32 value) {
   if (!bytes || offset < 0 || offset + 4 > bytes->size()) {
@@ -533,7 +644,7 @@ public:
         return 0;  // folders
       }
       const QString ext = ext_lower(it);
-      if (ext == "wad") {
+      if (is_wad_archive_ext(ext)) {
         return 1;  // wad files
       }
       return 2;  // all other files
@@ -594,7 +705,7 @@ public:
         return 0;
       }
       const QString ext = ext_lower(it);
-      if (ext == "wad") {
+      if (is_wad_archive_ext(ext)) {
         return 1;
       }
       return 2;
@@ -909,6 +1020,14 @@ QString file_ext_lower(const QString& name) {
   const QString lower = name.toLower();
   const int dot = lower.lastIndexOf('.');
   return dot >= 0 ? lower.mid(dot + 1) : QString();
+}
+
+bool is_wad_archive_ext(const QString& ext) {
+  return ext == "wad" || ext == "wad2" || ext == "wad3";
+}
+
+bool is_wad_archive_file_name(const QString& name) {
+  return is_wad_archive_ext(file_ext_lower(name));
 }
 
 /*
@@ -1410,6 +1529,8 @@ PakTab::SaveOptions PakTab::default_save_options_for_current_path() const {
     }
   } else if (archive_.is_loaded() && archive_.format() == Archive::Format::Pak) {
     opts.format = Archive::Format::Pak;
+  } else if (archive_.is_loaded() && archive_.format() == Archive::Format::Wad) {
+    opts.format = Archive::Format::Wad;
   }
   return opts;
 }
@@ -1431,6 +1552,8 @@ bool PakTab::write_archive_file(const QString& dest_path, const SaveOptions& opt
   if (fmt == Archive::Format::Unknown) {
     if (ext == "pak") {
       fmt = Archive::Format::Pak;
+    } else if (is_wad_archive_ext(ext)) {
+      fmt = Archive::Format::Wad;
     } else if (ext == "zip" || ext == "pk3" || ext == "pk4" || ext == "pkz") {
       fmt = Archive::Format::Zip;
     } else if (archive_.is_loaded()) {
@@ -1448,6 +1571,15 @@ bool PakTab::write_archive_file(const QString& dest_path, const SaveOptions& opt
       return false;
     }
     return write_pak_file(abs, error);
+  }
+  if (fmt == Archive::Format::Wad) {
+    if (options.quakelive_encrypt_pk3) {
+      if (error) {
+        *error = "Quake Live PK3 encryption is only supported for ZIP-based archives.";
+      }
+      return false;
+    }
+    return write_wad2_file(abs, error);
   }
   if (fmt == Archive::Format::Zip) {
     return write_zip_file(abs, options.quakelive_encrypt_pk3, error);
@@ -1608,7 +1740,7 @@ void PakTab::build_ui() {
 
     const QString pak_path = item->data(0, kRolePakPath).toString();
     const QString leaf = pak_leaf_name(pak_path.isEmpty() ? item->text(0) : pak_path);
-    if (file_ext_lower(leaf) == "wad") {
+    if (is_wad_archive_file_name(leaf)) {
       QString err;
       if (!mount_wad_from_selected_file(pak_path, &err) && !err.isEmpty()) {
         if (preview_) {
@@ -1636,7 +1768,7 @@ void PakTab::build_ui() {
 
     const QString pak_path = item->data(kRolePakPath).toString();
     const QString leaf = pak_leaf_name(pak_path.isEmpty() ? item->text() : pak_path);
-    if (file_ext_lower(leaf) == "wad") {
+    if (is_wad_archive_file_name(leaf)) {
       QString err;
       if (!mount_wad_from_selected_file(pak_path, &err) && !err.isEmpty()) {
         if (preview_) {
@@ -3364,12 +3496,23 @@ bool PakTab::add_file_mapping(const QString& pak_name_in, const QString& source_
     return false;
   }
 
-  const QByteArray name_bytes = pak_name.toLatin1();
-  if (name_bytes.isEmpty() || name_bytes.size() > kPakNameBytes) {
-    if (error) {
-      *error = QString("Archive path is too long for PAK format: %1").arg(pak_name);
+  if (archive_.is_loaded() && archive_.format() == Archive::Format::Wad && !wad_mounted_) {
+    QString lump_name;
+    QString wad_err;
+    if (!derive_wad2_lump_name(pak_name, &lump_name, &wad_err)) {
+      if (error) {
+        *error = wad_err.isEmpty() ? QString("Invalid WAD entry name: %1").arg(pak_name) : wad_err;
+      }
+      return false;
     }
-    return false;
+  } else {
+    const QByteArray name_bytes = pak_name.toLatin1();
+    if (name_bytes.isEmpty() || name_bytes.size() > kPakNameBytes) {
+      if (error) {
+        *error = QString("Archive path is too long for PAK format: %1").arg(pak_name);
+      }
+      return false;
+    }
   }
 
   const QFileInfo info(source_path_in);
@@ -3579,6 +3722,10 @@ void PakTab::add_folder() {
   if (!ensure_editable("Add Folder")) {
     return;
   }
+  if (archive_.is_loaded() && archive_.format() == Archive::Format::Wad) {
+    QMessageBox::information(this, "Add Folder", "WAD2 archives are flat. Use Add Files for individual lumps.");
+    return;
+  }
 
   const QVector<AddedFile> before_added = added_files_;
   const QSet<QString> before_virtual = virtual_dirs_;
@@ -3641,6 +3788,10 @@ void PakTab::add_folder() {
 
 void PakTab::new_folder() {
   if (!ensure_editable("New Folder")) {
+    return;
+  }
+  if (archive_.is_loaded() && archive_.format() == Archive::Format::Wad) {
+    QMessageBox::information(this, "New Folder", "WAD2 archives do not support folders.");
     return;
   }
 
@@ -4048,6 +4199,307 @@ bool PakTab::write_pak_file(const QString& dest_path, QString* error) {
   if (!out.commit()) {
     if (error) {
       *error = "Unable to finalize destination PAK.";
+    }
+    return false;
+  }
+
+  return true;
+}
+
+bool PakTab::write_wad2_file(const QString& dest_path, QString* error) {
+  const QString abs = QFileInfo(dest_path).absoluteFilePath();
+  if (abs.isEmpty()) {
+    if (error) {
+      *error = "Invalid destination path.";
+    }
+    return false;
+  }
+
+  if (mode_ == Mode::ExistingPak && archive_.is_loaded() &&
+      archive_.format() != Archive::Format::Wad &&
+      archive_.format() != Archive::Format::Directory) {
+    if (error) {
+      *error = "Saving as WAD2 is only supported when the source is a WAD archive or a folder.";
+    }
+    return false;
+  }
+
+  // Ensure we have a source archive loaded if we are repacking an existing WAD.
+  if (mode_ == Mode::ExistingPak && !archive_.is_loaded() && !pak_path_.isEmpty()) {
+    QString load_err;
+    if (!archive_.load(pak_path_, &load_err)) {
+      if (error) {
+        *error = load_err.isEmpty() ? "Unable to load archive." : load_err;
+      }
+      return false;
+    }
+  }
+
+  for (const QString& vdir_in : virtual_dirs_) {
+    const QString vdir = normalize_pak_path(vdir_in);
+    if (vdir.isEmpty() || is_deleted_path(vdir)) {
+      continue;
+    }
+    if (error) {
+      *error = "WAD2 archives do not support folders. Remove pending folders before saving.";
+    }
+    return false;
+  }
+
+  struct WadWriteItem {
+    QString entry_name;
+    QString source_path;
+    bool from_archive = false;
+    QString lump_name;
+  };
+
+  QVector<WadWriteItem> items;
+  items.reserve((archive_.is_loaded() ? archive_.entries().size() : 0) + added_files_.size());
+
+  QHash<QString, QString> lump_owner_by_key;
+  lump_owner_by_key.reserve(items.capacity());
+
+  const auto add_item = [&](const QString& name_in, const QString& source_path, bool from_archive) -> bool {
+    const QString entry_name = normalize_pak_path(name_in);
+    if (entry_name.isEmpty() || is_deleted_path(entry_name)) {
+      return true;
+    }
+    if (!is_safe_entry_name(entry_name)) {
+      if (error) {
+        *error = QString("Refusing to save unsafe entry: %1").arg(entry_name);
+      }
+      return false;
+    }
+
+    QString lump_name;
+    QString lump_err;
+    if (!derive_wad2_lump_name(entry_name, &lump_name, &lump_err)) {
+      if (error) {
+        *error = lump_err.isEmpty() ? QString("Invalid WAD entry name: %1").arg(entry_name) : lump_err;
+      }
+      return false;
+    }
+
+    const QString key = lump_name.toLower();
+    const QString existing = lump_owner_by_key.value(key);
+    if (!existing.isEmpty()) {
+      if (error) {
+        *error = QString("Duplicate WAD lump name after normalization: %1 (from %2 and %3)")
+                   .arg(lump_name, existing, entry_name);
+      }
+      return false;
+    }
+    lump_owner_by_key.insert(key, entry_name);
+
+    WadWriteItem item;
+    item.entry_name = entry_name;
+    item.source_path = source_path;
+    item.from_archive = from_archive;
+    item.lump_name = lump_name;
+    items.push_back(std::move(item));
+    return true;
+  };
+
+  const bool have_src_dir = archive_.is_loaded() &&
+    archive_.format() == Archive::Format::Directory &&
+    !archive_.path().isEmpty();
+
+  if (archive_.is_loaded()) {
+    const QDir root_dir(archive_.path());
+    for (const ArchiveEntry& e : archive_.entries()) {
+      const QString name = normalize_pak_path(e.name);
+      if (name.isEmpty() || is_deleted_path(name) || added_index_by_name_.contains(name)) {
+        continue;
+      }
+      if (have_src_dir) {
+        const QString source_path = root_dir.filePath(QString(name).replace('/', QDir::separator()));
+        if (!add_item(name, source_path, false)) {
+          return false;
+        }
+      } else {
+        if (!add_item(name, QString(), true)) {
+          return false;
+        }
+      }
+    }
+  }
+
+  for (const AddedFile& f : added_files_) {
+    if (!add_item(f.pak_name, f.source_path, false)) {
+      return false;
+    }
+  }
+
+  QSaveFile out(abs);
+  if (!out.open(QIODevice::WriteOnly)) {
+    if (error) {
+      *error = "Unable to create destination WAD.";
+    }
+    return false;
+  }
+
+  QByteArray header(kWadHeaderSize, '\0');
+  std::memcpy(header.data(), "WAD2", 4);
+  if (out.write(header) != header.size()) {
+    if (error) {
+      *error = "Unable to write WAD2 header.";
+    }
+    return false;
+  }
+
+  struct WadDirEntry {
+    quint32 file_pos = 0;
+    quint32 disk_size = 0;
+    quint32 size = 0;
+    quint8 type = 0;
+    QByteArray lump_name_latin1;
+  };
+
+  QVector<WadDirEntry> dir_entries;
+  dir_entries.reserve(items.size());
+
+  QByteArray buffer;
+  buffer.resize(1 << 16);
+
+  for (const WadWriteItem& item : items) {
+    const qint64 out_pos = out.pos();
+    if (out_pos < 0 || out_pos > std::numeric_limits<quint32>::max()) {
+      if (error) {
+        *error = "WAD2 output exceeds format limits.";
+      }
+      return false;
+    }
+
+    quint32 size = 0;
+    quint8 type = kWadTypeNone;
+
+    if (item.from_archive) {
+      QByteArray bytes;
+      QString read_err;
+      if (!archive_.read_entry_bytes(item.entry_name, &bytes, &read_err)) {
+        if (error) {
+          *error = read_err.isEmpty() ? QString("Unable to read source entry: %1").arg(item.entry_name) : read_err;
+        }
+        return false;
+      }
+      if (bytes.size() < 0 || static_cast<quint64>(bytes.size()) > std::numeric_limits<quint32>::max()) {
+        if (error) {
+          *error = QString("Entry is too large for WAD2 format: %1").arg(item.entry_name);
+        }
+        return false;
+      }
+      if (out.write(bytes) != bytes.size()) {
+        if (error) {
+          *error = QString("Unable to write destination entry: %1").arg(item.entry_name);
+        }
+        return false;
+      }
+      size = static_cast<quint32>(bytes.size());
+      type = derive_wad2_lump_type(item.entry_name, item.lump_name, &bytes);
+    } else {
+      QFile in(item.source_path);
+      if (!in.open(QIODevice::ReadOnly)) {
+        if (error) {
+          *error = QString("Unable to open file: %1").arg(item.source_path);
+        }
+        return false;
+      }
+
+      const qint64 in_size64 = in.size();
+      if (in_size64 < 0 || in_size64 > std::numeric_limits<quint32>::max()) {
+        if (error) {
+          *error = QString("File is too large for WAD2 format: %1").arg(item.source_path);
+        }
+        return false;
+      }
+      size = static_cast<quint32>(in_size64);
+      type = derive_wad2_lump_type(item.entry_name, item.lump_name, nullptr);
+
+      quint32 remaining = size;
+      while (remaining > 0) {
+        const int want =
+          static_cast<int>(std::min<quint32>(remaining, static_cast<quint32>(buffer.size())));
+        const qint64 got = in.read(buffer.data(), want);
+        if (got <= 0) {
+          if (error) {
+            *error = QString("Unable to read file: %1").arg(item.source_path);
+          }
+          return false;
+        }
+        if (out.write(buffer.constData(), got) != got) {
+          if (error) {
+            *error = QString("Unable to write destination entry: %1").arg(item.entry_name);
+          }
+          return false;
+        }
+        remaining -= static_cast<quint32>(got);
+      }
+    }
+
+    WadDirEntry d;
+    d.file_pos = static_cast<quint32>(out_pos);
+    d.disk_size = size;
+    d.size = size;
+    d.type = type;
+    d.lump_name_latin1 = item.lump_name.toLatin1();
+    dir_entries.push_back(std::move(d));
+  }
+
+  const qint64 dir_offset64 = out.pos();
+  if (dir_offset64 < 0 || dir_offset64 > std::numeric_limits<quint32>::max()) {
+    if (error) {
+      *error = "WAD2 output exceeds format limits.";
+    }
+    return false;
+  }
+  const quint32 dir_offset = static_cast<quint32>(dir_offset64);
+
+  const qint64 dir_bytes64 = static_cast<qint64>(dir_entries.size()) * kWadDirEntrySize;
+  if (dir_bytes64 < 0 || dir_bytes64 > std::numeric_limits<int>::max()) {
+    if (error) {
+      *error = "WAD2 directory exceeds format limits.";
+    }
+    return false;
+  }
+
+  QByteArray dir;
+  dir.resize(static_cast<int>(dir_bytes64));
+  dir.fill('\0');
+  for (int i = 0; i < dir_entries.size(); ++i) {
+    const WadDirEntry& d = dir_entries[i];
+    const int base = i * kWadDirEntrySize;
+    write_u32_le(&dir, base + 0, d.file_pos);
+    write_u32_le(&dir, base + 4, d.disk_size);
+    write_u32_le(&dir, base + 8, d.size);
+    dir[base + 12] = static_cast<char>(d.type);
+    dir[base + 13] = 0;
+    dir[base + 14] = 0;
+    dir[base + 15] = 0;
+    const QByteArray lump = d.lump_name_latin1.left(kWadNameBytes);
+    if (!lump.isEmpty()) {
+      std::memcpy(dir.data() + base + 16, lump.constData(), static_cast<size_t>(lump.size()));
+    }
+  }
+
+  if (out.write(dir) != dir.size()) {
+    if (error) {
+      *error = "Unable to write WAD2 directory.";
+    }
+    return false;
+  }
+
+  write_u32_le(&header, 4, static_cast<quint32>(dir_entries.size()));
+  write_u32_le(&header, 8, dir_offset);
+  if (!out.seek(0) || out.write(header) != header.size()) {
+    if (error) {
+      *error = "Unable to update WAD2 header.";
+    }
+    return false;
+  }
+
+  if (!out.commit()) {
+    if (error) {
+      *error = "Unable to finalize destination WAD2.";
     }
     return false;
   }
@@ -4481,14 +4933,15 @@ void PakTab::refresh_listing() {
   }
 
   const bool can_edit = is_editable();
+  const bool wad_flat = archive_.is_loaded() && archive_.format() == Archive::Format::Wad && !wad_mounted_;
   if (add_files_action_) {
     add_files_action_->setEnabled(can_edit);
   }
   if (add_folder_action_) {
-    add_folder_action_->setEnabled(can_edit);
+    add_folder_action_->setEnabled(can_edit && !wad_flat);
   }
   if (new_folder_action_) {
-    new_folder_action_->setEnabled(can_edit);
+    new_folder_action_->setEnabled(can_edit && !wad_flat);
   }
   if (delete_action_) {
     delete_action_->setEnabled(can_edit);
@@ -4639,7 +5092,7 @@ void PakTab::refresh_listing() {
         const QString ext = file_ext_lower(leaf);
         if (is_supported_audio_file(leaf)) {
           item->setIcon(0, audio_icon);
-        } else if (ext == "wad") {
+        } else if (is_wad_archive_ext(ext)) {
           item->setIcon(0, wad_icon);
         } else if (is_model_file_name(leaf)) {
           item->setIcon(0, model_icon);
@@ -4724,7 +5177,7 @@ void PakTab::refresh_listing() {
         const QString ext = file_ext_lower(leaf);
         if (is_supported_audio_file(leaf)) {
           icon = audio_icon;
-        } else if (ext == "wad") {
+        } else if (is_wad_archive_ext(ext)) {
           icon = wad_icon;
         } else if (is_model_file_name(leaf)) {
           icon = model_icon;
@@ -4983,7 +5436,7 @@ bool PakTab::mount_wad_from_selected_file(const QString& pak_path_in, QString* e
   }
 
   const QString leaf = pak_leaf_name(pak_path);
-  if (file_ext_lower(leaf) != "wad") {
+  if (!is_wad_archive_file_name(leaf)) {
     if (error) {
       *error = "Not a WAD file.";
     }
@@ -5434,7 +5887,7 @@ void PakTab::update_preview() {
   }
 
   const QString ext = file_ext_lower(leaf);
-  if (ext == "wad") {
+  if (is_wad_archive_ext(ext)) {
     preview_->show_message(leaf.isEmpty() ? "WAD" : leaf,
                            "Quake WAD archive. Double-click to open.");
     return;

@@ -24,6 +24,7 @@ This project is still training under the waterfall 💦🥋 (early development).
   - Text/config: `cfg` and similar plain-text formats 🧾🖋️
 - Tune 3D previews with grid/floor/none options, themed/grey/custom backgrounds, and wireframe/textured toggles
 - Quake II previews honor `_glow.png` glow maps for textures and models
+- WAD support: read/extract `WAD2` and `WAD3`, rebuild/write `WAD2`
 - Stay responsive for large archives (no freezing in the middle of a roundhouse kick) 🥶➡️🥋
 - Guard official game archives with a default-on Pure PAK Protector preference 🛡️📦
 - Keep C++ code clean, portable, and documented (minimal OS-specific sorcery) 🧠🧹🧾

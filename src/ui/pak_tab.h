@@ -165,6 +165,7 @@ private:
                                       QProgressDialog* progress = nullptr);
   bool add_file_mapping(const QString& pak_name, const QString& source_path, QString* error);
   bool write_pak_file(const QString& dest_path, QString* error);
+  bool write_wad2_file(const QString& dest_path, QString* error);
   bool write_zip_file(const QString& dest_path, bool quakelive_encrypt_pk3, QString* error);
   void set_dirty(bool dirty);
   bool ensure_editable(const QString& action);

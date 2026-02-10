@@ -38,7 +38,7 @@
 
 - Archive support:
   - PAK: built-in reader/writer (Quake/Quake II)
-  - WAD: built-in reader/extractor (WAD2/WAD3)
+  - WAD: built-in reader/writer (WAD2), reader/extractor (WAD3)
   - PK3/PK4/PKZ/ZIP: built-in reader/writer via vendored miniz
   - Quake Live Beta encrypted PK3: built-in decrypt/encrypt (XOR) loader/writer
 
