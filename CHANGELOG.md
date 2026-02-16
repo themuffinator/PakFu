@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to PakFu are documented here.
+## [0.1.13.1] - 2026-02-16
+### Other
+- Support new formats, games, and BSP variants
+- Switch to builddir and implement MDL strip/fan logic
+
 ## [0.1.12.1] - 2026-02-16
 ### Other
 - Support embedded MDL skins and robust loaders
