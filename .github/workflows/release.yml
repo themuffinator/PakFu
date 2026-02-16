@@ -66,10 +66,10 @@ jobs:
           fi
 
       - name: Configure
-        run: meson setup build --backend ninja -Dgithub_repo=${{ github.repository }} -Dupdate_channel=$PAKFU_UPDATE_CHANNEL
+        run: meson setup builddir --backend ninja -Dgithub_repo=${{ github.repository }} -Dupdate_channel=$PAKFU_UPDATE_CHANNEL
 
       - name: Build
-        run: meson compile -C build
+        run: meson compile -C builddir
 
       - name: Package (Windows)
         if: matrix.os == 'windows-latest'

@@ -47,9 +47,9 @@ These packs are supported anywhere PakFu supports ZIP:
 - **Rebuild/write** via **File → Save / Save As…** (uses a vendored `miniz` backend)
 
 ```sh
-./build/src/pakfu --cli --info path/to/archive.pk3
-./build/src/pakfu --cli --list path/to/archive.pk4
-./build/src/pakfu --cli --extract -o out_dir path/to/archive.pkz
+./builddir/src/pakfu --cli --info path/to/archive.pk3
+./builddir/src/pakfu --cli --list path/to/archive.pk4
+./builddir/src/pakfu --cli --extract -o out_dir path/to/archive.pkz
 ```
 
 ### Quake Live Beta (QL BETA) encrypted PK3 (encode/decode) 🔐
@@ -100,13 +100,13 @@ The dojo provides a helper script that finds Qt's `qmake6` and builds with Ninja
 pwsh -NoProfile -File scripts/meson_build.ps1
 ```
 
-On Windows, the script also deploys the required Qt runtime DLLs into `build/src/` so `build/src/pakfu.exe` runs without needing to add Qt to `PATH`.
+On Windows, the script also deploys the required Qt runtime DLLs into `builddir/src/` so `builddir/src/pakfu.exe` runs without needing to add Qt to `PATH`.
 
 ### Manual (all platforms) 🌍🧙‍♂️
 
 ```sh
-meson setup build --backend ninja -Dgithub_repo=owner/name -Dupdate_channel=stable
-meson compile -C build
+meson setup builddir --backend ninja -Dgithub_repo=owner/name -Dupdate_channel=stable
+meson compile -C builddir
 ```
 
 ## Run (GUI or CLI) 🏃‍♂️💨
@@ -143,27 +143,27 @@ Supported auto-detect games:
 - Quake 4
 
 ```sh
-./build/src/pakfu
-./build/src/pakfu --cli --help
-./build/src/pakfu --cli --check-updates
+./builddir/src/pakfu
+./builddir/src/pakfu --cli --help
+./builddir/src/pakfu --cli --check-updates
 ```
 
 On Windows, use:
 
 ```pwsh
-.\build\src\pakfu.exe
-.\build\src\pakfu.exe --cli --help
+.\builddir\src\pakfu.exe
+.\builddir\src\pakfu.exe --cli --help
 ```
 
 Game Sets can also be managed via CLI:
 
 ```sh
-./build/src/pakfu --cli --list-game-sets
-./build/src/pakfu --cli --auto-detect-game-sets
-./build/src/pakfu --cli --select-game-set quake2
-./build/src/pakfu --cli --select-game-set quake3_arena
-./build/src/pakfu --cli --select-game-set quake_live
-./build/src/pakfu --cli --select-game-set quake4
+./builddir/src/pakfu --cli --list-game-sets
+./builddir/src/pakfu --cli --auto-detect-game-sets
+./builddir/src/pakfu --cli --select-game-set quake2
+./builddir/src/pakfu --cli --select-game-set quake3_arena
+./builddir/src/pakfu --cli --select-game-set quake_live
+./builddir/src/pakfu --cli --select-game-set quake4
 ```
 
 ## License & Disclaimer ⚖️🧾

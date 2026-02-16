@@ -533,44 +533,211 @@ std::optional<LoadedModel> load_mdl(const QString& file_path, QString* error) {
   verts.reserve(tris.size() * 3);
   indices.reserve(tris.size() * 3);
 
-  QHash<quint64, std::uint32_t> remap;
-  remap.reserve(tris.size() * 3);
-
   const float inv_skinw = 1.0f / static_cast<float>(skinwidth);
   const float inv_skinh = 1.0f / static_cast<float>(skinheight);
 
-  auto make_key = [](quint32 vi, bool back_seam) -> quint64 {
-    return (static_cast<quint64>(vi) << 1) | static_cast<quint64>(back_seam ? 1u : 0u);
+  // Mirror Quake's original BuildTris logic so seam handling and UV generation
+  // match engine behavior exactly.
+  QVector<int> used(tris.size(), 0);
+  QVector<int> strip_verts(tris.size() + 2, 0);
+  QVector<int> strip_tris(tris.size(), 0);
+  int strip_count = 0;
+
+  const auto clear_temp_used = [&](int start_tri) {
+    for (int j = start_tri + 1; j < tris.size(); ++j) {
+      if (used[j] == 2) {
+        used[j] = 0;
+      }
+    }
   };
 
-  for (const MdlTri& tri : tris) {
-    const bool faces_front = (tri.facesfront != 0);
-    // Preserve Quake alias winding in our coordinate space. Emitting MDL corners in
-    // reverse order keeps derived normals outward-facing when we build smooth normals.
-    for (int i = 2; i >= 0; --i) {
-      const quint32 vi = static_cast<quint32>(tri.vi[i]);
-      const MdlSt& tc = st[static_cast<int>(vi)];
-      const bool back_seam = (!faces_front && tc.onseam != 0);
-      const quint64 key = make_key(vi, back_seam);
+  const auto strip_length = [&](int start_tri, int start_v) -> int {
+    used[start_tri] = 2;
+    const MdlTri& last = tris[start_tri];
 
-      auto it = remap.constFind(key);
-      if (it == remap.constEnd()) {
-        const std::uint32_t new_index = static_cast<std::uint32_t>(verts.size());
-        remap.insert(key, new_index);
+    strip_verts[0] = last.vi[(start_v + 0) % 3];
+    strip_verts[1] = last.vi[(start_v + 1) % 3];
+    strip_verts[2] = last.vi[(start_v + 2) % 3];
+    strip_tris[0] = start_tri;
+    strip_count = 1;
 
-        ModelVertex v = base_verts[static_cast<int>(vi)];
-        qint32 s = tc.s;
-        if (back_seam) {
-          s += (skinwidth / 2);
+    int m1 = last.vi[(start_v + 2) % 3];
+    int m2 = last.vi[(start_v + 1) % 3];
+
+    for (;;) {
+      bool found = false;
+      for (int j = start_tri + 1; j < tris.size(); ++j) {
+        const MdlTri& check = tris[j];
+        if (check.facesfront != last.facesfront) {
+          continue;
         }
-        v.u = (static_cast<float>(s) + 0.5f) * inv_skinw;
-        // Model textures are vertically flipped before GPU upload; keep MDL's top-origin
-        // texture coordinates by inverting V here.
-        v.v = 1.0f - ((static_cast<float>(tc.t) + 0.5f) * inv_skinh);
-        verts.push_back(v);
-        indices.push_back(new_index);
-      } else {
-        indices.push_back(*it);
+        for (int k = 0; k < 3; ++k) {
+          if (check.vi[k] != m1 || check.vi[(k + 1) % 3] != m2) {
+            continue;
+          }
+          if (used[j] != 0) {
+            clear_temp_used(start_tri);
+            return strip_count;
+          }
+
+          const int new_edge = check.vi[(k + 2) % 3];
+          if ((strip_count & 1) != 0) {
+            m2 = new_edge;
+          } else {
+            m1 = new_edge;
+          }
+
+          strip_verts[strip_count + 2] = new_edge;
+          strip_tris[strip_count] = j;
+          ++strip_count;
+          used[j] = 2;
+          found = true;
+          break;
+        }
+        if (found) {
+          break;
+        }
+      }
+      if (!found) {
+        break;
+      }
+    }
+
+    clear_temp_used(start_tri);
+    return strip_count;
+  };
+
+  const auto fan_length = [&](int start_tri, int start_v) -> int {
+    used[start_tri] = 2;
+    const MdlTri& last = tris[start_tri];
+
+    strip_verts[0] = last.vi[(start_v + 0) % 3];
+    strip_verts[1] = last.vi[(start_v + 1) % 3];
+    strip_verts[2] = last.vi[(start_v + 2) % 3];
+    strip_tris[0] = start_tri;
+    strip_count = 1;
+
+    int m1 = last.vi[(start_v + 0) % 3];
+    int m2 = last.vi[(start_v + 2) % 3];
+
+    for (;;) {
+      bool found = false;
+      for (int j = start_tri + 1; j < tris.size(); ++j) {
+        const MdlTri& check = tris[j];
+        if (check.facesfront != last.facesfront) {
+          continue;
+        }
+        for (int k = 0; k < 3; ++k) {
+          if (check.vi[k] != m1 || check.vi[(k + 1) % 3] != m2) {
+            continue;
+          }
+          if (used[j] != 0) {
+            clear_temp_used(start_tri);
+            return strip_count;
+          }
+
+          const int new_edge = check.vi[(k + 2) % 3];
+          m2 = new_edge;
+          strip_verts[strip_count + 2] = new_edge;
+          strip_tris[strip_count] = j;
+          ++strip_count;
+          used[j] = 2;
+          found = true;
+          break;
+        }
+        if (found) {
+          break;
+        }
+      }
+      if (!found) {
+        break;
+      }
+    }
+
+    clear_temp_used(start_tri);
+    return strip_count;
+  };
+
+  QVector<int> best_verts(tris.size() + 2, 0);
+  QVector<int> best_tris(tris.size(), 0);
+
+  for (int i = 0; i < tris.size(); ++i) {
+    if (used[i] != 0) {
+      continue;
+    }
+
+    int best_len = 0;
+    int best_type = 0;  // 0 = fan, 1 = strip
+    for (int type = 0; type < 2; ++type) {
+      for (int start_v = 0; start_v < 3; ++start_v) {
+        const int len = (type == 1) ? strip_length(i, start_v) : fan_length(i, start_v);
+        if (len <= best_len) {
+          continue;
+        }
+        best_len = len;
+        best_type = type;
+        for (int j = 0; j < best_len + 2; ++j) {
+          best_verts[j] = strip_verts[j];
+        }
+        for (int j = 0; j < best_len; ++j) {
+          best_tris[j] = strip_tris[j];
+        }
+      }
+    }
+
+    if (best_len <= 0) {
+      continue;
+    }
+    for (int j = 0; j < best_len; ++j) {
+      used[best_tris[j]] = 1;
+    }
+
+    const bool faces_front = (tris[best_tris[0]].facesfront != 0);
+    QVector<std::uint32_t> cmd_indices;
+    cmd_indices.reserve(best_len + 2);
+    for (int j = 0; j < best_len + 2; ++j) {
+      const int vi = best_verts[j];
+      if (vi < 0 || vi >= base_verts.size()) {
+        continue;
+      }
+
+      ModelVertex v = base_verts[vi];
+      qint32 s = st[vi].s;
+      if (!faces_front && st[vi].onseam != 0) {
+        s += (skinwidth / 2);
+      }
+      v.u = (static_cast<float>(s) + 0.5f) * inv_skinw;
+      // Model textures are vertically flipped before GPU upload; keep MDL's top-origin
+      // texture coordinates by inverting V here.
+      v.v = 1.0f - ((static_cast<float>(st[vi].t) + 0.5f) * inv_skinh);
+
+      cmd_indices.push_back(static_cast<std::uint32_t>(verts.size()));
+      verts.push_back(v);
+    }
+
+    const int vertex_count = cmd_indices.size();
+    if (vertex_count < 3) {
+      continue;
+    }
+
+    if (best_type == 1) {  // strip
+      for (int j = 0; j + 2 < vertex_count; ++j) {
+        if ((j & 1) == 0) {
+          indices.push_back(cmd_indices[j + 0]);
+          indices.push_back(cmd_indices[j + 1]);
+          indices.push_back(cmd_indices[j + 2]);
+        } else {
+          indices.push_back(cmd_indices[j + 1]);
+          indices.push_back(cmd_indices[j + 0]);
+          indices.push_back(cmd_indices[j + 2]);
+        }
+      }
+    } else {  // fan
+      const std::uint32_t anchor = cmd_indices[0];
+      for (int j = 1; j + 1 < vertex_count; ++j) {
+        indices.push_back(anchor);
+        indices.push_back(cmd_indices[j]);
+        indices.push_back(cmd_indices[j + 1]);
       }
     }
   }

@@ -1,3 +1,4 @@
 {
-    "C_Cpp.default.configurationProvider": "mesonbuild.mesonbuild"
+    "C_Cpp.default.configurationProvider": "mesonbuild.mesonbuild",
+    "C_Cpp.default.compileCommands": "e:\\Repositories\\PakFu\\builddir/compile_commands.json"
 }

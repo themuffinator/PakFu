@@ -1,5 +1,5 @@
 param(
-    [string]$BuildDir = "build",
+    [string]$BuildDir = "builddir",
     [string]$ExeName = "pakfu.exe",
     [string]$QtBin = ""
 )
@@ -47,4 +47,3 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "Deployment complete."
-

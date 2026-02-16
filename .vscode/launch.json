@@ -5,7 +5,7 @@
       "name": "PakFu (GUI) - Windows",
       "type": "cppvsdbg",
       "request": "launch",
-      "program": "${workspaceFolder}\\build\\src\\pakfu.exe",
+      "program": "${workspaceFolder}\\builddir\\src\\pakfu.exe",
       "args": [
         "-platform",
         "windows:nodirectwrite"
@@ -29,7 +29,7 @@
       "name": "PakFu (GUI) - Linux/macOS",
       "type": "cppdbg",
       "request": "launch",
-      "program": "${workspaceFolder}/build/src/pakfu",
+      "program": "${workspaceFolder}/builddir/src/pakfu",
       "args": [],
       "cwd": "${workspaceFolder}",
       "stopAtEntry": false,

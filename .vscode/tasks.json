@@ -8,7 +8,9 @@
       "args": [
         "-NoProfile",
         "-File",
-        "${workspaceFolder}/scripts/meson_build.ps1"
+        "${workspaceFolder}/scripts/meson_build.ps1",
+        "-BuildDir",
+        "builddir"
       ],
       "group": {
         "kind": "build",

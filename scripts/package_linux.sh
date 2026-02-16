@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-build_dir="${1:-build}"
+build_dir="${1:-builddir}"
 out_dir="${2:-dist}"
 version="${3:-$(cat VERSION)}"
 root_dir="$(cd "$(dirname "$0")/.." && pwd)"

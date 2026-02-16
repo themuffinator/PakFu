@@ -1,5 +1,5 @@
 param(
-  [string]$BuildDir = "build",
+  [string]$BuildDir = "builddir",
   [string]$Backend = "ninja",
   [bool]$DeployQtRuntime = $true
 )
