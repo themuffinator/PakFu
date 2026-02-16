@@ -1,6 +1,10 @@
 # Changelog
 
 All notable changes to PakFu are documented here.
+## [0.1.11.1] - 2026-02-16
+### Other
+- Add idTech asset inspectors and sprite loader
+
 ## [0.1.10.1] - 2026-02-10
 ### Build
 - compile miniz as static library
