@@ -45,3 +45,13 @@
 - Cinematics (built-in decoders; used for thumbnails + playback widget):
   - CIN: id Quake II cinematic (PAL8 + optional PCM audio)
   - ROQ: id RoQ (vector quantized video + optional RoQ DPCM audio)
+
+- idTech asset inspectors (built-in metadata parsers):
+  - SPR: Quake/idTech2 sprite decode + animated preview + metadata/frame table summary
+  - SP2 / SPR2: Quake II sprite frame references resolve to animated preview + metadata/frame table summary
+  - DM2: Quake II demo packet stream summary
+  - AAS: Quake III bot navigation header + lump summary
+  - QVM: Quake III VM bytecode header + segment summary
+
+- Text/script preview:
+  - Includes Quake-style script/config assets such as `cfg`, `arena`, `bot`, `skin`, `shaderlist`, `shader`, and `menu`

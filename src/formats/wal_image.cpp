@@ -16,11 +16,35 @@ constexpr int kWalHeaderSize = 100;
 			(static_cast<quint32>(p[3]) << 24));
 }
 
+[[nodiscard]] QString read_name32(const QByteArray& bytes) {
+	if (bytes.size() < 32) {
+		return {};
+	}
+	const QByteArray raw = bytes.left(32);
+	const int nul = raw.indexOf('\0');
+	const QByteArray trimmed = (nul >= 0) ? raw.left(nul) : raw;
+	return QString::fromLatin1(trimmed).trimmed();
+}
+
+[[nodiscard]] bool uses_index255_transparency(const QString& texture_name) {
+	QString name = texture_name.trimmed();
+	if (name.isEmpty()) {
+		return false;
+	}
+	name.replace('\\', '/');
+	const int slash = name.lastIndexOf('/');
+	if (slash >= 0) {
+		name = name.mid(slash + 1);
+	}
+	return name.startsWith('{');
+}
+
 [[nodiscard]] bool decode_wal_mip(const uchar* data,
 								 int size,
 								 quint32 offset,
 								 int width,
 								 int height,
+								 bool transparent_255,
 								 const QVector<QRgb>& palette,
 								 QImage* out,
 								 QString* error) {
@@ -84,7 +108,7 @@ constexpr int kWalHeaderSize = 100;
 		dst[0] = static_cast<uchar>(qRed(c));
 		dst[1] = static_cast<uchar>(qGreen(c));
 		dst[2] = static_cast<uchar>(qBlue(c));
-		dst[3] = (idx == 255) ? 0 : 255;
+		dst[3] = (transparent_255 && idx == 255) ? 0 : 255;
 	}
 
 	*out = std::move(img);
@@ -92,7 +116,7 @@ constexpr int kWalHeaderSize = 100;
 }
 }  // namespace
 
-QImage decode_wal_image_with_mips(const QByteArray& bytes, const QVector<QRgb>& palette, QString* error) {
+QImage decode_wal_image_with_mips(const QByteArray& bytes, const QVector<QRgb>& palette, const QString& texture_name, QString* error) {
 	if (error) {
 		error->clear();
 	}
@@ -144,27 +168,30 @@ QImage decode_wal_image_with_mips(const QByteArray& bytes, const QVector<QRgb>& 
 	const int w3 = std::max(1, w0 / 8);
 	const int h3 = std::max(1, h0 / 8);
 
+	const bool transparent_255 =
+		uses_index255_transparency(texture_name) || uses_index255_transparency(read_name32(bytes));
+
 	QImage mip0, mip1, mip2, mip3;
 	QString err;
-	if (!decode_wal_mip(data, size, offsets[0], w0, h0, palette, &mip0, &err)) {
+	if (!decode_wal_mip(data, size, offsets[0], w0, h0, transparent_255, palette, &mip0, &err)) {
 		if (error) {
 			*error = err.isEmpty() ? "Unable to decode WAL mip 0." : err;
 		}
 		return {};
 	}
-	if (!decode_wal_mip(data, size, offsets[1], w1, h1, palette, &mip1, &err)) {
+	if (!decode_wal_mip(data, size, offsets[1], w1, h1, transparent_255, palette, &mip1, &err)) {
 		if (error) {
 			*error = err.isEmpty() ? "Unable to decode WAL mip 1." : err;
 		}
 		return {};
 	}
-	if (!decode_wal_mip(data, size, offsets[2], w2, h2, palette, &mip2, &err)) {
+	if (!decode_wal_mip(data, size, offsets[2], w2, h2, transparent_255, palette, &mip2, &err)) {
 		if (error) {
 			*error = err.isEmpty() ? "Unable to decode WAL mip 2." : err;
 		}
 		return {};
 	}
-	if (!decode_wal_mip(data, size, offsets[3], w3, h3, palette, &mip3, &err)) {
+	if (!decode_wal_mip(data, size, offsets[3], w3, h3, transparent_255, palette, &mip3, &err)) {
 		if (error) {
 			*error = err.isEmpty() ? "Unable to decode WAL mip 3." : err;
 		}
@@ -198,7 +225,11 @@ QImage decode_wal_image_with_mips(const QByteArray& bytes, const QVector<QRgb>& 
 	return composite;
 }
 
-QImage decode_wal_image(const QByteArray& bytes, const QVector<QRgb>& palette, int mip_level, QString* error) {
+QImage decode_wal_image(const QByteArray& bytes,
+                        const QVector<QRgb>& palette,
+                        int mip_level,
+                        const QString& texture_name,
+                        QString* error) {
 	if (error) {
 		error->clear();
 	}
@@ -251,9 +282,12 @@ QImage decode_wal_image(const QByteArray& bytes, const QVector<QRgb>& palette, i
 		h = std::max(1, h / 2);
 	}
 
+	const bool transparent_255 =
+		uses_index255_transparency(texture_name) || uses_index255_transparency(read_name32(bytes));
+
 	QImage mip;
 	QString err;
-	if (!decode_wal_mip(data, size, offsets[level], w, h, palette, &mip, &err)) {
+	if (!decode_wal_mip(data, size, offsets[level], w, h, transparent_255, palette, &mip, &err)) {
 		if (error) {
 			*error = err.isEmpty() ? QString("Unable to decode WAL mip %1.").arg(level) : err;
 		}

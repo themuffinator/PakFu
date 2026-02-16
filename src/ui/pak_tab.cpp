@@ -64,12 +64,14 @@
 #include "archive/path_safety.h"
 #include "formats/bsp_preview.h"
 #include "formats/cinematic.h"
+#include "formats/idtech_asset_loader.h"
 #include "formats/miptex_image.h"
 #include "formats/wal_image.h"
 #include "formats/lmp_image.h"
 #include "formats/model.h"
 #include "formats/pcx_image.h"
 #include "formats/quake3_skin.h"
+#include "formats/sprite_loader.h"
 #include "third_party/miniz/miniz.h"
 #include "pak/pak_archive.h"
 #include "ui/breadcrumb_bar.h"
@@ -90,7 +92,8 @@ struct ChildListing {
 
 QString normalize_pak_path(QString path);
 bool is_wad_archive_ext(const QString& ext);
-bool is_wad_archive_file_name(const QString& name);
+bool is_mountable_archive_ext(const QString& ext);
+bool is_mountable_archive_file_name(const QString& name);
 
 [[nodiscard]] size_t mz_read_qfile(void* opaque, mz_uint64 file_ofs, void* buf, size_t n) {
   auto* f = static_cast<QFile*>(opaque);
@@ -644,8 +647,8 @@ public:
         return 0;  // folders
       }
       const QString ext = ext_lower(it);
-      if (is_wad_archive_ext(ext)) {
-        return 1;  // wad files
+      if (is_mountable_archive_ext(ext)) {
+        return 1;  // container files
       }
       return 2;  // all other files
     };
@@ -705,7 +708,7 @@ public:
         return 0;
       }
       const QString ext = ext_lower(it);
-      if (is_wad_archive_ext(ext)) {
+      if (is_mountable_archive_ext(ext)) {
         return 1;
       }
       return 2;
@@ -742,6 +745,34 @@ bool is_image_file_name(const QString& name) {
     "png", "jpg", "jpeg", "bmp", "gif", "tga", "pcx", "wal", "dds", "lmp", "mip", "tif", "tiff"
   };
   return kImageExts.contains(ext);
+}
+
+bool is_sprite_file_ext(const QString& ext) {
+  return ext == "spr" || ext == "sp2" || ext == "spr2";
+}
+
+bool is_sprite_file_name(const QString& name) {
+  const QString lower = name.toLower();
+  const int dot = lower.lastIndexOf('.');
+  if (dot < 0) {
+    return false;
+  }
+  return is_sprite_file_ext(lower.mid(dot + 1));
+}
+
+QImage make_centered_icon_frame(const QImage& image, const QSize& icon_size, bool smooth) {
+  if (image.isNull() || !icon_size.isValid()) {
+    return {};
+  }
+  const QImage scaled = image.scaled(icon_size, Qt::KeepAspectRatio, smooth ? Qt::SmoothTransformation : Qt::FastTransformation);
+  QImage square(icon_size, QImage::Format_ARGB32_Premultiplied);
+  square.fill(Qt::transparent);
+  QPainter p(&square);
+  p.setRenderHint(QPainter::SmoothPixmapTransform, smooth);
+  const int ox = (icon_size.width() - scaled.width()) / 2;
+  const int oy = (icon_size.height() - scaled.height()) / 2;
+  p.drawImage(QPoint(ox, oy), scaled);
+  return square;
 }
 
 QIcon make_badged_icon(const QIcon& base, const QSize& icon_size, const QString& badge, const QPalette& pal) {
@@ -1026,8 +1057,12 @@ bool is_wad_archive_ext(const QString& ext) {
   return ext == "wad" || ext == "wad2" || ext == "wad3";
 }
 
-bool is_wad_archive_file_name(const QString& name) {
-  return is_wad_archive_ext(file_ext_lower(name));
+bool is_mountable_archive_ext(const QString& ext) {
+  return is_wad_archive_ext(ext) || ext == "pak" || ext == "zip" || ext == "pk3" || ext == "pk4" || ext == "pkz";
+}
+
+bool is_mountable_archive_file_name(const QString& name) {
+  return is_mountable_archive_ext(file_ext_lower(name));
 }
 
 /*
@@ -1058,10 +1093,15 @@ bool is_bsp_file_name(const QString& name) {
   return (ext == "bsp");
 }
 
+bool is_cfg_like_text_ext(const QString& ext) {
+  return ext == "cfg" || ext == "arena" || ext == "bot" || ext == "skin" || ext == "shaderlist";
+}
+
 bool is_text_file_name(const QString& name) {
   const QString ext = file_ext_lower(name);
   static const QSet<QString> kTextExts = {
-    "cfg", "txt", "log", "md", "ini", "json", "xml", "shader", "menu", "script", "c", "h"
+    "cfg", "arena", "bot", "skin", "shaderlist", "txt", "log", "md", "ini", "json", "xml", "shader", "menu", "script",
+    "c", "h"
   };
   return kTextExts.contains(ext);
 }
@@ -1323,6 +1363,9 @@ PakTab::PakTab(Mode mode, const QString& pak_path, QWidget* parent)
   setAcceptDrops(true);
   drag_source_uid_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
   thumbnail_pool_.setMaxThreadCount(1);
+  sprite_icon_timer_ = new QTimer(this);
+  sprite_icon_timer_->setInterval(60);
+  connect(sprite_icon_timer_, &QTimer::timeout, this, &PakTab::advance_sprite_icon_animations);
   QSettings settings;
   image_texture_smoothing_ = settings.value("preview/image/textureSmoothing", false).toBool();
   build_ui();
@@ -1479,7 +1522,7 @@ bool PakTab::ensure_editable(const QString& action) {
     return false;
   }
   if (wad_mounted_) {
-    QMessageBox::information(this, "Mounted WAD", "This WAD view is read-only. Click the Root breadcrumb to go back.");
+    QMessageBox::information(this, "Mounted Archive", "This mounted archive view is read-only. Click the Root breadcrumb to go back.");
     return false;
   }
   if (pure_pak_protector_enabled_ && official_archive_) {
@@ -1740,11 +1783,11 @@ void PakTab::build_ui() {
 
     const QString pak_path = item->data(0, kRolePakPath).toString();
     const QString leaf = pak_leaf_name(pak_path.isEmpty() ? item->text(0) : pak_path);
-    if (is_wad_archive_file_name(leaf)) {
+    if (is_mountable_archive_file_name(leaf)) {
       QString err;
       if (!mount_wad_from_selected_file(pak_path, &err) && !err.isEmpty()) {
         if (preview_) {
-          preview_->show_message(leaf.isEmpty() ? "WAD" : leaf, err);
+          preview_->show_message(leaf.isEmpty() ? "Archive" : leaf, err);
         }
       }
       return;
@@ -1768,11 +1811,11 @@ void PakTab::build_ui() {
 
     const QString pak_path = item->data(kRolePakPath).toString();
     const QString leaf = pak_leaf_name(pak_path.isEmpty() ? item->text() : pak_path);
-    if (is_wad_archive_file_name(leaf)) {
+    if (is_mountable_archive_file_name(leaf)) {
       QString err;
       if (!mount_wad_from_selected_file(pak_path, &err) && !err.isEmpty()) {
         if (preview_) {
-          preview_->show_message(leaf.isEmpty() ? "WAD" : leaf, err);
+          preview_->show_message(leaf.isEmpty() ? "Archive" : leaf, err);
         }
       }
       return;
@@ -2079,7 +2122,139 @@ void PakTab::configure_icon_view() {
 void PakTab::stop_thumbnail_generation() {
   ++thumbnail_generation_;
   icon_items_by_path_.clear();
+  detail_items_by_path_.clear();
+  clear_sprite_icon_animations();
   thumbnail_pool_.clear();
+}
+
+void PakTab::register_sprite_icon_animation(const QString& pak_path,
+                                            const QVector<QImage>& frames,
+                                            const QVector<int>& frame_durations_ms,
+                                            const QSize& icon_size) {
+  if (pak_path.isEmpty() || frames.isEmpty() || !icon_size.isValid()) {
+    return;
+  }
+
+  const QSize details_icon_size = (details_view_ && details_view_->iconSize().isValid())
+                                  ? details_view_->iconSize()
+                                  : QSize(24, 24);
+
+  SpriteIconAnimation anim;
+  anim.icon_frames.reserve(frames.size());
+  anim.detail_frames.reserve(frames.size());
+  anim.frame_durations_ms.reserve(frames.size());
+  for (int i = 0; i < frames.size(); ++i) {
+    const QImage& frame = frames[i];
+    const QImage icon_frame = make_centered_icon_frame(frame, icon_size, image_texture_smoothing_);
+    const QImage detail_frame = make_centered_icon_frame(frame, details_icon_size, image_texture_smoothing_);
+    if (!icon_frame.isNull()) {
+      anim.icon_frames.push_back(QIcon(QPixmap::fromImage(icon_frame)));
+    }
+    if (!detail_frame.isNull()) {
+      anim.detail_frames.push_back(QIcon(QPixmap::fromImage(detail_frame)));
+    }
+    const int ms = (i >= 0 && i < frame_durations_ms.size()) ? frame_durations_ms[i] : 100;
+    anim.frame_durations_ms.push_back(std::clamp(ms, 30, 2000));
+  }
+
+  if (anim.icon_frames.isEmpty() && anim.detail_frames.isEmpty()) {
+    return;
+  }
+
+  anim.frame_index = 0;
+  anim.elapsed_ms = 0;
+  sprite_icon_animations_.insert(pak_path, std::move(anim));
+
+  if (QListWidgetItem* icon_item = icon_items_by_path_.value(pak_path, nullptr)) {
+    const SpriteIconAnimation& a = sprite_icon_animations_.value(pak_path);
+    if (!a.icon_frames.isEmpty()) {
+      icon_item->setIcon(a.icon_frames.first());
+    }
+  }
+  if (QTreeWidgetItem* detail_item = detail_items_by_path_.value(pak_path, nullptr)) {
+    const SpriteIconAnimation& a = sprite_icon_animations_.value(pak_path);
+    if (!a.detail_frames.isEmpty()) {
+      detail_item->setIcon(0, a.detail_frames.first());
+    }
+  }
+
+  const SpriteIconAnimation& a = sprite_icon_animations_.value(pak_path);
+  const int max_frames = std::max(a.icon_frames.size(), a.detail_frames.size());
+  if (sprite_icon_timer_ && max_frames > 1 && !sprite_icon_timer_->isActive()) {
+    sprite_icon_timer_->start();
+  }
+}
+
+void PakTab::clear_sprite_icon_animations() {
+  sprite_icon_animations_.clear();
+  if (sprite_icon_timer_) {
+    sprite_icon_timer_->stop();
+  }
+}
+
+void PakTab::advance_sprite_icon_animations() {
+  if (sprite_icon_animations_.isEmpty()) {
+    if (sprite_icon_timer_) {
+      sprite_icon_timer_->stop();
+    }
+    return;
+  }
+
+  const int dt_ms = (sprite_icon_timer_ && sprite_icon_timer_->interval() > 0) ? sprite_icon_timer_->interval() : 60;
+  QVector<QString> to_remove;
+  to_remove.reserve(sprite_icon_animations_.size());
+
+  bool has_multi_frame = false;
+  for (auto it = sprite_icon_animations_.begin(); it != sprite_icon_animations_.end(); ++it) {
+    const QString& pak_path = it.key();
+    SpriteIconAnimation& anim = it.value();
+
+    QListWidgetItem* icon_item = icon_items_by_path_.value(pak_path, nullptr);
+    QTreeWidgetItem* detail_item = detail_items_by_path_.value(pak_path, nullptr);
+    if (!icon_item && !detail_item) {
+      to_remove.push_back(pak_path);
+      continue;
+    }
+
+    const int frame_count = std::max(anim.icon_frames.size(), anim.detail_frames.size());
+    if (frame_count <= 0) {
+      to_remove.push_back(pak_path);
+      continue;
+    }
+    if (frame_count <= 1) {
+      continue;
+    }
+    has_multi_frame = true;
+
+    anim.elapsed_ms += dt_ms;
+    const int delay_ms = (anim.frame_index >= 0 && anim.frame_index < anim.frame_durations_ms.size())
+                         ? std::clamp(anim.frame_durations_ms[anim.frame_index], 30, 2000)
+                         : 100;
+    if (anim.elapsed_ms < delay_ms) {
+      continue;
+    }
+
+    const int steps = std::max(1, anim.elapsed_ms / delay_ms);
+    anim.elapsed_ms %= delay_ms;
+    anim.frame_index = (anim.frame_index + steps) % frame_count;
+
+    if (icon_item && !anim.icon_frames.isEmpty()) {
+      icon_item->setIcon(anim.icon_frames[anim.frame_index % anim.icon_frames.size()]);
+    }
+    if (detail_item && !anim.detail_frames.isEmpty()) {
+      detail_item->setIcon(0, anim.detail_frames[anim.frame_index % anim.detail_frames.size()]);
+    }
+  }
+
+  for (const QString& key : to_remove) {
+    sprite_icon_animations_.remove(key);
+  }
+
+  if (sprite_icon_timer_) {
+    if (sprite_icon_animations_.isEmpty() || !has_multi_frame) {
+      sprite_icon_timer_->stop();
+    }
+  }
 }
 
 void PakTab::queue_thumbnail(const QString& pak_path,
@@ -2087,7 +2262,7 @@ void PakTab::queue_thumbnail(const QString& pak_path,
                              const QString& source_path,
                              qint64 size,
                              const QSize& icon_size) {
-  if (!icon_view_) {
+  if (!icon_view_ && !details_view_) {
     return;
   }
   if (pak_path.isEmpty() || leaf.isEmpty() || !icon_size.isValid()) {
@@ -2099,12 +2274,16 @@ void PakTab::queue_thumbnail(const QString& pak_path,
   const bool is_cinematic = (ext == "cin" || ext == "roq");
   const bool is_model = is_model_file_name(leaf);
   const bool is_bsp = is_bsp_file_name(leaf);
-  if (!is_image && !is_cinematic && !is_model && !is_bsp) {
+  const bool is_sprite = is_sprite_file_ext(ext);
+  if (!is_image && !is_cinematic && !is_model && !is_bsp && !is_sprite) {
     return;
   }
 
-  if ((ext == "lmp" || ext == "mip") && !quake1_palette_loaded_) {
+  if ((ext == "lmp" || ext == "mip" || ext == "spr") && !quake1_palette_loaded_) {
     ensure_quake1_palette(nullptr);
+  }
+  if ((ext == "wal" || ext == "sp2" || ext == "spr2") && !quake2_palette_loaded_) {
+    ensure_quake2_palette(nullptr);
   }
 
   // Capture state for this thumbnail generation.
@@ -2116,19 +2295,22 @@ void PakTab::queue_thumbnail(const QString& pak_path,
 
   auto* task = QRunnable::create([self, gen, pak_path, leaf, source_path, size, icon_size, quake1_palette, quake2_palette, texture_smoothing]() {
     QImage image;
+    QVector<QImage> sprite_frames;
+    QVector<int> sprite_frame_durations_ms;
 
     const QString ext = file_ext_lower(leaf);
+    const auto decode_options_for = [&](const QString& name) -> ImageDecodeOptions {
+      ImageDecodeOptions options;
+      const QString e = file_ext_lower(name);
+      if ((e == "lmp" || e == "mip") && quake1_palette.size() == 256) {
+        options.palette = &quake1_palette;
+      } else if (e == "wal" && quake2_palette.size() == 256) {
+        options.palette = &quake2_palette;
+      }
+      return options;
+    };
     if (is_image_file_name(leaf)) {
-       ImageDecodeOptions options;
-       if (ext == "lmp" && quake1_palette.size() == 256) {
-         options.palette = &quake1_palette;
-       }
-       if (ext == "mip" && quake1_palette.size() == 256) {
-         options.palette = &quake1_palette;
-       }
-       if (ext == "wal" && quake2_palette.size() == 256) {
-         options.palette = &quake2_palette;
-       }
+      ImageDecodeOptions options = decode_options_for(leaf);
 
       ImageDecodeResult decoded;
       if (!source_path.isEmpty()) {
@@ -2144,6 +2326,157 @@ void PakTab::queue_thumbnail(const QString& pak_path,
 
       if (decoded.ok()) {
         image = decoded.image;
+      }
+    } else if (is_sprite_file_ext(ext)) {
+      QByteArray sprite_bytes;
+      QString err;
+      if (!source_path.isEmpty()) {
+        QFile f(source_path);
+        if (f.open(QIODevice::ReadOnly)) {
+          constexpr qint64 kMaxSpriteBytes = 64LL * 1024 * 1024;
+          sprite_bytes = f.read(kMaxSpriteBytes);
+        }
+      } else {
+        constexpr qint64 kMaxSpriteBytes = 64LL * 1024 * 1024;
+        const qint64 max_bytes = (size > 0) ? std::min(size, kMaxSpriteBytes) : kMaxSpriteBytes;
+        (void)self->view_archive().read_entry_bytes(pak_path, &sprite_bytes, &err, max_bytes);
+      }
+
+      if (!sprite_bytes.isEmpty()) {
+        if (ext == "spr") {
+          const SpriteDecodeResult decoded = decode_spr_sprite(sprite_bytes, quake1_palette.size() == 256 ? &quake1_palette : nullptr);
+          if (decoded.ok()) {
+            sprite_frames.reserve(decoded.frames.size());
+            sprite_frame_durations_ms.reserve(decoded.frames.size());
+            for (const SpriteFrame& frame : decoded.frames) {
+              if (frame.image.isNull()) {
+                continue;
+              }
+              sprite_frames.push_back(frame.image);
+              sprite_frame_durations_ms.push_back(std::clamp(frame.duration_ms, 30, 2000));
+            }
+          }
+        } else {
+          QString normalized_pak = normalize_pak_path(pak_path);
+          const int slash = normalized_pak.lastIndexOf('/');
+          const QString sprite_dir_prefix = (slash >= 0) ? normalized_pak.left(slash + 1) : QString();
+          QHash<QString, QString> by_lower;
+          by_lower.reserve(self->view_archive().entries().size());
+          for (const ArchiveEntry& e : self->view_archive().entries()) {
+            const QString n = normalize_pak_path(e.name);
+            if (!n.isEmpty()) {
+              by_lower.insert(n.toLower(), e.name);
+            }
+          }
+
+          const auto decode_bytes = [&](const QByteArray& bytes, const QString& name) -> ImageDecodeResult {
+            const ImageDecodeOptions options = decode_options_for(name);
+            ImageDecodeResult decoded = decode_image_bytes(bytes, name, options);
+            if (!decoded.ok() && options.palette) {
+              decoded = decode_image_bytes(bytes, name, {});
+            }
+            return decoded;
+          };
+
+          const auto decode_file_path = [&](const QString& path) -> ImageDecodeResult {
+            if (path.isEmpty() || !QFileInfo::exists(path)) {
+              return ImageDecodeResult{QImage(), "SP2 frame file was not found."};
+            }
+            const ImageDecodeOptions options = decode_options_for(path);
+            ImageDecodeResult decoded = decode_image_file(path, options);
+            if (!decoded.ok() && options.palette) {
+              decoded = decode_image_file(path, {});
+            }
+            return decoded;
+          };
+
+          const Sp2FrameLoader load_frame = [&](const QString& frame_name) -> ImageDecodeResult {
+            QString ref = frame_name;
+            ref.replace('\\', '/');
+            while (ref.startsWith('/')) {
+              ref.remove(0, 1);
+            }
+            const QString leaf_name = QFileInfo(ref).fileName();
+
+            if (!source_path.isEmpty()) {
+              const QString base_dir = QFileInfo(source_path).absolutePath();
+              QVector<QString> file_candidates;
+              file_candidates.reserve(4);
+              if (QFileInfo(ref).isAbsolute()) {
+                file_candidates.push_back(ref);
+              }
+              if (!base_dir.isEmpty()) {
+                file_candidates.push_back(QDir(base_dir).filePath(ref));
+                if (!leaf_name.isEmpty()) {
+                  file_candidates.push_back(QDir(base_dir).filePath(leaf_name));
+                }
+              }
+
+              for (const QString& cand : file_candidates) {
+                const ImageDecodeResult decoded = decode_file_path(cand);
+                if (decoded.ok()) {
+                  return decoded;
+                }
+              }
+            }
+
+            QVector<QString> candidates;
+            candidates.reserve(6);
+            auto add_candidate = [&](const QString& c) {
+              const QString normalized = normalize_pak_path(c);
+              if (!normalized.isEmpty()) {
+                candidates.push_back(normalized);
+              }
+            };
+
+            add_candidate(ref);
+            if (!sprite_dir_prefix.isEmpty() && !ref.startsWith(sprite_dir_prefix)) {
+              add_candidate(sprite_dir_prefix + ref);
+            }
+            if (!leaf_name.isEmpty()) {
+              add_candidate(leaf_name);
+              if (!sprite_dir_prefix.isEmpty()) {
+                add_candidate(sprite_dir_prefix + leaf_name);
+              }
+            }
+
+            constexpr qint64 kMaxFrameBytes = 16LL * 1024 * 1024;
+            for (const QString& want : candidates) {
+              const QString found = by_lower.value(want.toLower());
+              if (found.isEmpty()) {
+                continue;
+              }
+              QByteArray frame_bytes;
+              QString read_err;
+              if (!self->view_archive().read_entry_bytes(found, &frame_bytes, &read_err, kMaxFrameBytes)) {
+                continue;
+              }
+              const ImageDecodeResult decoded = decode_bytes(frame_bytes, QFileInfo(found).fileName());
+              if (decoded.ok()) {
+                return decoded;
+              }
+            }
+
+            return ImageDecodeResult{QImage(), "Unable to resolve SP2 frame image."};
+          };
+
+          const SpriteDecodeResult decoded = decode_sp2_sprite(sprite_bytes, load_frame);
+          if (decoded.ok()) {
+            sprite_frames.reserve(decoded.frames.size());
+            sprite_frame_durations_ms.reserve(decoded.frames.size());
+            for (const SpriteFrame& frame : decoded.frames) {
+              if (frame.image.isNull()) {
+                continue;
+              }
+              sprite_frames.push_back(frame.image);
+              sprite_frame_durations_ms.push_back(std::clamp(frame.duration_ms, 30, 2000));
+            }
+          }
+        }
+      }
+
+      if (!sprite_frames.isEmpty()) {
+        image = sprite_frames.first();
       }
     } else if (ext == "cin" || ext == "roq") {
       std::unique_ptr<CinematicDecoder> dec;
@@ -2224,29 +2557,34 @@ void PakTab::queue_thumbnail(const QString& pak_path,
       return;
     }
 
-    const auto transform_mode = texture_smoothing ? Qt::SmoothTransformation : Qt::FastTransformation;
-    const QImage scaled = image.scaled(icon_size, Qt::KeepAspectRatio, transform_mode);
-    QImage square(icon_size, QImage::Format_ARGB32_Premultiplied);
-    square.fill(Qt::transparent);
-    {
-      QPainter p(&square);
-      p.setRenderHint(QPainter::SmoothPixmapTransform, texture_smoothing);
-      const int ox = (icon_size.width() - scaled.width()) / 2;
-      const int oy = (icon_size.height() - scaled.height()) / 2;
-      p.drawImage(QPoint(ox, oy), scaled);
+    image = make_centered_icon_frame(image, icon_size, texture_smoothing);
+    if (image.isNull()) {
+      return;
     }
-    image = std::move(square);
-    QMetaObject::invokeMethod(self, [self, gen, pak_path, image = std::move(image)]() mutable {
+
+    QMetaObject::invokeMethod(self,
+                              [self,
+                               gen,
+                               pak_path,
+                               icon_size,
+                               image = std::move(image),
+                               sprite_frames = std::move(sprite_frames),
+                               sprite_frame_durations_ms = std::move(sprite_frame_durations_ms)]() mutable {
       if (!self || self->thumbnail_generation_ != gen) {
         return;
       }
-      QListWidgetItem* item = self->icon_items_by_path_.value(pak_path, nullptr);
-      if (!item) {
-        return;
+      const QIcon icon(QPixmap::fromImage(image));
+      if (QListWidgetItem* item = self->icon_items_by_path_.value(pak_path, nullptr)) {
+        item->setIcon(icon);
       }
-      QPixmap pm = QPixmap::fromImage(image);
-      item->setIcon(QIcon(pm));
-    }, Qt::QueuedConnection);
+      if (QTreeWidgetItem* item = self->detail_items_by_path_.value(pak_path, nullptr)) {
+        item->setIcon(0, icon);
+      }
+      if (!sprite_frames.isEmpty()) {
+        self->register_sprite_icon_animation(pak_path, sprite_frames, sprite_frame_durations_ms, icon_size);
+      }
+    },
+                              Qt::QueuedConnection);
   });
   task->setAutoDelete(true);
   thumbnail_pool_.start(task);
@@ -4911,7 +5249,7 @@ void PakTab::set_current_dir(const QStringList& parts) {
   QStringList crumbs;
   crumbs.push_back(root);
   if (wad_mounted_) {
-    crumbs.push_back(wad_mount_name_.isEmpty() ? "WAD" : wad_mount_name_);
+    crumbs.push_back(wad_mount_name_.isEmpty() ? "Archive" : wad_mount_name_);
   }
   for (const QString& p : parts) {
     crumbs.push_back(p);
@@ -5031,7 +5369,7 @@ void PakTab::refresh_listing() {
       continue;
     }
     ++file_count;
-    if (is_image_file_name(child.name)) {
+    if (is_image_file_name(child.name) || is_sprite_file_name(child.name)) {
       ++image_count;
     }
     if (is_video_file_name(child.name)) {
@@ -5059,7 +5397,9 @@ void PakTab::refresh_listing() {
   const QIcon cfg_icon = make_badged_icon(file_icon, QSize(32, 32), "{}", palette());
   const QIcon wad_base = make_archive_icon(file_icon, QSize(32, 32), palette());
   const QIcon wad_icon = make_badged_icon(wad_base, QSize(32, 32), "WAD", palette());
+  const QIcon archive_icon = make_badged_icon(wad_base, QSize(32, 32), "ARC", palette());
   const QIcon model_icon = make_badged_icon(file_icon, QSize(32, 32), "3D", palette());
+  const QIcon sprite_icon = make_badged_icon(file_icon, QSize(32, 32), "SPR", palette());
 
   const bool show_details = (effective_view_ == ViewMode::Details);
   const bool want_thumbs = (effective_view_ == ViewMode::LargeIcons || effective_view_ == ViewMode::Gallery);
@@ -5085,6 +5425,7 @@ void PakTab::refresh_listing() {
       item->setData(0, kRolePakPath, full_path);
       item->setData(0, kRoleIsAdded, child.is_added);
       item->setData(0, kRoleIsOverridden, child.is_overridden);
+      detail_items_by_path_.insert(full_path, item);
       if (child.is_dir) {
         item->setIcon(0, dir_icon);
       } else {
@@ -5092,11 +5433,15 @@ void PakTab::refresh_listing() {
         const QString ext = file_ext_lower(leaf);
         if (is_supported_audio_file(leaf)) {
           item->setIcon(0, audio_icon);
-        } else if (is_wad_archive_ext(ext)) {
-          item->setIcon(0, wad_icon);
+        } else if (is_mountable_archive_ext(ext)) {
+          item->setIcon(0, is_wad_archive_ext(ext) ? wad_icon : archive_icon);
         } else if (is_model_file_name(leaf)) {
           item->setIcon(0, model_icon);
-        } else if (ext == "cfg") {
+        } else if (is_sprite_file_name(leaf)) {
+          item->setIcon(0, sprite_icon);
+          const QSize details_icon_size = details_view_->iconSize().isValid() ? details_view_->iconSize() : QSize(24, 24);
+          queue_thumbnail(full_path, leaf, child.source_path, static_cast<qint64>(child.size), details_icon_size);
+        } else if (is_cfg_like_text_ext(ext)) {
           item->setIcon(0, cfg_icon);
         } else {
           item->setIcon(0, file_icon);
@@ -5154,7 +5499,9 @@ void PakTab::refresh_listing() {
     const QIcon cfg_icon = make_badged_icon(file_icon, icon_size, "{}", palette());
     const QIcon wad_base = make_archive_icon(file_icon, icon_size, palette());
     const QIcon wad_icon = make_badged_icon(wad_base, icon_size, "WAD", palette());
+    const QIcon archive_icon = make_badged_icon(wad_base, icon_size, "ARC", palette());
     const QIcon model_icon = make_badged_icon(file_icon, icon_size, "3D", palette());
+    const QIcon sprite_icon = make_badged_icon(file_icon, icon_size, "SPR", palette());
 
     for (const ChildListing& child : children) {
       const QString full_path =
@@ -5177,20 +5524,23 @@ void PakTab::refresh_listing() {
         const QString ext = file_ext_lower(leaf);
         if (is_supported_audio_file(leaf)) {
           icon = audio_icon;
-        } else if (is_wad_archive_ext(ext)) {
-          icon = wad_icon;
+        } else if (is_mountable_archive_ext(ext)) {
+          icon = is_wad_archive_ext(ext) ? wad_icon : archive_icon;
         } else if (is_model_file_name(leaf)) {
           icon = model_icon;
           if (want_thumbs) {
             // Thumbnail will be set asynchronously.
             queue_thumbnail(full_path, leaf, child.source_path, static_cast<qint64>(child.size), icon_size);
           }
+        } else if (is_sprite_file_name(leaf)) {
+          icon = sprite_icon;
+          queue_thumbnail(full_path, leaf, child.source_path, static_cast<qint64>(child.size), icon_size);
         } else if (is_bsp_file_name(leaf)) {
           if (want_thumbs) {
             // Thumbnail will be set asynchronously.
             queue_thumbnail(full_path, leaf, child.source_path, static_cast<qint64>(child.size), icon_size);
           }
-        } else if (ext == "cfg") {
+        } else if (is_cfg_like_text_ext(ext)) {
           icon = cfg_icon;
         } else if (want_thumbs && (is_image_file_name(leaf) || ext == "cin" || ext == "roq")) {
           // Thumbnail will be set asynchronously.
@@ -5422,7 +5772,7 @@ bool PakTab::mount_wad_from_selected_file(const QString& pak_path_in, QString* e
   }
   if (wad_mounted_) {
     if (error) {
-      *error = "Already viewing a mounted WAD.";
+      *error = "Already viewing a mounted container.";
     }
     return false;
   }
@@ -5430,15 +5780,15 @@ bool PakTab::mount_wad_from_selected_file(const QString& pak_path_in, QString* e
   const QString pak_path = normalize_pak_path(pak_path_in);
   if (pak_path.isEmpty()) {
     if (error) {
-      *error = "Invalid WAD path.";
+      *error = "Invalid container path.";
     }
     return false;
   }
 
   const QString leaf = pak_leaf_name(pak_path);
-  if (!is_wad_archive_file_name(leaf)) {
+  if (!is_mountable_archive_file_name(leaf)) {
     if (error) {
-      *error = "Not a WAD file.";
+      *error = "Not a supported container file.";
     }
     return false;
   }
@@ -5453,7 +5803,7 @@ bool PakTab::mount_wad_from_selected_file(const QString& pak_path_in, QString* e
     QString err;
     if (!export_path_to_temp(pak_path, false, &wad_fs_path, &err)) {
       if (error) {
-        *error = err.isEmpty() ? "Unable to export WAD for viewing." : err;
+        *error = err.isEmpty() ? "Unable to export container for viewing." : err;
       }
       return false;
     }
@@ -5461,16 +5811,17 @@ bool PakTab::mount_wad_from_selected_file(const QString& pak_path_in, QString* e
 
   if (wad_fs_path.isEmpty() || !QFileInfo::exists(wad_fs_path)) {
     if (error) {
-      *error = "Unable to locate WAD file on disk.";
+      *error = "Unable to locate container file on disk.";
     }
     return false;
   }
 
   auto inner = std::make_unique<Archive>();
   QString load_err;
-  if (!inner->load(wad_fs_path, &load_err) || !inner->is_loaded() || inner->format() != Archive::Format::Wad) {
+  if (!inner->load(wad_fs_path, &load_err) || !inner->is_loaded() || inner->format() == Archive::Format::Unknown ||
+      inner->format() == Archive::Format::Directory) {
     if (error) {
-      *error = load_err.isEmpty() ? "Unable to open WAD." : load_err;
+      *error = load_err.isEmpty() ? "Unable to open container." : load_err;
     }
     return false;
   }
@@ -5579,7 +5930,7 @@ bool PakTab::ensure_quake2_palette(QString* error) {
       return true;
     }
   }
-  if (try_archive(view_archive(), wad_mounted_ ? "Mounted WAD" : "Current Archive")) {
+  if (try_archive(view_archive(), wad_mounted_ ? "Mounted Archive" : "Current Archive")) {
     return true;
   }
 
@@ -5737,7 +6088,7 @@ bool PakTab::ensure_quake1_palette(QString* error) {
       return true;
     }
   }
-  if (try_archive_palette(view_archive(), wad_mounted_ ? "Mounted WAD" : "Current Archive")) {
+  if (try_archive_palette(view_archive(), wad_mounted_ ? "Mounted Archive" : "Current Archive")) {
     return true;
   }
 
@@ -5887,9 +6238,10 @@ void PakTab::update_preview() {
   }
 
   const QString ext = file_ext_lower(leaf);
-  if (is_wad_archive_ext(ext)) {
-    preview_->show_message(leaf.isEmpty() ? "WAD" : leaf,
-                           "Quake WAD archive. Double-click to open.");
+  if (is_mountable_archive_ext(ext)) {
+    const QString type = is_wad_archive_ext(ext) ? "Quake WAD archive" : "Archive container";
+    preview_->show_message(leaf.isEmpty() ? "Archive" : leaf,
+                           type + ". Double-click to open.");
     return;
   }
   const bool is_audio = is_supported_audio_file(leaf);
@@ -6626,12 +6978,12 @@ void PakTab::update_preview() {
               return ImageDecodeResult{QImage(), "Missing Quake II palette for WAL."};
             }
             QString wal_err;
-            QImage img = decode_wal_image(bytes, quake2_palette_, 0, &wal_err);
+            QImage img = decode_wal_image(bytes, quake2_palette_, 0, name, &wal_err);
             return ImageDecodeResult{std::move(img), wal_err};
           }
           if (ext == "mip") {
             QString mip_err;
-            QImage img = decode_miptex_image(bytes, quake1_palette_.size() == 256 ? &quake1_palette_ : nullptr, 0, &mip_err);
+            QImage img = decode_miptex_image(bytes, quake1_palette_.size() == 256 ? &quake1_palette_ : nullptr, 0, name, &mip_err);
             return ImageDecodeResult{std::move(img), mip_err};
           }
           ImageDecodeOptions opts;
@@ -6731,6 +7083,228 @@ void PakTab::update_preview() {
     return;
   }
 
+  if (is_supported_idtech_asset_file(leaf)) {
+    constexpr qint64 kMaxAssetBytes = 128LL * 1024 * 1024;
+    QByteArray bytes;
+    QString err;
+
+    if (!source_path.isEmpty()) {
+      QFile f(source_path);
+      if (!f.open(QIODevice::ReadOnly)) {
+        preview_->show_message(leaf, "Unable to open source file for preview.");
+        return;
+      }
+      const qint64 size_on_disk = f.size();
+      if (size_on_disk > kMaxAssetBytes) {
+        preview_->show_message(leaf, "Asset file is too large to inspect.");
+        return;
+      }
+      bytes = f.readAll();
+    } else {
+      const qint64 max_bytes = (size > 0) ? std::min(size, kMaxAssetBytes) : kMaxAssetBytes;
+      if (!view_archive().read_entry_bytes(pak_path, &bytes, &err, max_bytes)) {
+        preview_->show_message(leaf, err.isEmpty() ? "Unable to read asset from archive." : err);
+        return;
+      }
+    }
+
+    if (is_sprite_file_name(leaf)) {
+      const auto decode_options_for = [&](const QString& name) -> ImageDecodeOptions {
+        ImageDecodeOptions opt;
+        const QString frame_ext = file_ext_lower(name);
+        if ((frame_ext == "lmp" || frame_ext == "mip") && quake1_palette_.size() == 256) {
+          opt.palette = &quake1_palette_;
+        } else if (frame_ext == "wal" && quake2_palette_.size() == 256) {
+          opt.palette = &quake2_palette_;
+        }
+        return opt;
+      };
+
+      const auto decode_image_from_file_path = [&](const QString& frame_path) -> ImageDecodeResult {
+        if (frame_path.isEmpty() || !QFileInfo::exists(frame_path)) {
+          return ImageDecodeResult{QImage(), "Frame image file was not found."};
+        }
+        ImageDecodeOptions opts = decode_options_for(frame_path);
+        ImageDecodeResult decoded = decode_image_file(frame_path, opts);
+        if (!decoded.ok() && opts.palette) {
+          decoded = decode_image_file(frame_path, {});
+        }
+        return decoded;
+      };
+
+      const auto decode_image_from_bytes = [&](const QByteArray& frame_bytes, const QString& frame_name) -> ImageDecodeResult {
+        ImageDecodeOptions opts = decode_options_for(frame_name);
+        ImageDecodeResult decoded = decode_image_bytes(frame_bytes, frame_name, opts);
+        if (!decoded.ok() && opts.palette) {
+          decoded = decode_image_bytes(frame_bytes, frame_name, {});
+        }
+        return decoded;
+      };
+
+      QVector<QImage> sprite_frames;
+      QVector<int> sprite_frame_durations_ms;
+
+      if (ext == "spr") {
+        QString pal_err;
+        if (!ensure_quake1_palette(&pal_err)) {
+          preview_->show_message(leaf, pal_err.isEmpty() ? "Unable to locate Quake palette required for SPR preview." : pal_err);
+          return;
+        }
+        const SpriteDecodeResult sprite = decode_spr_sprite(bytes, &quake1_palette_);
+        if (!sprite.ok()) {
+          preview_->show_message(leaf, sprite.error.isEmpty() ? "Unable to decode SPR sprite." : sprite.error);
+          return;
+        }
+        sprite_frames.reserve(sprite.frames.size());
+        sprite_frame_durations_ms.reserve(sprite.frames.size());
+        for (const SpriteFrame& frame : sprite.frames) {
+          if (frame.image.isNull()) {
+            continue;
+          }
+          sprite_frames.push_back(frame.image);
+          sprite_frame_durations_ms.push_back(std::clamp(frame.duration_ms, 30, 2000));
+        }
+      } else {
+        (void)ensure_quake1_palette(nullptr);
+        (void)ensure_quake2_palette(nullptr);
+
+        const QString normalized_sprite = normalize_pak_path(pak_path);
+        const int slash = normalized_sprite.lastIndexOf('/');
+        const QString sprite_dir_prefix = (slash >= 0) ? normalized_sprite.left(slash + 1) : QString();
+
+        QHash<QString, QString> by_lower;
+        by_lower.reserve(view_archive().entries().size() + (wad_mounted_ ? 0 : added_files_.size()));
+        for (const ArchiveEntry& e : view_archive().entries()) {
+          const QString n = normalize_pak_path(e.name);
+          if (!n.isEmpty()) {
+            by_lower.insert(n.toLower(), e.name);
+          }
+        }
+        if (!wad_mounted_) {
+          for (const AddedFile& f : added_files_) {
+            const QString n = normalize_pak_path(f.pak_name);
+            if (!n.isEmpty()) {
+              by_lower.insert(n.toLower(), f.pak_name);
+            }
+          }
+        }
+
+        const Sp2FrameLoader frame_loader = [&](const QString& frame_name) -> ImageDecodeResult {
+          QString ref = frame_name;
+          ref.replace('\\', '/');
+          while (ref.startsWith('/')) {
+            ref.remove(0, 1);
+          }
+          const QString frame_leaf = QFileInfo(ref).fileName();
+
+          if (!source_path.isEmpty()) {
+            const QString base_dir = QFileInfo(source_path).absolutePath();
+            QVector<QString> file_candidates;
+            file_candidates.reserve(4);
+            if (QFileInfo(ref).isAbsolute()) {
+              file_candidates.push_back(ref);
+            }
+            if (!base_dir.isEmpty()) {
+              file_candidates.push_back(QDir(base_dir).filePath(ref));
+              if (!frame_leaf.isEmpty()) {
+                file_candidates.push_back(QDir(base_dir).filePath(frame_leaf));
+              }
+            }
+            for (const QString& cand : file_candidates) {
+              const ImageDecodeResult decoded = decode_image_from_file_path(cand);
+              if (decoded.ok()) {
+                return decoded;
+              }
+            }
+          }
+
+          QVector<QString> candidates;
+          candidates.reserve(6);
+          auto add_candidate = [&](const QString& candidate) {
+            const QString c = normalize_pak_path(candidate);
+            if (!c.isEmpty()) {
+              candidates.push_back(c);
+            }
+          };
+
+          add_candidate(ref);
+          if (!sprite_dir_prefix.isEmpty() && !ref.startsWith(sprite_dir_prefix)) {
+            add_candidate(sprite_dir_prefix + ref);
+          }
+          if (!frame_leaf.isEmpty()) {
+            add_candidate(frame_leaf);
+            if (!sprite_dir_prefix.isEmpty()) {
+              add_candidate(sprite_dir_prefix + frame_leaf);
+            }
+          }
+
+          constexpr qint64 kMaxFrameBytes = 16LL * 1024 * 1024;
+          for (const QString& cand : candidates) {
+            const QString found = by_lower.value(cand.toLower());
+            if (found.isEmpty()) {
+              continue;
+            }
+            const int frame_added_idx = added_index_by_name_.value(normalize_pak_path(found), -1);
+            if (frame_added_idx >= 0 && frame_added_idx < added_files_.size()) {
+              const ImageDecodeResult decoded = decode_image_from_file_path(added_files_[frame_added_idx].source_path);
+              if (decoded.ok()) {
+                return decoded;
+              }
+              continue;
+            }
+
+            QByteArray frame_bytes;
+            QString frame_err;
+            if (!view_archive().read_entry_bytes(found, &frame_bytes, &frame_err, kMaxFrameBytes)) {
+              continue;
+            }
+            const ImageDecodeResult decoded = decode_image_from_bytes(frame_bytes, QFileInfo(found).fileName());
+            if (decoded.ok()) {
+              return decoded;
+            }
+          }
+
+          return ImageDecodeResult{QImage(), "Unable to resolve SP2 frame image."};
+        };
+
+        const SpriteDecodeResult sprite = decode_sp2_sprite(bytes, frame_loader);
+        if (!sprite.ok()) {
+          preview_->show_message(leaf, sprite.error.isEmpty() ? "Unable to decode SP2 sprite." : sprite.error);
+          return;
+        }
+        sprite_frames.reserve(sprite.frames.size());
+        sprite_frame_durations_ms.reserve(sprite.frames.size());
+        for (const SpriteFrame& frame : sprite.frames) {
+          if (frame.image.isNull()) {
+            continue;
+          }
+          sprite_frames.push_back(frame.image);
+          sprite_frame_durations_ms.push_back(std::clamp(frame.duration_ms, 30, 2000));
+        }
+      }
+
+      if (sprite_frames.isEmpty()) {
+        preview_->show_message(leaf, "Sprite has no decodable frames.");
+        return;
+      }
+
+      const IdTechAssetDecodeResult decoded = decode_idtech_asset_bytes(bytes, leaf);
+      const QString details_text = decoded.ok()
+                                   ? decoded.summary
+                                   : (decoded.error.isEmpty() ? "Unable to decode sprite metadata." : decoded.error);
+      preview_->show_sprite(leaf, subtitle, sprite_frames, sprite_frame_durations_ms, details_text);
+      return;
+    }
+
+    const IdTechAssetDecodeResult decoded = decode_idtech_asset_bytes(bytes, leaf);
+    if (!decoded.ok()) {
+      preview_->show_message(leaf, decoded.error.isEmpty() ? "Unable to decode idTech asset." : decoded.error);
+      return;
+    }
+    preview_->show_text(leaf, subtitle, decoded.summary);
+    return;
+  }
+
   // Text preview (best-effort).
   if (is_text_file_name(leaf)) {
     constexpr qint64 kMaxTextBytes = 512LL * 1024;
@@ -6760,7 +7334,7 @@ void PakTab::update_preview() {
       return;
     }
     const QString sub = truncated ? (subtitle + "  (Content truncated)") : subtitle;
-    if (ext == "cfg") {
+    if (is_cfg_like_text_ext(ext)) {
       preview_->show_cfg(leaf, sub, text);
     } else if (ext == "json") {
       preview_->show_json(leaf, sub, text);

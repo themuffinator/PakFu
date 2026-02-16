@@ -20,8 +20,11 @@ This project is still training under the waterfall 💦🥋 (early development).
   - Audio: `wav`, `ogg`, `mp3` 🔊🎶
   - Video: `cin`, `roq`, `ogv` 🎞️🍿
   - Models: `mdl`, `md2`, `md3`, `iqm`, `md5mesh`, `lwo`, `obj` 🧊🧩
+  - Sprites: `spr`, `sp2`/`spr2` (animated sprite preview + metadata/frame table insights) 🧾🎯
+  - Demos: `dm2` (Quake II packet stream summary preview) 📼🧾
   - Maps: `bsp` (Quake/Quake II/Quake III/Quake Live) 🗺️🧭
-  - Text/config: `cfg` and similar plain-text formats 🧾🖋️
+  - Navigation/VM: `aas`, `qvm` (header/lump summary preview) 🧠📦
+  - Text/config: `cfg`, `arena`, `bot`, `skin`, `shaderlist`, and similar plain-text formats 🧾🖋️
 - Tune 3D previews with grid/floor/none options, themed/grey/custom backgrounds, and wireframe/textured toggles
 - Quake II previews honor `_glow.png` glow maps for textures and models
 - WAD support: read/extract `WAD2` and `WAD3`, rebuild/write `WAD2`
@@ -111,6 +114,7 @@ meson compile -C build
 ### GUI 🪟
 - Use **File → Open Archive…** or **File → Open Folder…** (opens in a tab).
 - Drag archives or folders onto the window to open them.
+- Double-click nested container files (`wad`, `wad2`, `wad3`, `pak`, `pk3`, `pk4`, `pkz`, `zip`) to open them in-place.
 - Drag files/folders into an open archive tab to add them.
 - Drag items out of PakFu to copy them to your file manager (exports via temp files).
 

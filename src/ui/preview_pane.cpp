@@ -1272,6 +1272,17 @@ void PreviewPane::build_ui() {
 		apply_bsp_lightmap(bsp_widget_, bsp_lightmapping_enabled_);
 	}
 
+	sprite_timer_ = new QTimer(this);
+	sprite_timer_->setSingleShot(true);
+	connect(sprite_timer_, &QTimer::timeout, this, [this]() {
+		if (sprite_frames_.isEmpty()) {
+			return;
+		}
+		const int next = (sprite_frame_index_ + 1) % sprite_frames_.size();
+		apply_sprite_frame(next);
+		schedule_next_sprite_frame();
+	});
+
 	apply_3d_settings();
 	apply_image_background();
 }
@@ -1634,6 +1645,73 @@ void PreviewPane::show_image(const QString& title, const QString& subtitle, cons
 	});
 }
 
+void PreviewPane::show_sprite(const QString& title,
+                              const QString& subtitle,
+                              const QVector<QImage>& frames,
+                              const QVector<int>& frame_durations_ms,
+                              const QString& details_text) {
+	stop_audio_playback();
+	stop_cinematic_playback();
+	stop_video_playback();
+	stop_model_preview();
+	stop_sprite_animation();
+	current_content_kind_ = ContentKind::Sprite;
+	set_header(title, subtitle);
+	clear_overview_fields();
+	show_overview_block(true);
+	populate_basic_overview();
+	set_overview_value("Type", "Sprite");
+	set_overview_value("Frames", QString::number(frames.size()));
+
+	int max_w = 0;
+	int max_h = 0;
+	for (const QImage& frame : frames) {
+		if (!frame.isNull()) {
+			max_w = std::max(max_w, frame.width());
+			max_h = std::max(max_h, frame.height());
+		}
+	}
+	if (max_w > 0 && max_h > 0) {
+		set_overview_value("Dimensions", QString("%1x%2").arg(max_w).arg(max_h));
+	}
+	if (!frame_durations_ms.isEmpty()) {
+		qint64 total_ms = 0;
+		for (const int ms : frame_durations_ms) {
+			total_ms += std::max(0, ms);
+		}
+		if (total_ms > 0) {
+			set_overview_value("Loop duration", format_duration(total_ms));
+		}
+	}
+
+	if (image_card_) {
+		image_card_->setVisible(true);
+	}
+
+	set_text_highlighter(TextSyntax::None);
+	if (text_view_) {
+		text_view_->setPlainText(details_text);
+	}
+	show_content_block("Sprite Details", text_page_);
+
+	sprite_frames_ = frames;
+	sprite_frame_durations_ms_ = frame_durations_ms;
+	sprite_frame_index_ = 0;
+	set_image_mip_controls(false, 0);
+	if (!sprite_frames_.isEmpty()) {
+		apply_sprite_frame(0);
+		QTimer::singleShot(0, this, [this]() {
+			if (!image_card_ || !image_card_->isVisible() || image_source_pixmap_.isNull()) {
+				return;
+			}
+			set_image_pixmap(image_source_pixmap_);
+		});
+		schedule_next_sprite_frame();
+	} else {
+		set_image_qimage({});
+	}
+}
+
 void PreviewPane::show_bsp(const QString& title, const QString& subtitle, BspMesh mesh, QHash<QString, QImage> textures) {
 	stop_audio_playback();
 	stop_cinematic_playback();
@@ -1751,6 +1829,39 @@ void PreviewPane::hide_content_block() {
 		content_card_->setVisible(false);
 	}
 	update_3d_fullscreen_button();
+}
+
+void PreviewPane::stop_sprite_animation() {
+	if (sprite_timer_) {
+		sprite_timer_->stop();
+	}
+	sprite_frames_.clear();
+	sprite_frame_durations_ms_.clear();
+	sprite_frame_index_ = 0;
+}
+
+void PreviewPane::apply_sprite_frame(int index) {
+	if (sprite_frames_.isEmpty()) {
+		return;
+	}
+	const int count = sprite_frames_.size();
+	const int clamped = ((index % count) + count) % count;
+	sprite_frame_index_ = clamped;
+	set_image_qimage(sprite_frames_[clamped]);
+}
+
+void PreviewPane::schedule_next_sprite_frame() {
+	if (!sprite_timer_ || sprite_frames_.size() < 2) {
+		return;
+	}
+	int delay_ms = 100;
+	if (!sprite_frame_durations_ms_.isEmpty()) {
+		const int idx = (sprite_frame_index_ >= 0 && sprite_frame_index_ < sprite_frame_durations_ms_.size())
+		                  ? sprite_frame_index_
+		                  : 0;
+		delay_ms = std::clamp(sprite_frame_durations_ms_[idx], 30, 2000);
+	}
+	sprite_timer_->start(delay_ms);
 }
 
 void PreviewPane::clear_overview_fields() {
@@ -2436,6 +2547,11 @@ void PreviewPane::start_playback_from_beginning() {
 		}
 		return;
 	}
+
+	if (current_content_kind_ == ContentKind::Sprite && !sprite_frames_.isEmpty()) {
+		apply_sprite_frame(0);
+		schedule_next_sprite_frame();
+	}
 }
 
 /*
@@ -2467,6 +2583,7 @@ void PreviewPane::stop_video_playback() {
 }
 
 void PreviewPane::stop_model_preview() {
+	stop_sprite_animation();
 	if (three_d_fullscreen_window_ && three_d_fullscreen_page_ == model_page_) {
 		exit_3d_fullscreen();
 	}

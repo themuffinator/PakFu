@@ -13,4 +13,5 @@
 [[nodiscard]] QImage decode_miptex_image(const QByteArray& bytes,
                                         const QVector<QRgb>* external_palette,
                                         int mip_level,
+                                        const QString& texture_name = {},
                                         QString* error = nullptr);

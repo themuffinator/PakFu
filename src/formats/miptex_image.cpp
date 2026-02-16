@@ -35,6 +35,19 @@ namespace {
   return QString::fromLatin1(trimmed).trimmed();
 }
 
+[[nodiscard]] bool uses_index255_transparency(const QString& texture_name) {
+  QString name = texture_name.trimmed();
+  if (name.isEmpty()) {
+    return false;
+  }
+  name.replace('\\', '/');
+  const int slash = name.lastIndexOf('/');
+  if (slash >= 0) {
+    name = name.mid(slash + 1);
+  }
+  return name.startsWith('{');
+}
+
 [[nodiscard]] bool try_extract_embedded_palette(const QByteArray& bytes,
                                                 quint32 offset0,
                                                 int width,
@@ -82,7 +95,11 @@ namespace {
 }
 }  // namespace
 
-QImage decode_miptex_image(const QByteArray& bytes, const QVector<QRgb>* external_palette, int mip_level, QString* error) {
+QImage decode_miptex_image(const QByteArray& bytes,
+                           const QVector<QRgb>* external_palette,
+                           int mip_level,
+                           const QString& texture_name,
+                           QString* error) {
   if (error) {
     error->clear();
   }
@@ -142,6 +159,9 @@ QImage decode_miptex_image(const QByteArray& bytes, const QVector<QRgb>* externa
     palette = *external_palette;
   }
 
+  const bool transparent_255 =
+    uses_index255_transparency(texture_name) || uses_index255_transparency(read_name16(bytes));
+
   QImage img(mip_width, mip_height, QImage::Format_ARGB32);
   if (img.isNull()) {
     if (error) {
@@ -157,7 +177,7 @@ QImage decode_miptex_image(const QByteArray& bytes, const QVector<QRgb>* externa
     for (int x = 0; x < mip_width; ++x) {
       const int idx = static_cast<int>(src[row + x]);
       const QRgb c = (idx >= 0 && idx < palette.size()) ? palette[idx] : qRgba(0, 0, 0, 255);
-      if (idx == 255) {
+      if (transparent_255 && idx == 255) {
         dst[x] = qRgba(qRed(c), qGreen(c), qBlue(c), 0);
       } else {
         dst[x] = c;

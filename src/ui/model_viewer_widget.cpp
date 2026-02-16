@@ -850,21 +850,24 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
   last_skin_path_ = skin_path;
 
   surfaces_.clear();
+  const int total_indices = model_->mesh.indices.size();
   if (model_->surfaces.isEmpty()) {
     DrawSurface s;
     s.first_index = 0;
-    s.index_count = model_->mesh.indices.size();
+    s.index_count = total_indices;
     s.name = "model";
     surfaces_.push_back(std::move(s));
   } else {
     surfaces_.reserve(model_->surfaces.size());
     for (const ModelSurface& ms : model_->surfaces) {
-      if (ms.index_count <= 0) {
+      const qint64 first = ms.first_index;
+      const qint64 count = ms.index_count;
+      if (first < 0 || count <= 0 || first >= total_indices || (first + count) > total_indices) {
         continue;
       }
       DrawSurface s;
-      s.first_index = ms.first_index;
-      s.index_count = ms.index_count;
+      s.first_index = static_cast<int>(first);
+      s.index_count = static_cast<int>(count);
       s.name = ms.name;
       s.shader_hint = ms.shader;
       s.shader_leaf = QFileInfo(ms.shader).fileName();
@@ -873,7 +876,7 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
     if (surfaces_.isEmpty()) {
       DrawSurface s;
       s.first_index = 0;
-      s.index_count = model_->mesh.indices.size();
+      s.index_count = total_indices;
       s.name = "model";
       surfaces_.push_back(std::move(s));
     }

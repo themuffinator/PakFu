@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QHash>
+#include <QIcon>
+#include <QImage>
 #include <QList>
 #include <QPoint>
 #include <QScopedPointer>
@@ -29,12 +31,14 @@ class QSplitter;
 class QToolBar;
 class QToolButton;
 class QTreeWidget;
+class QTreeWidgetItem;
 class QUndoStack;
 class QMimeData;
 class QProgressDialog;
 class QDragEnterEvent;
 class QDragMoveEvent;
 class QDropEvent;
+class QTimer;
 
 class PakTabDetailsView;
 class PakTabIconView;
@@ -176,6 +180,12 @@ private:
   void configure_icon_view();
   void stop_thumbnail_generation();
   void queue_thumbnail(const QString& pak_path, const QString& leaf, const QString& source_path, qint64 size, const QSize& icon_size);
+  void register_sprite_icon_animation(const QString& pak_path,
+                                      const QVector<QImage>& frames,
+                                      const QVector<int>& frame_durations_ms,
+                                      const QSize& icon_size);
+  void clear_sprite_icon_animations();
+  void advance_sprite_icon_animations();
 
   QVector<QPair<QString, bool>> selected_items() const;
   void rebuild_added_index();
@@ -219,6 +229,16 @@ private:
   QListWidget* icon_view_ = nullptr;
   PreviewPane* preview_ = nullptr;
   QHash<QString, QListWidgetItem*> icon_items_by_path_;
+  QHash<QString, QTreeWidgetItem*> detail_items_by_path_;
+  struct SpriteIconAnimation {
+    QVector<QIcon> icon_frames;
+    QVector<QIcon> detail_frames;
+    QVector<int> frame_durations_ms;
+    int frame_index = 0;
+    int elapsed_ms = 0;
+  };
+  QHash<QString, SpriteIconAnimation> sprite_icon_animations_;
+  QTimer* sprite_icon_timer_ = nullptr;
   QThreadPool thumbnail_pool_;
   quint64 thumbnail_generation_ = 0;
   QUndoStack* undo_stack_ = nullptr;

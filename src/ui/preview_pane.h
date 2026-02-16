@@ -26,6 +26,7 @@ class QMediaPlayer;
 class QSlider;
 class QScrollBar;
 class QToolButton;
+class QTimer;
 class CinematicPlayerWidget;
 class VideoPlayerWidget;
 class QSyntaxHighlighter;
@@ -69,6 +70,11 @@ public:
 	void show_shader(const QString& title, const QString& subtitle, const QString& text);
 	void show_binary(const QString& title, const QString& subtitle, const QByteArray& bytes, bool truncated);
 	void show_image(const QString& title, const QString& subtitle, const QImage& image);
+	void show_sprite(const QString& title,
+	                 const QString& subtitle,
+	                 const QVector<QImage>& frames,
+	                 const QVector<int>& frame_durations_ms,
+	                 const QString& details_text);
 	void show_bsp(const QString& title, const QString& subtitle, BspMesh mesh, QHash<QString, QImage> textures = {});
 	void show_image_from_bytes(const QString& title, const QString& subtitle, const QByteArray& bytes, const ImageDecodeOptions& options = {});
 	void show_image_from_file(const QString& title, const QString& subtitle, const QString& file_path, const ImageDecodeOptions& options = {});
@@ -105,6 +111,9 @@ private:
 	void show_overview_block(bool show);
 	void show_content_block(const QString& title, QWidget* page);
 	void hide_content_block();
+	void stop_sprite_animation();
+	void apply_sprite_frame(int index);
+	void schedule_next_sprite_frame();
 	void update_audio_overview();
 	void update_cinematic_overview();
 	void update_video_overview();
@@ -151,6 +160,7 @@ private:
 		Bsp,
 		Model,
 		Image,
+		Sprite,
 	};
 	enum class ImageBackgroundMode {
 		Transparent,
@@ -189,6 +199,10 @@ private:
 	bool image_texture_smoothing_ = false;
 	QImage image_original_;
 	QPixmap image_source_pixmap_;
+	QVector<QImage> sprite_frames_;
+	QVector<int> sprite_frame_durations_ms_;
+	int sprite_frame_index_ = 0;
+	QTimer* sprite_timer_ = nullptr;
 
 	QWidget* text_page_ = nullptr;
 	QPlainTextEdit* text_view_ = nullptr;
