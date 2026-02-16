@@ -1001,9 +1001,9 @@ void MainWindow::open_pak_dialog() {
     "Archives (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3)",
     "Quake PAK (*.pak)",
     "SiN Archive (*.sin)",
-    "WAD (Quake WAD2/WAD3 + Doom 3 BFG .wad) (*.wad *.wad2 *.wad3)",
+    "WAD (Quake WAD2/WAD3 + classic Doom IWAD/PWAD) (*.wad *.wad2 *.wad3)",
     "Doom 3 BFG Resources (*.resources)",
-    "ZIP-based (PK3/PK4/PKZ/ZIP/RESOURCES) (*.pk3 *.pk4 *.pkz *.zip *.resources)",
+    "ZIP-based (PK3/PK4/PKZ/ZIP) (*.pk3 *.pk4 *.pkz *.zip)",
     "All files (*.*)",
   });
   dialog.setDirectory(default_directory_for_dialogs());
@@ -1686,7 +1686,6 @@ bool MainWindow::save_tab_as(PakTab* tab) {
         "PK4 (ZIP) (*.pk4)",
         "PKZ (ZIP) (*.pkz)",
         "ZIP (*.zip)",
-        "Doom 3 BFG Resources (*.resources)",
         "All files (*.*)",
       };
     } else if (fmt == Archive::Format::Wad) {
@@ -1707,7 +1706,6 @@ bool MainWindow::save_tab_as(PakTab* tab) {
         "PK4 (ZIP) (*.pk4)",
         "PKZ (ZIP) (*.pkz)",
         "ZIP (*.zip)",
-        "Doom 3 BFG Resources (*.resources)",
         "All files (*.*)",
       };
     }
@@ -1748,9 +1746,6 @@ bool MainWindow::save_tab_as(PakTab* tab) {
   } else if (filter.contains("PKZ", Qt::CaseInsensitive)) {
     options.format = Archive::Format::Zip;
     want_ext = ".pkz";
-  } else if (filter.contains("RESOURCES", Qt::CaseInsensitive)) {
-    options.format = Archive::Format::Zip;
-    want_ext = ".resources";
   } else if (filter.contains("ZIP", Qt::CaseInsensitive)) {
     options.format = Archive::Format::Zip;
     want_ext = ".zip";

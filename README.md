@@ -27,19 +27,18 @@ This project is still training under the waterfall 💦🥋 (early development).
   - Text/config: `cfg`, `config`, `rc`, `arena`, `bot`, `skin`, `shaderlist`, `lang`, `lst`, `gui`, `efx`, `guide`, `lipsync`, `viseme`, `vdf`, and similar plain-text formats 🧾🖋️
 - Tune 3D previews with grid/floor/none options, themed/grey/custom backgrounds, and wireframe/textured toggles
 - Quake II previews honor `_glow.png` glow maps for textures and models
-- WAD support: read/extract `WAD2` and `WAD3`, rebuild/write `WAD2`
+- WAD support: read/extract `WAD2`, `WAD3`, and classic Doom `IWAD`/`PWAD`; rebuild/write `WAD2`
 - Stay responsive for large archives (no freezing in the middle of a roundhouse kick) 🥶➡️🥋
 - Guard official game archives with a default-on Pure PAK Protector preference 🛡️📦
 - Keep C++ code clean, portable, and documented (minimal OS-specific sorcery) 🧠🧹🧾
 
-## PK3 / PK4 / PKZ / RESOURCES Support (ZIP packs) 📦🧨
-PakFu treats `*.pk3`, `*.pk4`, `*.pkz`, and `*.resources` as **ZIP-based packs** (same container, different extension).
+## PK3 / PK4 / PKZ Support (ZIP packs) 📦🧨
+PakFu treats `*.pk3`, `*.pk4`, and `*.pkz` as **ZIP-based packs** (same container, different extension).
 
 Common conventions:
 - `*.pk3`: id Tech 3 packs (Quake III Arena / Quake Live, etc.)
 - `*.pk4`: id Tech 4 packs (Doom 3 / Quake 4, etc.)
 - `*.pkz`: ZIP-based packs used by some games/mods (handled like PK3/ZIP)
-- `*.resources`: Doom 3 BFG Edition resource packs (handled like ZIP)
 
 These packs are supported anywhere PakFu supports ZIP:
 
@@ -52,6 +51,13 @@ These packs are supported anywhere PakFu supports ZIP:
 ./builddir/src/pakfu --cli --list path/to/archive.pk4
 ./builddir/src/pakfu --cli --extract -o out_dir path/to/archive.pkz
 ```
+
+## Doom 3 BFG `.resources` Support 📚
+PakFu supports Doom 3 BFG/DOOM 3 (2019) `*.resources` containers with native parsing:
+
+- **Open/browse/preview/extract** in the GUI
+- **List/info/extract** in the CLI (`--cli`)
+- **Save/rebuild/write** is not supported yet for `.resources`
 
 ### Quake Live Beta (QL BETA) encrypted PK3 (encode/decode) 🔐
 Quake Live **Beta** used an XOR-obfuscated PK3. PakFu can transparently **decode** these when reading, and can **encode** them when writing:
@@ -136,35 +142,35 @@ When opening an archive, PakFu will try to auto-select the most likely Game Set 
 Auto-detect checks installs in priority order: **Steam → GOG.com → EOS**.
 
 Supported auto-detect games:
-- Quake
-- Quake Rerelease
-- Half-Life
-- Quake II
-- Quake II Rerelease
-- Quake II RTX
-- SiN Gold
-- Kingpin: Life of Crime
-- Daikatana
 - Anachronox
-- Heretic II
-- Gravity Bone
-- Thirty Flights of Loving
-- Quake III Arena
-- Quake Live
-- Return to Castle Wolfenstein
-- Wolfenstein: Enemy Territory
-- Star Wars Jedi Knight II: Jedi Outcast
-- Star Wars Jedi Knight: Jedi Academy
-- Star Trek Voyager: Elite Force
-- Star Trek: Elite Force II
-- Warsow
-- World of Padman
-- Heavy Metal: F.A.K.K.2
-- Quake 4
+- Daikatana
 - Doom 3
 - Doom 3: BFG Edition
-- Prey
 - Enemy Territory: Quake Wars
+- Gravity Bone
+- Half-Life
+- Heavy Metal: F.A.K.K.2
+- Heretic II
+- Kingpin: Life of Crime
+- Prey
+- Quake
+- Quake 4
+- Quake II
+- Quake II RTX
+- Quake II Rerelease
+- Quake III Arena
+- Quake Live
+- Quake Rerelease
+- Return to Castle Wolfenstein
+- SiN Gold
+- Star Trek Voyager: Elite Force
+- Star Trek: Elite Force II
+- Star Wars Jedi Knight II: Jedi Outcast
+- Star Wars Jedi Knight: Jedi Academy
+- Thirty Flights of Loving
+- Warsow
+- Wolfenstein: Enemy Territory
+- World of Padman
 
 ```sh
 ./builddir/src/pakfu

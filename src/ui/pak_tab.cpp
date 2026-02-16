@@ -1585,6 +1585,8 @@ PakTab::SaveOptions PakTab::default_save_options_for_current_path() const {
     if (archive_.is_quakelive_encrypted_pk3()) {
       opts.quakelive_encrypt_pk3 = true;
     }
+  } else if (archive_.is_loaded() && archive_.format() == Archive::Format::Resources) {
+    opts.format = Archive::Format::Resources;
   } else if (archive_.is_loaded() && archive_.format() == Archive::Format::Pak) {
     opts.format = Archive::Format::Pak;
   } else if (archive_.is_loaded() && archive_.format() == Archive::Format::Wad) {
@@ -1612,15 +1614,12 @@ bool PakTab::write_archive_file(const QString& dest_path, const SaveOptions& opt
       fmt = Archive::Format::Pak;
     } else if (is_quake_wad_archive_ext(ext)) {
       fmt = Archive::Format::Wad;
-    } else if (ext == "zip" || ext == "pk3" || ext == "pk4" || ext == "pkz" || ext == "resources") {
+    } else if (ext == "resources") {
+      fmt = Archive::Format::Resources;
+    } else if (ext == "zip" || ext == "pk3" || ext == "pk4" || ext == "pkz") {
       fmt = Archive::Format::Zip;
     } else if (ext == "wad") {
-      // ".wad" can be either Quake WAD2/WAD3 or a ZIP-style Doom 3 BFG container.
-      if (archive_.is_loaded() && archive_.format() == Archive::Format::Zip) {
-        fmt = Archive::Format::Zip;
-      } else {
-        fmt = Archive::Format::Wad;
-      }
+      fmt = Archive::Format::Wad;
     } else if (archive_.is_loaded()) {
       fmt = archive_.format();
     } else {
@@ -1648,6 +1647,12 @@ bool PakTab::write_archive_file(const QString& dest_path, const SaveOptions& opt
   }
   if (fmt == Archive::Format::Zip) {
     return write_zip_file(abs, options.quakelive_encrypt_pk3, error);
+  }
+  if (fmt == Archive::Format::Resources) {
+    if (error) {
+      *error = "Saving Doom 3 BFG .resources archives is not supported yet.";
+    }
+    return false;
   }
 
   if (error) {

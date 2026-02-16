@@ -39,8 +39,9 @@
 
 - Archive support:
   - PAK/SIN: built-in reader/writer (Quake/Quake II and SiN SPAK variant)
-  - WAD: built-in reader/writer (WAD2), reader/extractor (WAD3), plus Doom 3 BFG `.wad` ZIP-style containers via ZIP loader fallback
-  - PK3/PK4/PKZ/ZIP/RESOURCES: built-in reader/writer via vendored miniz
+  - WAD: built-in reader/writer (WAD2), reader/extractor (WAD3), reader/extractor (classic Doom IWAD/PWAD including Doom 3 BFG packaged WADs)
+  - PK3/PK4/PKZ/ZIP: built-in reader/writer via vendored miniz
+  - RESOURCES (`*.resources`): built-in reader/extractor (Doom 3 BFG / DOOM 3 2019 resource container parser)
   - Quake Live Beta encrypted PK3: built-in decrypt/encrypt (XOR) loader/writer
 
 - Model loaders:

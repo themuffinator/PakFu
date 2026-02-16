@@ -27,6 +27,8 @@ const QVector<ArchiveEntry>& Archive::entries() const {
 			return pak_.entries();
 		case Format::Wad:
 			return wad_.entries();
+		case Format::Resources:
+			return resources_.entries();
 		case Format::Zip:
 			return zip_.entries();
 		case Format::Unknown:
@@ -71,7 +73,8 @@ bool Archive::load(const QString& path, QString* error) {
 	}
 
 	const QString ext = file_ext_lower(abs);
-	const bool looks_zip = (ext == "zip" || ext == "pk3" || ext == "pk4" || ext == "pkz" || ext == "resources");
+	const bool looks_resources = (ext == "resources");
+	const bool looks_zip = (ext == "zip" || ext == "pk3" || ext == "pk4" || ext == "pkz");
 	const bool looks_pak = (ext == "pak" || ext == "sin");
 	const bool looks_wad = is_wad_extension(ext);
 
@@ -79,6 +82,13 @@ bool Archive::load(const QString& path, QString* error) {
 	if (looks_wad && wad_.load(abs, &err)) {
 		loaded_ = true;
 		format_ = Format::Wad;
+		path_ = abs;
+		readable_path_ = abs;
+		return true;
+	}
+	if (looks_resources && resources_.load(abs, &err)) {
+		loaded_ = true;
+		format_ = Format::Resources;
 		path_ = abs;
 		readable_path_ = abs;
 		return true;
@@ -110,6 +120,13 @@ bool Archive::load(const QString& path, QString* error) {
 	if (!looks_wad && wad_.load(abs, &err)) {
 		loaded_ = true;
 		format_ = Format::Wad;
+		path_ = abs;
+		readable_path_ = abs;
+		return true;
+	}
+	if (!looks_resources && resources_.load(abs, &err)) {
+		loaded_ = true;
+		format_ = Format::Resources;
 		path_ = abs;
 		readable_path_ = abs;
 		return true;
@@ -150,6 +167,8 @@ bool Archive::read_entry_bytes(const QString& name, QByteArray* out, QString* er
 			return pak_.read_entry_bytes(name, out, error, max_bytes);
 		case Format::Wad:
 			return wad_.read_entry_bytes(name, out, error, max_bytes);
+		case Format::Resources:
+			return resources_.read_entry_bytes(name, out, error, max_bytes);
 		case Format::Zip:
 			return zip_.read_entry_bytes(name, out, error, max_bytes);
 		case Format::Unknown:
@@ -179,6 +198,8 @@ bool Archive::extract_entry_to_file(const QString& name, const QString& dest_pat
 			return pak_.extract_entry_to_file(name, dest_path, error);
 		case Format::Wad:
 			return wad_.extract_entry_to_file(name, dest_path, error);
+		case Format::Resources:
+			return resources_.extract_entry_to_file(name, dest_path, error);
 		case Format::Zip:
 			return zip_.extract_entry_to_file(name, dest_path, error);
 		case Format::Unknown:

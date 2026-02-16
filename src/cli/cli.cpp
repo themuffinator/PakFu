@@ -421,6 +421,8 @@ int run_cli(const CliOptions& options) {
         return "PAK";
       case Archive::Format::Wad:
         return "WAD";
+      case Archive::Format::Resources:
+        return "RESOURCES";
       case Archive::Format::Zip:
         return "ZIP";
       case Archive::Format::Unknown:

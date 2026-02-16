@@ -7,14 +7,12 @@
 
 #include "archive/archive_entry.h"
 
-class WadArchive {
+class ResourcesArchive {
 public:
   bool load(const QString& path, QString* error);
 
   bool is_loaded() const { return loaded_; }
   QString path() const { return path_; }
-  bool is_wad3() const { return wad3_; }
-  bool is_doom_wad() const { return doom_wad_; }
 
   const QVector<ArchiveEntry>& entries() const { return entries_; }
 
@@ -22,23 +20,18 @@ public:
   bool extract_entry_to_file(const QString& name, const QString& dest_path, QString* error) const;
 
 private:
-  struct LumpMeta {
+  struct EntryMeta {
     quint32 offset = 0;
-    quint32 disk_size = 0;
-    quint8 type = 0;
-    quint8 compression = 0;
+    quint32 size = 0;
   };
 
-  const LumpMeta* find_lump(const QString& name) const;
+  const EntryMeta* find_entry(const QString& name) const;
 
   static QString normalize_entry_name(QString name);
-  static QString clean_lump_base_name(const QByteArray& name16);
 
   bool loaded_ = false;
-  bool wad3_ = false;
-  bool doom_wad_ = false;
   QString path_;
   QVector<ArchiveEntry> entries_;
-  QVector<LumpMeta> meta_by_index_;
+  QVector<EntryMeta> meta_by_index_;
   QHash<QString, int> index_by_name_;
 };

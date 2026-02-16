@@ -9,7 +9,8 @@
 
 namespace {
 constexpr int kWadHeaderSize = 12;
-constexpr int kWadDirEntrySize = 32;
+constexpr int kQ12WadDirEntrySize = 32;
+constexpr int kDoomWadDirEntrySize = 16;
 
 [[nodiscard]] quint32 read_u32_le_from(const char* p) {
   const quint32 b0 = static_cast<quint8>(p[0]);
@@ -67,12 +68,12 @@ QString WadArchive::normalize_entry_name(QString name) {
   return name.toLower();
 }
 
-QString WadArchive::clean_lump_base_name(const QByteArray& name16) {
-  if (name16.isEmpty()) {
+QString WadArchive::clean_lump_base_name(const QByteArray& raw_name_bytes) {
+  if (raw_name_bytes.isEmpty()) {
     return {};
   }
-  const int nul = name16.indexOf('\0');
-  const QByteArray raw = (nul >= 0) ? name16.left(nul) : name16;
+  const int nul = raw_name_bytes.indexOf('\0');
+  const QByteArray raw = (nul >= 0) ? raw_name_bytes.left(nul) : raw_name_bytes;
   QString out = QString::fromLatin1(raw).trimmed();
   // WAD lump names should not contain path separators, but be defensive.
   out.replace('\\', '/');
@@ -101,6 +102,7 @@ bool WadArchive::load(const QString& path, QString* error) {
 
   loaded_ = false;
   wad3_ = false;
+  doom_wad_ = false;
   path_.clear();
   entries_.clear();
   meta_by_index_.clear();
@@ -139,13 +141,16 @@ bool WadArchive::load(const QString& path, QString* error) {
   }
 
   const QByteArray magic = header.left(4);
-  if (magic != "WAD2" && magic != "WAD3") {
+  const bool is_q12_wad = (magic == "WAD2" || magic == "WAD3");
+  const bool is_doom_wad = (magic == "IWAD" || magic == "PWAD");
+  if (!is_q12_wad && !is_doom_wad) {
     if (error) {
-      *error = "Not a supported WAD (expected WAD2 or WAD3).";
+      *error = "Not a supported WAD (expected WAD2/WAD3/IWAD/PWAD).";
     }
     return false;
   }
   wad3_ = (magic == "WAD3");
+  doom_wad_ = is_doom_wad;
 
   const qint32 lump_count = read_i32_le_from(header.constData() + 4);
   const qint32 dir_offset = read_i32_le_from(header.constData() + 8);
@@ -156,7 +161,8 @@ bool WadArchive::load(const QString& path, QString* error) {
     }
     return false;
   }
-  const qint64 dir_bytes = static_cast<qint64>(lump_count) * kWadDirEntrySize;
+  const int dir_entry_size = is_doom_wad ? kDoomWadDirEntrySize : kQ12WadDirEntrySize;
+  const qint64 dir_bytes = static_cast<qint64>(lump_count) * dir_entry_size;
   if (dir_offset < 0 || dir_bytes < 0 || dir_offset + dir_bytes > file_size) {
     if (error) {
       *error = "WAD directory offset is invalid.";
@@ -184,34 +190,48 @@ bool WadArchive::load(const QString& path, QString* error) {
   index_by_name_.reserve(lump_count);
 
   for (int i = 0; i < lump_count; ++i) {
-    const char* p = dir.constData() + (static_cast<qint64>(i) * kWadDirEntrySize);
+    const char* p = dir.constData() + (static_cast<qint64>(i) * dir_entry_size);
 
     const quint32 file_pos = read_u32_le_from(p + 0);
-    const quint32 disk_size = read_u32_le_from(p + 4);
-    const quint32 size = read_u32_le_from(p + 8);
-    const quint8 type = static_cast<quint8>(p[12]);
-    const quint8 compression = static_cast<quint8>(p[13]);
+    quint32 disk_size = 0;
+    quint32 size = 0;
+    quint8 type = 0;
+    quint8 compression = 0;
+    QByteArray name_bytes;
 
-    QByteArray name16;
-    name16.resize(16);
-    memcpy(name16.data(), p + 16, 16);
-    const QString base = clean_lump_base_name(name16);
+    if (is_doom_wad) {
+      disk_size = read_u32_le_from(p + 4);
+      size = disk_size;
+      name_bytes.resize(8);
+      memcpy(name_bytes.data(), p + 8, 8);
+    } else {
+      disk_size = read_u32_le_from(p + 4);
+      size = read_u32_le_from(p + 8);
+      type = static_cast<quint8>(p[12]);
+      compression = static_cast<quint8>(p[13]);
+      name_bytes.resize(16);
+      memcpy(name_bytes.data(), p + 16, 16);
+    }
+
+    const QString base = clean_lump_base_name(name_bytes);
     if (base.isEmpty()) {
       continue;
     }
 
-    if (disk_size != size) {
-      // Compression isn't expected for WAD2/WAD3 in common use, but disk_size != size implies compression/packing.
-      if (error) {
-        *error = QString("WAD lump appears compressed/packed (disk_size=%1, size=%2): %3").arg(disk_size).arg(size).arg(base);
+    if (!is_doom_wad) {
+      if (disk_size != size) {
+        // Compression isn't expected for WAD2/WAD3 in common use, but disk_size != size implies compression/packing.
+        if (error) {
+          *error = QString("WAD lump appears compressed/packed (disk_size=%1, size=%2): %3").arg(disk_size).arg(size).arg(base);
+        }
+        return false;
       }
-      return false;
-    }
-    if (compression != 0) {
-      if (error) {
-        *error = QString("WAD lump compression is not supported (compression=%1): %2").arg(compression).arg(base);
+      if (compression != 0) {
+        if (error) {
+          *error = QString("WAD lump compression is not supported (compression=%1): %2").arg(compression).arg(base);
+        }
+        return false;
       }
-      return false;
     }
 
     const qint64 end = static_cast<qint64>(file_pos) + static_cast<qint64>(disk_size);
@@ -223,7 +243,7 @@ bool WadArchive::load(const QString& path, QString* error) {
     }
 
     QString entry_name = base;
-    if (!entry_name.contains('.')) {
+    if (!is_doom_wad && !entry_name.contains('.')) {
       if (is_miptex_lump_type(type)) {
         entry_name += ".mip";
       } else if (normalize_entry_name(entry_name) == "palette") {

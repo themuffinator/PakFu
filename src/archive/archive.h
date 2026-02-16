@@ -8,6 +8,7 @@
 #include "archive/archive_entry.h"
 #include "archive/dir_archive.h"
 #include "pak/pak_archive.h"
+#include "resources/resources_archive.h"
 #include "wad/wad_archive.h"
 #include "zip/zip_archive.h"
 
@@ -18,6 +19,7 @@ public:
     Directory,
     Pak,
     Wad,
+    Resources,
     Zip,
   };
 
@@ -45,5 +47,6 @@ private:
   DirArchive dir_;
   PakArchive pak_;
   WadArchive wad_;
+  ResourcesArchive resources_;
   ZipArchive zip_;
 };
