@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QString>
 #include <QVector>
 #include <QVector3D>
@@ -38,6 +39,10 @@ struct LoadedModel {
   int surface_count = 1;
   ModelMesh mesh;
   QVector<ModelSurface> surfaces;
+  // Optional embedded indexed skin (used by formats like Quake MDL).
+  QByteArray embedded_skin_indices;
+  int embedded_skin_width = 0;
+  int embedded_skin_height = 0;
 };
 
 [[nodiscard]] std::optional<LoadedModel> load_model_file(const QString& file_path, QString* error = nullptr);

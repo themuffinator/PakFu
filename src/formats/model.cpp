@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 #include <QDir>
 #include <QFile>
@@ -317,6 +318,7 @@ std::optional<LoadedModel> load_mdl(const QString& file_path, QString* error) {
   }
 
   const int skin_bytes = skinwidth * skinheight;
+  QByteArray embedded_skin_indices;
   for (int s = 0; s < numskins; ++s) {
     qint32 type = 0;
     if (!cur.read_i32(&type)) {
@@ -326,11 +328,15 @@ std::optional<LoadedModel> load_mdl(const QString& file_path, QString* error) {
       return std::nullopt;
     }
     if (type == 0) {
-      if (!cur.skip(skin_bytes)) {
+      QByteArray skin;
+      if (!cur.read_bytes(skin_bytes, (s == 0) ? &skin : nullptr)) {
         if (error) {
           *error = "MDL skins are incomplete.";
         }
         return std::nullopt;
+      }
+      if (s == 0) {
+        embedded_skin_indices = std::move(skin);
       }
     } else if (type == 1) {
       qint32 group = 0;
@@ -340,17 +346,37 @@ std::optional<LoadedModel> load_mdl(const QString& file_path, QString* error) {
         }
         return std::nullopt;
       }
-      if (!cur.skip(group * 4)) {  // intervals (float)
+      const qint64 interval_bytes = static_cast<qint64>(group) * 4;
+      if (interval_bytes < 0 || interval_bytes > std::numeric_limits<int>::max() || !cur.skip(static_cast<int>(interval_bytes))) {
         if (error) {
           *error = "MDL skin group is incomplete.";
         }
         return std::nullopt;
       }
-      if (!cur.skip(group * skin_bytes)) {
-        if (error) {
-          *error = "MDL skin group is incomplete.";
+      if (s == 0) {
+        if (!cur.read_bytes(skin_bytes, &embedded_skin_indices)) {
+          if (error) {
+            *error = "MDL skin group is incomplete.";
+          }
+          return std::nullopt;
         }
-        return std::nullopt;
+        const qint64 remaining_groups = static_cast<qint64>(group - 1);
+        const qint64 remaining_bytes = remaining_groups * static_cast<qint64>(skin_bytes);
+        if (remaining_bytes < 0 || remaining_bytes > std::numeric_limits<int>::max() ||
+            !cur.skip(static_cast<int>(remaining_bytes))) {
+          if (error) {
+            *error = "MDL skin group is incomplete.";
+          }
+          return std::nullopt;
+        }
+      } else {
+        const qint64 group_bytes = static_cast<qint64>(group) * static_cast<qint64>(skin_bytes);
+        if (group_bytes < 0 || group_bytes > std::numeric_limits<int>::max() || !cur.skip(static_cast<int>(group_bytes))) {
+          if (error) {
+            *error = "MDL skin group is incomplete.";
+          }
+          return std::nullopt;
+        }
       }
     } else {
       if (error) {
@@ -360,33 +386,47 @@ std::optional<LoadedModel> load_mdl(const QString& file_path, QString* error) {
     }
   }
 
-  // Skip ST verts (onseam,s,t) int32 * 3 each.
-  if (!cur.skip(numverts * 12)) {
-    if (error) {
-      *error = "MDL texture coordinates are incomplete.";
+  struct MdlSt {
+    qint32 onseam = 0;
+    qint32 s = 0;
+    qint32 t = 0;
+  };
+  QVector<MdlSt> st;
+  st.resize(numverts);
+  for (int i = 0; i < numverts; ++i) {
+    if (!cur.read_i32(&st[i].onseam) || !cur.read_i32(&st[i].s) || !cur.read_i32(&st[i].t)) {
+      if (error) {
+        *error = "MDL texture coordinates are incomplete.";
+      }
+      return std::nullopt;
     }
-    return std::nullopt;
   }
 
-  QVector<std::uint32_t> indices;
-  indices.reserve(static_cast<int>(numtris) * 3);
-
-  for (int t = 0; t < numtris; ++t) {
+  struct MdlTri {
     qint32 facesfront = 0;
-    qint32 v0 = 0, v1 = 0, v2 = 0;
-    if (!cur.read_i32(&facesfront) || !cur.read_i32(&v0) || !cur.read_i32(&v1) || !cur.read_i32(&v2)) {
+    qint32 vi[3]{};
+  };
+  QVector<MdlTri> tris;
+  tris.reserve(numtris);
+  for (int t = 0; t < numtris; ++t) {
+    MdlTri tri;
+    if (!cur.read_i32(&tri.facesfront) || !cur.read_i32(&tri.vi[0]) || !cur.read_i32(&tri.vi[1]) || !cur.read_i32(&tri.vi[2])) {
       if (error) {
         *error = "MDL triangles are incomplete.";
       }
       return std::nullopt;
     }
-    (void)facesfront;
-    if (v0 < 0 || v1 < 0 || v2 < 0 || v0 >= numverts || v1 >= numverts || v2 >= numverts) {
+    bool ok = true;
+    for (int i = 0; i < 3; ++i) {
+      if (tri.vi[i] < 0 || tri.vi[i] >= numverts) {
+        ok = false;
+        break;
+      }
+    }
+    if (!ok) {
       continue;
     }
-    indices.push_back(static_cast<std::uint32_t>(v0));
-    indices.push_back(static_cast<std::uint32_t>(v1));
-    indices.push_back(static_cast<std::uint32_t>(v2));
+    tris.push_back(tri);
   }
 
   // Read the first frame's vertex positions.
@@ -435,9 +475,9 @@ std::optional<LoadedModel> load_mdl(const QString& file_path, QString* error) {
     return true;
   };
 
-  QVector<ModelVertex> verts;
+  QVector<ModelVertex> base_verts;
   if (frame_type == 0) {
-    if (!read_frame_vertices(&verts)) {
+    if (!read_frame_vertices(&base_verts)) {
       if (error) {
         *error = "MDL frame is incomplete.";
       }
@@ -468,7 +508,7 @@ std::optional<LoadedModel> load_mdl(const QString& file_path, QString* error) {
       return std::nullopt;
     }
     // Read only the first subframe.
-    if (!read_frame_vertices(&verts)) {
+    if (!read_frame_vertices(&base_verts)) {
       if (error) {
         *error = "MDL frame group is incomplete.";
       }
@@ -481,6 +521,60 @@ std::optional<LoadedModel> load_mdl(const QString& file_path, QString* error) {
     return std::nullopt;
   }
 
+  if (tris.isEmpty()) {
+    if (error) {
+      *error = "MDL contains no drawable geometry.";
+    }
+    return std::nullopt;
+  }
+
+  QVector<ModelVertex> verts;
+  QVector<std::uint32_t> indices;
+  verts.reserve(tris.size() * 3);
+  indices.reserve(tris.size() * 3);
+
+  QHash<quint64, std::uint32_t> remap;
+  remap.reserve(tris.size() * 3);
+
+  const float inv_skinw = 1.0f / static_cast<float>(skinwidth);
+  const float inv_skinh = 1.0f / static_cast<float>(skinheight);
+
+  auto make_key = [](quint32 vi, bool back_seam) -> quint64 {
+    return (static_cast<quint64>(vi) << 1) | static_cast<quint64>(back_seam ? 1u : 0u);
+  };
+
+  for (const MdlTri& tri : tris) {
+    const bool faces_front = (tri.facesfront != 0);
+    // Preserve Quake alias winding in our coordinate space. Emitting MDL corners in
+    // reverse order keeps derived normals outward-facing when we build smooth normals.
+    for (int i = 2; i >= 0; --i) {
+      const quint32 vi = static_cast<quint32>(tri.vi[i]);
+      const MdlSt& tc = st[static_cast<int>(vi)];
+      const bool back_seam = (!faces_front && tc.onseam != 0);
+      const quint64 key = make_key(vi, back_seam);
+
+      auto it = remap.constFind(key);
+      if (it == remap.constEnd()) {
+        const std::uint32_t new_index = static_cast<std::uint32_t>(verts.size());
+        remap.insert(key, new_index);
+
+        ModelVertex v = base_verts[static_cast<int>(vi)];
+        qint32 s = tc.s;
+        if (back_seam) {
+          s += (skinwidth / 2);
+        }
+        v.u = (static_cast<float>(s) + 0.5f) * inv_skinw;
+        // Model textures are vertically flipped before GPU upload; keep MDL's top-origin
+        // texture coordinates by inverting V here.
+        v.v = 1.0f - ((static_cast<float>(tc.t) + 0.5f) * inv_skinh);
+        verts.push_back(v);
+        indices.push_back(new_index);
+      } else {
+        indices.push_back(*it);
+      }
+    }
+  }
+
   LoadedModel out;
   out.format = "mdl";
   out.frame_count = numframes;
@@ -488,6 +582,11 @@ std::optional<LoadedModel> load_mdl(const QString& file_path, QString* error) {
   out.mesh.vertices = std::move(verts);
   out.mesh.indices = std::move(indices);
   out.surfaces = {ModelSurface{QString("model"), QString(), 0, static_cast<int>(out.mesh.indices.size())}};
+  if (embedded_skin_indices.size() == skin_bytes) {
+    out.embedded_skin_indices = std::move(embedded_skin_indices);
+    out.embedded_skin_width = skinwidth;
+    out.embedded_skin_height = skinheight;
+  }
   compute_smooth_normals(&out.mesh);
   compute_bounds(&out.mesh);
   return out;

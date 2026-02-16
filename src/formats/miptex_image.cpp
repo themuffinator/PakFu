@@ -1,5 +1,8 @@
 #include "formats/miptex_image.h"
 
+#include <array>
+#include <limits>
+
 #include <QtGlobal>
 
 namespace {
@@ -122,25 +125,108 @@ QImage decode_miptex_image(const QByteArray& bytes,
   const int width = static_cast<int>(width_u);
   const int height = static_cast<int>(height_u);
 
-  const quint32 ofs0 = read_u32_le_from(bytes.constData() + 24);
-  const quint32 ofs1 = read_u32_le_from(bytes.constData() + 28);
-  const quint32 ofs2 = read_u32_le_from(bytes.constData() + 32);
-  const quint32 ofs3 = read_u32_le_from(bytes.constData() + 36);
-  const quint32 offsets[4] = {ofs0, ofs1, ofs2, ofs3};
+  const std::array<qint64, 4> mip_sizes = {
+    static_cast<qint64>(width) * static_cast<qint64>(height),
+    static_cast<qint64>(mip_dim(width, 1)) * static_cast<qint64>(mip_dim(height, 1)),
+    static_cast<qint64>(mip_dim(width, 2)) * static_cast<qint64>(mip_dim(height, 2)),
+    static_cast<qint64>(mip_dim(width, 3)) * static_cast<qint64>(mip_dim(height, 3)),
+  };
 
-  const qint64 mip0_bytes = static_cast<qint64>(width) * static_cast<qint64>(height);
-  if (ofs0 == 0 || static_cast<qint64>(ofs0) + mip0_bytes > bytes.size()) {
-    if (error) {
-      *error = "MIP texture data is out of bounds.";
+  const std::array<quint32, 4> raw_offsets = {
+    read_u32_le_from(bytes.constData() + 24),
+    read_u32_le_from(bytes.constData() + 28),
+    read_u32_le_from(bytes.constData() + 32),
+    read_u32_le_from(bytes.constData() + 36),
+  };
+
+  const auto offsets_valid = [&](const std::array<quint32, 4>& offs) -> bool {
+    for (int i = 0; i < 4; ++i) {
+      if (offs[i] == 0) {
+        return false;
+      }
+      if (i > 0 && offs[i] < offs[i - 1]) {
+        return false;
+      }
+      const qint64 end = static_cast<qint64>(offs[i]) + mip_sizes[static_cast<size_t>(i)];
+      if (end > bytes.size()) {
+        return false;
+      }
     }
-    return {};
+    return true;
+  };
+
+  std::array<quint32, 4> implicit_offsets = {40, 0, 0, 0};
+  bool implicit_ok = true;
+  for (int i = 1; i < 4; ++i) {
+    const qint64 next = static_cast<qint64>(implicit_offsets[static_cast<size_t>(i - 1)]) + mip_sizes[static_cast<size_t>(i - 1)];
+    if (next <= 0 || next > std::numeric_limits<quint32>::max()) {
+      implicit_ok = false;
+      break;
+    }
+    implicit_offsets[static_cast<size_t>(i)] = static_cast<quint32>(next);
+  }
+  if (!implicit_ok || !offsets_valid(implicit_offsets)) {
+    implicit_offsets = {0, 0, 0, 0};
+  }
+
+  std::array<quint32, 4> resolved_offsets = raw_offsets;
+  if (!offsets_valid(resolved_offsets)) {
+    // Some files omit one or more offsets but still store contiguous mip payloads.
+    if (resolved_offsets[0] == 0 && implicit_offsets[0] != 0) {
+      resolved_offsets[0] = implicit_offsets[0];
+    }
+    for (int i = 1; i < 4; ++i) {
+      if (resolved_offsets[static_cast<size_t>(i)] != 0) {
+        continue;
+      }
+      if (resolved_offsets[static_cast<size_t>(i - 1)] == 0) {
+        break;
+      }
+      const qint64 next = static_cast<qint64>(resolved_offsets[static_cast<size_t>(i - 1)]) + mip_sizes[static_cast<size_t>(i - 1)];
+      if (next <= 0 || next > std::numeric_limits<quint32>::max()) {
+        break;
+      }
+      resolved_offsets[static_cast<size_t>(i)] = static_cast<quint32>(next);
+    }
+  }
+
+  if (!offsets_valid(resolved_offsets)) {
+    // Some toolchains store offsets relative to the start of mip payload (after 40-byte header).
+    std::array<quint32, 4> payload_relative = raw_offsets;
+    bool overflow = false;
+    for (int i = 0; i < 4; ++i) {
+      const quint32 off = payload_relative[static_cast<size_t>(i)];
+      if (off == 0) {
+        continue;
+      }
+      const qint64 abs_off = static_cast<qint64>(off) + 40;
+      if (abs_off <= 0 || abs_off > std::numeric_limits<quint32>::max()) {
+        overflow = true;
+        break;
+      }
+      payload_relative[static_cast<size_t>(i)] = static_cast<quint32>(abs_off);
+    }
+    if (!overflow && offsets_valid(payload_relative)) {
+      resolved_offsets = payload_relative;
+    }
+  }
+
+  if (!offsets_valid(resolved_offsets)) {
+    if (implicit_offsets[0] != 0 && offsets_valid(implicit_offsets)) {
+      resolved_offsets = implicit_offsets;
+    } else {
+      if (error) {
+        *error = "MIP texture data offsets are invalid.";
+      }
+      return {};
+    }
   }
 
   const int level = qBound(0, mip_level, 3);
   const int mip_width = mip_dim(width, level);
   const int mip_height = mip_dim(height, level);
   const qint64 mip_bytes = static_cast<qint64>(mip_width) * static_cast<qint64>(mip_height);
-  const quint32 offset = offsets[level];
+  const quint32 offset = resolved_offsets[static_cast<size_t>(level)];
   if (offset == 0 || static_cast<qint64>(offset) + mip_bytes > bytes.size()) {
     if (error) {
       *error = QString("MIP texture mip %1 is out of bounds.").arg(level);
@@ -149,7 +235,7 @@ QImage decode_miptex_image(const QByteArray& bytes,
   }
 
   QVector<QRgb> palette;
-  if (!try_extract_embedded_palette(bytes, ofs0, width, height, &palette)) {
+  if (!try_extract_embedded_palette(bytes, resolved_offsets[0], width, height, &palette)) {
     if (!external_palette || external_palette->size() != 256) {
       if (error) {
         *error = "MIP textures require a 256-color palette.";

@@ -319,6 +319,36 @@ bool ModelViewerVulkanWidget::load_file(const QString& file_path, const QString&
 		return decoded.ok() ? decoded.image : QImage();
 	};
 
+	const auto decode_embedded_skin = [&](const LoadedModel& model) -> QImage {
+		if (model.embedded_skin_width <= 0 || model.embedded_skin_height <= 0 || model.embedded_skin_indices.isEmpty()) {
+			return {};
+		}
+		const qint64 pixel_count =
+			static_cast<qint64>(model.embedded_skin_width) * static_cast<qint64>(model.embedded_skin_height);
+		if (pixel_count <= 0 || pixel_count > model.embedded_skin_indices.size()) {
+			return {};
+		}
+		QImage img(model.embedded_skin_width, model.embedded_skin_height, QImage::Format_ARGB32);
+		if (img.isNull()) {
+			return {};
+		}
+		const bool has_palette = (quake1_palette_.size() == 256);
+		const auto* src = reinterpret_cast<const unsigned char*>(model.embedded_skin_indices.constData());
+		for (int y = 0; y < model.embedded_skin_height; ++y) {
+			QRgb* row = reinterpret_cast<QRgb*>(img.scanLine(y));
+			const qint64 row_off = static_cast<qint64>(y) * static_cast<qint64>(model.embedded_skin_width);
+			for (int x = 0; x < model.embedded_skin_width; ++x) {
+				const unsigned char idx = src[row_off + x];
+				if (has_palette) {
+					row[x] = quake1_palette_[idx];
+				} else {
+					row[x] = qRgba(idx, idx, idx, 255);
+				}
+			}
+		}
+		return img;
+	};
+
 	QString err;
 	model_ = load_model_file(file_path, &err);
 	if (!model_) {
@@ -330,6 +360,121 @@ bool ModelViewerVulkanWidget::load_file(const QString& file_path, const QString&
 	}
 	last_model_path_ = file_path;
 	last_skin_path_ = skin_path;
+	const QFileInfo model_info(file_path);
+	const QString model_dir = model_info.absolutePath();
+	const QString model_base = model_info.completeBaseName();
+	const QString model_format = model_->format.toLower();
+
+	const auto score_auto_skin = [&](const QFileInfo& fi) -> int {
+		const QString ext = fi.suffix().toLower();
+		if (ext.isEmpty()) {
+			return std::numeric_limits<int>::min();
+		}
+		const QString base = fi.completeBaseName();
+		const QString base_lower = base.toLower();
+		const QString model_base_lower = model_base.toLower();
+
+		int score = 0;
+		if (!model_base_lower.isEmpty()) {
+			if (base_lower == model_base_lower) {
+				score += 140;
+			} else if (base_lower.startsWith(model_base_lower + "_")) {
+				score += 95;
+			}
+		}
+		if (base_lower == "skin") {
+			score += 80;
+		}
+		if (base_lower.contains("default")) {
+			score += 30;
+		}
+		if (base_lower.endsWith("_glow")) {
+			score -= 200;
+		}
+
+		if (model_format == "mdl" && !model_base_lower.isEmpty()) {
+			const QString mdl_prefix = model_base_lower + "_";
+			if (base_lower == model_base_lower + "_00_00") {
+				score += 220;
+			} else if (base_lower.startsWith(mdl_prefix)) {
+				const QString suffix = base_lower.mid(mdl_prefix.size());
+				const bool two_by_two_numeric = (suffix.size() == 5 && suffix[2] == '_' && suffix[0].isDigit() &&
+												 suffix[1].isDigit() && suffix[3].isDigit() && suffix[4].isDigit());
+				score += two_by_two_numeric ? 180 : 120;
+			}
+		}
+
+		if (ext == "png") {
+			score += 20;
+		} else if (ext == "tga") {
+			score += 18;
+		} else if (ext == "jpg" || ext == "jpeg") {
+			score += 16;
+		} else if (ext == "pcx") {
+			score += 14;
+		} else if (ext == "wal") {
+			score += 12;
+		} else if (ext == "dds") {
+			score += 10;
+		} else if (ext == "lmp") {
+			score += (model_format == "mdl") ? 26 : 12;
+		} else if (ext == "mip") {
+			score += (model_format == "mdl") ? 24 : 11;
+		} else {
+			score -= 1000;
+		}
+		return score;
+	};
+
+	const auto find_auto_skin_on_disk = [&]() -> QString {
+		if (model_dir.isEmpty()) {
+			return {};
+		}
+		QDir d(model_dir);
+		if (!d.exists()) {
+			return {};
+		}
+		const QStringList files = d.entryList(QStringList() << "*.png"
+													<< "*.tga"
+													<< "*.jpg"
+													<< "*.jpeg"
+													<< "*.pcx"
+													<< "*.wal"
+													<< "*.dds"
+													<< "*.lmp"
+													<< "*.mip",
+									QDir::Files,
+									QDir::Name);
+		QString best_name;
+		int best_score = std::numeric_limits<int>::min();
+		for (const QString& name : files) {
+			const int score = score_auto_skin(QFileInfo(name));
+			if (score > best_score || (score == best_score && name.compare(best_name, Qt::CaseInsensitive) < 0)) {
+				best_score = score;
+				best_name = name;
+			}
+		}
+		if (best_score < 40) {
+			return {};
+		}
+		return best_name.isEmpty() ? QString() : d.filePath(best_name);
+	};
+
+	const auto try_apply_skin = [&](const QString& candidate_path) -> bool {
+		if (candidate_path.isEmpty()) {
+			return false;
+		}
+		const ImageDecodeResult decoded = decode_image_file(candidate_path, decode_options_for(candidate_path));
+		if (!decoded.ok()) {
+			return false;
+		}
+		skin_image_ = decoded.image;
+		if (glow_enabled_) {
+			skin_glow_image_ = load_glow_for(candidate_path);
+		}
+		last_skin_path_ = candidate_path;
+		return !skin_image_.isNull();
+	};
 
 	surfaces_.clear();
 	const int total_indices = model_->mesh.indices.size();
@@ -370,13 +515,14 @@ bool ModelViewerVulkanWidget::load_file(const QString& file_path, const QString&
 	has_glow_ = false;
 	pending_texture_upload_ = false;
 	if (!skin_is_q3_skin && !skin_path.isEmpty()) {
-		const ImageDecodeResult decoded = decode_image_file(skin_path, decode_options_for(skin_path));
-		if (decoded.ok()) {
-			skin_image_ = decoded.image;
-			if (glow_enabled_) {
-				skin_glow_image_ = load_glow_for(skin_path);
-			}
-		}
+		(void)try_apply_skin(skin_path);
+	}
+	if (skin_image_.isNull() && !skin_is_q3_skin) {
+		const QString auto_skin = find_auto_skin_on_disk();
+		(void)try_apply_skin(auto_skin);
+	}
+	if (skin_image_.isNull() && model_) {
+		skin_image_ = decode_embedded_skin(*model_);
 	}
 
 	if (skin_is_q3_skin && !skin_mapping.surface_to_shader.isEmpty()) {
@@ -393,7 +539,6 @@ bool ModelViewerVulkanWidget::load_file(const QString& file_path, const QString&
 		}
 	}
 
-	const QString model_dir = QFileInfo(file_path).absolutePath();
 	if (!model_dir.isEmpty()) {
 		const QStringList exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "dds", "lmp", "mip"};
 
@@ -435,21 +580,6 @@ bool ModelViewerVulkanWidget::load_file(const QString& file_path, const QString&
 			}
 			return {};
 		};
-
-		// If no explicit skin was provided, try to use a texture with the same base name as the model.
-		if (skin_image_.isNull()) {
-			const QString model_leaf = QFileInfo(file_path).completeBaseName();
-			const QString skin_guess = try_find_in_dir(model_leaf);
-			if (!skin_guess.isEmpty()) {
-				const ImageDecodeResult decoded = decode_image_file(skin_guess, decode_options_for(skin_guess));
-				if (decoded.ok()) {
-					skin_image_ = decoded.image;
-					if (glow_enabled_) {
-						skin_glow_image_ = load_glow_for(skin_guess);
-					}
-				}
-			}
-		}
 
 		// Try to resolve per-surface textures.
 		for (DrawSurface& s : surfaces_) {

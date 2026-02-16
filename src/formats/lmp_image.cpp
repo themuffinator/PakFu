@@ -11,6 +11,8 @@ constexpr int kConcharsWidth = 128;
 constexpr int kConcharsHeight = 128;
 constexpr int kColormapWidth = 256;
 constexpr int kColormapHeight = 64;
+constexpr int kPopWidth = 16;
+constexpr int kPopHeight = 16;
 constexpr int kPaletteGridCols = 16;
 constexpr int kPaletteGridRows = 16;
 
@@ -198,9 +200,10 @@ QImage decode_lmp_image(const QByteArray& bytes, const QString& file_name, const
 
   // conchars.lmp: raw 128x128 8bpp indices (no header). Use index 0 as transparent like Quake console font.
   if (lower.endsWith("conchars.lmp")) {
-    if (bytes.size() != kConcharsWidth * kConcharsHeight) {
+    const int want = kConcharsWidth * kConcharsHeight;
+    if (bytes.size() < want) {
       if (error) {
-        *error = "Invalid conchars.lmp size (expected 16384 bytes).";
+        *error = "Invalid conchars.lmp size (expected at least 16384 bytes).";
       }
       return {};
     }
@@ -213,7 +216,7 @@ QImage decode_lmp_image(const QByteArray& bytes, const QString& file_name, const
     QImage img;
     QString err;
     if (!decode_paletted_indices(reinterpret_cast<const uchar*>(bytes.constData()),
-                                 static_cast<quint64>(bytes.size()),
+                                 static_cast<quint64>(want),
                                  kConcharsWidth,
                                  kConcharsHeight,
                                  *palette,
@@ -230,9 +233,10 @@ QImage decode_lmp_image(const QByteArray& bytes, const QString& file_name, const
 
   // colormap.lmp: raw 256x64 8bpp indices (no header). Useful for inspection even though it's primarily a lighting table.
   if (lower.endsWith("colormap.lmp")) {
-    if (bytes.size() != kColormapWidth * kColormapHeight) {
+    const int want = kColormapWidth * kColormapHeight;
+    if (bytes.size() < want) {
       if (error) {
-        *error = "Invalid colormap.lmp size (expected 16384 bytes).";
+        *error = "Invalid colormap.lmp size (expected at least 16384 bytes).";
       }
       return {};
     }
@@ -245,7 +249,7 @@ QImage decode_lmp_image(const QByteArray& bytes, const QString& file_name, const
     QImage img;
     QString err;
     if (!decode_paletted_indices(reinterpret_cast<const uchar*>(bytes.constData()),
-                                 static_cast<quint64>(bytes.size()),
+                                 static_cast<quint64>(want),
                                  kColormapWidth,
                                  kColormapHeight,
                                  *palette,
@@ -254,6 +258,39 @@ QImage decode_lmp_image(const QByteArray& bytes, const QString& file_name, const
                                  &err)) {
       if (error) {
         *error = err.isEmpty() ? "Unable to decode colormap.lmp." : err;
+      }
+      return {};
+    }
+    return img;
+  }
+
+  // pop.lmp: raw 16x16 8bpp indices (no header), used by Quake as a software renderer marker.
+  if (lower.endsWith("pop.lmp")) {
+    const int want = kPopWidth * kPopHeight;
+    if (bytes.size() < want) {
+      if (error) {
+        *error = "Invalid pop.lmp size (expected at least 256 bytes).";
+      }
+      return {};
+    }
+    if (!palette || palette->size() != 256) {
+      if (error) {
+        *error = "pop.lmp requires a 256-color Quake palette (gfx/palette.lmp).";
+      }
+      return {};
+    }
+    QImage img;
+    QString err;
+    if (!decode_paletted_indices(reinterpret_cast<const uchar*>(bytes.constData()),
+                                 static_cast<quint64>(want),
+                                 kPopWidth,
+                                 kPopHeight,
+                                 *palette,
+                                 /*transparent_index=*/0,
+                                 &img,
+                                 &err)) {
+      if (error) {
+        *error = err.isEmpty() ? "Unable to decode pop.lmp." : err;
       }
       return {};
     }

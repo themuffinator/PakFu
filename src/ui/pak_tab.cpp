@@ -6436,6 +6436,8 @@ void PakTab::update_preview() {
     const auto score_skin = [&](const QString& skin_leaf) -> int {
       const QString skin_ext = file_ext_lower(skin_leaf);
       const QString base = file_base_name(skin_leaf);
+      const QString base_lower = base.toLower();
+      const QString model_base_lower = model_base.toLower();
 
       int score = 0;
       if (!model_base.isEmpty()) {
@@ -6451,10 +6453,26 @@ void PakTab::update_preview() {
       if (base.contains("default", Qt::CaseInsensitive)) {
         score += 30;
       }
+      if (base.endsWith("_glow", Qt::CaseInsensitive)) {
+        score -= 200;
+      }
 
       // Prefer Quake III .skin files for MD3 models.
       if (model_ext == "md3" && skin_ext == "skin") {
         score += 160;
+      }
+
+      // Quake MDL skins in rerelease/community packs often use model_XX_YY naming.
+      if (model_ext == "mdl" && !model_base_lower.isEmpty()) {
+        const QString mdl_prefix = model_base_lower + "_";
+        if (base_lower == model_base_lower + "_00_00") {
+          score += 220;
+        } else if (base_lower.startsWith(mdl_prefix)) {
+          const QString suffix = base_lower.mid(mdl_prefix.size());
+          const bool two_by_two_numeric = (suffix.size() == 5 && suffix[2] == '_' && suffix[0].isDigit() &&
+                                           suffix[1].isDigit() && suffix[3].isDigit() && suffix[4].isDigit());
+          score += two_by_two_numeric ? 180 : 120;
+        }
       }
 
       if (skin_ext == "png") {
@@ -6463,6 +6481,10 @@ void PakTab::update_preview() {
         score += 18;
       } else if (skin_ext == "jpg" || skin_ext == "jpeg") {
         score += 16;
+      } else if (skin_ext == "lmp") {
+        score += (model_ext == "mdl") ? 26 : 12;
+      } else if (skin_ext == "mip") {
+        score += (model_ext == "mdl") ? 24 : 11;
       } else if (skin_ext == "pcx") {
         score += 14;
       } else if (skin_ext == "wal") {
@@ -6481,7 +6503,7 @@ void PakTab::update_preview() {
         return {};
       }
 
-      QStringList filters = {"*.png", "*.tga", "*.jpg", "*.jpeg", "*.pcx", "*.wal", "*.dds"};
+      QStringList filters = {"*.png", "*.tga", "*.jpg", "*.jpeg", "*.pcx", "*.wal", "*.dds", "*.lmp", "*.mip"};
       if (model_ext == "md3") {
         filters.push_back("*.skin");
       }
@@ -6498,6 +6520,9 @@ void PakTab::update_preview() {
           best_score = s;
           best = f;
         }
+      }
+      if (best_score < 40) {
+        return {};
       }
       return best.isEmpty() ? QString() : d.filePath(best);
     };
@@ -6554,6 +6579,9 @@ void PakTab::update_preview() {
         return a.leaf.compare(b.leaf, Qt::CaseInsensitive) < 0;
       });
 
+      if (candidates.first().score < 40) {
+        return {};
+      }
       return candidates.first().pak_path;
     };
 
