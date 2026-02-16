@@ -52,6 +52,7 @@ sources = files(
   'formats/model.cpp',
   'formats/quake3_skin.cpp',
   'formats/pcx_image.cpp',
+  'formats/swl_image.cpp',
   'formats/tga_image.cpp',
   'formats/wal_image.cpp',
   'zip/quakelive_pk3_crypto.cpp',

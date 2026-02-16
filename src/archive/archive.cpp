@@ -71,8 +71,8 @@ bool Archive::load(const QString& path, QString* error) {
 	}
 
 	const QString ext = file_ext_lower(abs);
-	const bool looks_zip = (ext == "zip" || ext == "pk3" || ext == "pk4" || ext == "pkz");
-	const bool looks_pak = (ext == "pak");
+	const bool looks_zip = (ext == "zip" || ext == "pk3" || ext == "pk4" || ext == "pkz" || ext == "resources");
+	const bool looks_pak = (ext == "pak" || ext == "sin");
 	const bool looks_wad = is_wad_extension(ext);
 
 	QString err;

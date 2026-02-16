@@ -16,15 +16,15 @@ This project is still training under the waterfall 💦🥋 (early development).
 - Provide a first-class CLI for automation, pipelines, and batch wizardry 🪄🧰
 - Run consistently on Windows/macOS/Linux 🧘‍♂️🌍
 - Understand and preview common PAK-adjacent file types 👁️‍🗨️📁
-  - Images: `pcx`, `wal`, `mip`, `dds`, `lmp`, `png`, `tga`, `jpg` 🖼️🎨
-  - Audio: `wav`, `ogg`, `mp3` 🔊🎶
-  - Video: `cin`, `roq`, `ogv` 🎞️🍿
-  - Models: `mdl`, `md2`, `md3`, `iqm`, `md5mesh`, `lwo`, `obj` 🧊🧩
+  - Images: `pcx`, `wal`, `swl`, `mip`, `dds`, `lmp`, `png`, `tga`, `jpg` 🖼️🎨
+  - Audio: `wav`, `ogg`, `mp3`, `bik` (audio track playback via Qt backend support) 🔊🎶
+  - Video: `cin`, `roq`, `ogv`, `bik` 🎞️🍿
+  - Models: `mdl`, `md2`, `md3`, `mdm`, `glm`, `iqm`, `md5mesh`, `lwo`, `obj` 🧊🧩
   - Sprites: `spr`, `sp2`/`spr2` (animated sprite preview + metadata/frame table insights) 🧾🎯
   - Demos: `dm2` (Quake II packet stream summary preview) 📼🧾
-  - Maps: `bsp` (Quake/Quake II/Quake III/Quake Live) 🗺️🧭
+  - Maps: `bsp` (all supported idTech1/idTech2/idTech3 titles, including GoldSrc/Half-Life, Quake BSP2/2PSB, and RBSP/FBSP/FAKK/EF2 variants) 🗺️🧭
   - Navigation/VM: `aas`, `qvm` (header/lump summary preview) 🧠📦
-  - Text/config: `cfg`, `arena`, `bot`, `skin`, `shaderlist`, and similar plain-text formats 🧾🖋️
+  - Text/config: `cfg`, `config`, `rc`, `arena`, `bot`, `skin`, `shaderlist`, `lang`, `lst`, `gui`, `efx`, `guide`, `lipsync`, `viseme`, `vdf`, and similar plain-text formats 🧾🖋️
 - Tune 3D previews with grid/floor/none options, themed/grey/custom backgrounds, and wireframe/textured toggles
 - Quake II previews honor `_glow.png` glow maps for textures and models
 - WAD support: read/extract `WAD2` and `WAD3`, rebuild/write `WAD2`
@@ -32,13 +32,14 @@ This project is still training under the waterfall 💦🥋 (early development).
 - Guard official game archives with a default-on Pure PAK Protector preference 🛡️📦
 - Keep C++ code clean, portable, and documented (minimal OS-specific sorcery) 🧠🧹🧾
 
-## PK3 / PK4 / PKZ Support (ZIP packs) 📦🧨
-PakFu treats `*.pk3`, `*.pk4`, and `*.pkz` as **ZIP-based packs** (same container, different extension).
+## PK3 / PK4 / PKZ / RESOURCES Support (ZIP packs) 📦🧨
+PakFu treats `*.pk3`, `*.pk4`, `*.pkz`, and `*.resources` as **ZIP-based packs** (same container, different extension).
 
 Common conventions:
 - `*.pk3`: id Tech 3 packs (Quake III Arena / Quake Live, etc.)
 - `*.pk4`: id Tech 4 packs (Doom 3 / Quake 4, etc.)
 - `*.pkz`: ZIP-based packs used by some games/mods (handled like PK3/ZIP)
+- `*.resources`: Doom 3 BFG Edition resource packs (handled like ZIP)
 
 These packs are supported anywhere PakFu supports ZIP:
 
@@ -114,7 +115,8 @@ meson compile -C builddir
 ### GUI 🪟
 - Use **File → Open Archive…** or **File → Open Folder…** (opens in a tab).
 - Drag archives or folders onto the window to open them.
-- Double-click nested container files (`wad`, `wad2`, `wad3`, `pak`, `pk3`, `pk4`, `pkz`, `zip`) to open them in-place.
+- Double-click nested container files (`wad`, `wad2`, `wad3`, `pak`, `sin`, `pk3`, `pk4`, `pkz`, `zip`, `resources`) to open them in-place.
+- Nested container mounting supports multiple layers (you can keep drilling into archives inside archives).
 - Drag files/folders into an open archive tab to add them.
 - Drag items out of PakFu to copy them to your file manager (exports via temp files).
 
@@ -136,11 +138,33 @@ Auto-detect checks installs in priority order: **Steam → GOG.com → EOS**.
 Supported auto-detect games:
 - Quake
 - Quake Rerelease
+- Half-Life
 - Quake II
 - Quake II Rerelease
+- Quake II RTX
+- SiN Gold
+- Kingpin: Life of Crime
+- Daikatana
+- Anachronox
+- Heretic II
+- Gravity Bone
+- Thirty Flights of Loving
 - Quake III Arena
 - Quake Live
+- Return to Castle Wolfenstein
+- Wolfenstein: Enemy Territory
+- Star Wars Jedi Knight II: Jedi Outcast
+- Star Wars Jedi Knight: Jedi Academy
+- Star Trek Voyager: Elite Force
+- Star Trek: Elite Force II
+- Warsow
+- World of Padman
+- Heavy Metal: F.A.K.K.2
 - Quake 4
+- Doom 3
+- Doom 3: BFG Edition
+- Prey
+- Enemy Territory: Quake Wars
 
 ```sh
 ./builddir/src/pakfu
@@ -161,9 +185,21 @@ Game Sets can also be managed via CLI:
 ./builddir/src/pakfu --cli --list-game-sets
 ./builddir/src/pakfu --cli --auto-detect-game-sets
 ./builddir/src/pakfu --cli --select-game-set quake2
+./builddir/src/pakfu --cli --select-game-set quake2_rtx
+./builddir/src/pakfu --cli --select-game-set half_life
 ./builddir/src/pakfu --cli --select-game-set quake3_arena
 ./builddir/src/pakfu --cli --select-game-set quake_live
 ./builddir/src/pakfu --cli --select-game-set quake4
+./builddir/src/pakfu --cli --select-game-set doom3
+./builddir/src/pakfu --cli --select-game-set doom3_bfg_edition
+./builddir/src/pakfu --cli --select-game-set jedi_academy
+./builddir/src/pakfu --cli --select-game-set daikatana
+./builddir/src/pakfu --cli --select-game-set anachronox
+./builddir/src/pakfu --cli --select-game-set heretic2
+./builddir/src/pakfu --cli --select-game-set elite_force2
+./builddir/src/pakfu --cli --select-game-set warsow
+./builddir/src/pakfu --cli --select-game-set world_of_padman
+./builddir/src/pakfu --cli --select-game-set heavy_metal_fakk2
 ```
 
 ## License & Disclaimer ⚖️🧾

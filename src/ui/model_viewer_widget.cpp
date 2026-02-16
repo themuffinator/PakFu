@@ -932,6 +932,8 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
       score += 14;
     } else if (ext == "wal") {
       score += 12;
+    } else if (ext == "swl") {
+      score += 12;
     } else if (ext == "dds") {
       score += 10;
     } else if (ext == "lmp") {
@@ -958,6 +960,7 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
                                                         << "*.jpeg"
                                                         << "*.pcx"
                                                         << "*.wal"
+                                                        << "*.swl"
                                                         << "*.dds"
                                                         << "*.lmp"
                                                         << "*.mip",
@@ -1058,7 +1061,7 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
   }
 
   if (!model_dir.isEmpty()) {
-    const QStringList exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "dds", "lmp", "mip"};
+    const QStringList exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "swl", "dds", "lmp", "mip"};
 
     const auto try_find_in_dir = [&](const QString& base_or_file) -> QString {
       if (base_or_file.isEmpty()) {
@@ -1086,6 +1089,7 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
                                                           << "*.jpeg"
                                                           << "*.pcx"
                                                           << "*.wal"
+                                                          << "*.swl"
                                                           << "*.dds"
                                                           << "*.lmp"
                                                           << "*.mip",

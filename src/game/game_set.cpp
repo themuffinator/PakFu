@@ -75,16 +75,60 @@ QString game_id_key(GameId id) {
       return "quake";
     case GameId::QuakeRerelease:
       return "quake_rerelease";
+    case GameId::HalfLife:
+      return "half_life";
     case GameId::Quake2:
       return "quake2";
     case GameId::Quake2Rerelease:
       return "quake2_rerelease";
+    case GameId::Quake2RTX:
+      return "quake2_rtx";
+    case GameId::SiNGold:
+      return "sin_gold";
+    case GameId::KingpinLifeOfCrime:
+      return "kingpin_life_of_crime";
+    case GameId::Daikatana:
+      return "daikatana";
+    case GameId::Anachronox:
+      return "anachronox";
+    case GameId::Heretic2:
+      return "heretic2";
+    case GameId::GravityBone:
+      return "gravity_bone";
+    case GameId::ThirtyFlightsOfLoving:
+      return "thirty_flights_of_loving";
     case GameId::Quake3Arena:
       return "quake3_arena";
     case GameId::QuakeLive:
       return "quake_live";
+    case GameId::ReturnToCastleWolfenstein:
+      return "return_to_castle_wolfenstein";
+    case GameId::WolfensteinEnemyTerritory:
+      return "wolfenstein_enemy_territory";
+    case GameId::JediOutcast:
+      return "jedi_outcast";
+    case GameId::JediAcademy:
+      return "jedi_academy";
+    case GameId::StarTrekVoyagerEliteForce:
+      return "elite_force";
+    case GameId::EliteForce2:
+      return "elite_force2";
+    case GameId::Warsow:
+      return "warsow";
+    case GameId::WorldOfPadman:
+      return "world_of_padman";
+    case GameId::HeavyMetalFakk2:
+      return "heavy_metal_fakk2";
     case GameId::Quake4:
       return "quake4";
+    case GameId::Doom3:
+      return "doom3";
+    case GameId::Doom3BFGEdition:
+      return "doom3_bfg_edition";
+    case GameId::Prey:
+      return "prey";
+    case GameId::EnemyTerritoryQuakeWars:
+      return "enemy_territory_quake_wars";
   }
   return "quake";
 }
@@ -99,11 +143,38 @@ GameId game_id_from_key(const QString& key, bool* ok) {
   if (key == "quake_rerelease") {
     return GameId::QuakeRerelease;
   }
+  if (key == "half_life" || key == "half-life" || key == "halflife") {
+    return GameId::HalfLife;
+  }
   if (key == "quake2") {
     return GameId::Quake2;
   }
   if (key == "quake2_rerelease") {
     return GameId::Quake2Rerelease;
+  }
+  if (key == "quake2_rtx" || key == "quake2rtx" || key == "quake_ii_rtx" || key == "q2rtx") {
+    return GameId::Quake2RTX;
+  }
+  if (key == "sin_gold") {
+    return GameId::SiNGold;
+  }
+  if (key == "kingpin_life_of_crime") {
+    return GameId::KingpinLifeOfCrime;
+  }
+  if (key == "daikatana") {
+    return GameId::Daikatana;
+  }
+  if (key == "anachronox") {
+    return GameId::Anachronox;
+  }
+  if (key == "heretic2" || key == "heretic_2") {
+    return GameId::Heretic2;
+  }
+  if (key == "gravity_bone") {
+    return GameId::GravityBone;
+  }
+  if (key == "thirty_flights_of_loving") {
+    return GameId::ThirtyFlightsOfLoving;
   }
   if (key == "quake3_arena") {
     return GameId::Quake3Arena;
@@ -111,8 +182,47 @@ GameId game_id_from_key(const QString& key, bool* ok) {
   if (key == "quake_live") {
     return GameId::QuakeLive;
   }
+  if (key == "return_to_castle_wolfenstein") {
+    return GameId::ReturnToCastleWolfenstein;
+  }
+  if (key == "wolfenstein_enemy_territory") {
+    return GameId::WolfensteinEnemyTerritory;
+  }
+  if (key == "jedi_outcast") {
+    return GameId::JediOutcast;
+  }
+  if (key == "jedi_academy") {
+    return GameId::JediAcademy;
+  }
+  if (key == "elite_force") {
+    return GameId::StarTrekVoyagerEliteForce;
+  }
+  if (key == "elite_force2" || key == "elite_force_2") {
+    return GameId::EliteForce2;
+  }
+  if (key == "warsow") {
+    return GameId::Warsow;
+  }
+  if (key == "world_of_padman" || key == "worldofpadman") {
+    return GameId::WorldOfPadman;
+  }
+  if (key == "heavy_metal_fakk2" || key == "fakk2") {
+    return GameId::HeavyMetalFakk2;
+  }
   if (key == "quake4") {
     return GameId::Quake4;
+  }
+  if (key == "doom3") {
+    return GameId::Doom3;
+  }
+  if (key == "doom3_bfg_edition") {
+    return GameId::Doom3BFGEdition;
+  }
+  if (key == "prey") {
+    return GameId::Prey;
+  }
+  if (key == "enemy_territory_quake_wars") {
+    return GameId::EnemyTerritoryQuakeWars;
   }
   if (ok) {
     *ok = false;
@@ -126,16 +236,60 @@ QString game_display_name(GameId id) {
       return "Quake";
     case GameId::QuakeRerelease:
       return "Quake Rerelease";
+    case GameId::HalfLife:
+      return "Half-Life";
     case GameId::Quake2:
       return "Quake II";
     case GameId::Quake2Rerelease:
       return "Quake II Rerelease";
+    case GameId::Quake2RTX:
+      return "Quake II RTX";
+    case GameId::SiNGold:
+      return "SiN Gold";
+    case GameId::KingpinLifeOfCrime:
+      return "Kingpin: Life of Crime";
+    case GameId::Daikatana:
+      return "Daikatana";
+    case GameId::Anachronox:
+      return "Anachronox";
+    case GameId::Heretic2:
+      return "Heretic II";
+    case GameId::GravityBone:
+      return "Gravity Bone";
+    case GameId::ThirtyFlightsOfLoving:
+      return "Thirty Flights of Loving";
     case GameId::Quake3Arena:
       return "Quake III Arena";
     case GameId::QuakeLive:
       return "Quake Live";
+    case GameId::ReturnToCastleWolfenstein:
+      return "Return to Castle Wolfenstein";
+    case GameId::WolfensteinEnemyTerritory:
+      return "Wolfenstein: Enemy Territory";
+    case GameId::JediOutcast:
+      return "Star Wars Jedi Knight II: Jedi Outcast";
+    case GameId::JediAcademy:
+      return "Star Wars Jedi Knight: Jedi Academy";
+    case GameId::StarTrekVoyagerEliteForce:
+      return "Star Trek Voyager: Elite Force";
+    case GameId::EliteForce2:
+      return "Star Trek: Elite Force II";
+    case GameId::Warsow:
+      return "Warsow";
+    case GameId::WorldOfPadman:
+      return "World of Padman";
+    case GameId::HeavyMetalFakk2:
+      return "Heavy Metal: F.A.K.K.2";
     case GameId::Quake4:
       return "Quake 4";
+    case GameId::Doom3:
+      return "Doom 3";
+    case GameId::Doom3BFGEdition:
+      return "Doom 3: BFG Edition";
+    case GameId::Prey:
+      return "Prey";
+    case GameId::EnemyTerritoryQuakeWars:
+      return "Enemy Territory: Quake Wars";
   }
   return "Quake";
 }
@@ -144,12 +298,34 @@ QString default_palette_for_game(GameId id) {
   switch (id) {
     case GameId::Quake:
     case GameId::QuakeRerelease:
+    case GameId::HalfLife:
       return "quake";
     case GameId::Quake2:
     case GameId::Quake2Rerelease:
+    case GameId::Quake2RTX:
+    case GameId::SiNGold:
+    case GameId::KingpinLifeOfCrime:
+    case GameId::Daikatana:
+    case GameId::Anachronox:
+    case GameId::Heretic2:
+    case GameId::GravityBone:
+    case GameId::ThirtyFlightsOfLoving:
     case GameId::Quake3Arena:
     case GameId::QuakeLive:
+    case GameId::ReturnToCastleWolfenstein:
+    case GameId::WolfensteinEnemyTerritory:
+    case GameId::JediOutcast:
+    case GameId::JediAcademy:
+    case GameId::StarTrekVoyagerEliteForce:
+    case GameId::EliteForce2:
+    case GameId::Warsow:
+    case GameId::WorldOfPadman:
+    case GameId::HeavyMetalFakk2:
     case GameId::Quake4:
+    case GameId::Doom3:
+    case GameId::Doom3BFGEdition:
+    case GameId::Prey:
+    case GameId::EnemyTerritoryQuakeWars:
       return "quake2";
   }
   return "quake";
@@ -159,11 +335,33 @@ QVector<GameId> supported_game_ids() {
   return {
     GameId::Quake,
     GameId::QuakeRerelease,
+    GameId::HalfLife,
     GameId::Quake2,
     GameId::Quake2Rerelease,
+    GameId::Quake2RTX,
+    GameId::SiNGold,
+    GameId::KingpinLifeOfCrime,
+    GameId::Daikatana,
+    GameId::Anachronox,
+    GameId::Heretic2,
+    GameId::GravityBone,
+    GameId::ThirtyFlightsOfLoving,
     GameId::Quake3Arena,
     GameId::QuakeLive,
+    GameId::ReturnToCastleWolfenstein,
+    GameId::WolfensteinEnemyTerritory,
+    GameId::JediOutcast,
+    GameId::JediAcademy,
+    GameId::StarTrekVoyagerEliteForce,
+    GameId::EliteForce2,
+    GameId::Warsow,
+    GameId::WorldOfPadman,
+    GameId::HeavyMetalFakk2,
     GameId::Quake4,
+    GameId::Doom3,
+    GameId::Doom3BFGEdition,
+    GameId::Prey,
+    GameId::EnemyTerritoryQuakeWars,
   };
 }
 

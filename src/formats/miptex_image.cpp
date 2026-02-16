@@ -51,6 +51,70 @@ namespace {
   return name.startsWith('{');
 }
 
+[[nodiscard]] bool infer_raw_square_dim(qint64 pixel_bytes, int* out_dim) {
+  if (!out_dim || pixel_bytes <= 0) {
+    return false;
+  }
+  static const std::array<int, 10> kDims = {8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096};
+  for (const int d : kDims) {
+    if (pixel_bytes == static_cast<qint64>(d) * static_cast<qint64>(d)) {
+      *out_dim = d;
+      return true;
+    }
+  }
+  return false;
+}
+
+[[nodiscard]] QImage decode_raw_mip_payload(const QByteArray& bytes,
+                                            const QVector<QRgb>* external_palette,
+                                            int mip_level,
+                                            const QString& texture_name,
+                                            QString* error) {
+  int dim = 0;
+  if (!infer_raw_square_dim(bytes.size(), &dim)) {
+    return {};
+  }
+  if (!external_palette || external_palette->size() != 256) {
+    if (error) {
+      *error = "Raw MIP payload requires a 256-color palette.";
+    }
+    return {};
+  }
+
+  const int level = qBound(0, mip_level, 3);
+  const int out_w = mip_dim(dim, level);
+  const int out_h = mip_dim(dim, level);
+  QImage img(out_w, out_h, QImage::Format_ARGB32);
+  if (img.isNull()) {
+    if (error) {
+      *error = "Unable to allocate image.";
+    }
+    return {};
+  }
+
+  const bool transparent_255 = uses_index255_transparency(texture_name);
+  const auto* src = reinterpret_cast<const quint8*>(bytes.constData());
+  const int sample_step = (1 << level);
+
+  for (int y = 0; y < out_h; ++y) {
+    QRgb* dst = reinterpret_cast<QRgb*>(img.scanLine(y));
+    const int sy = qMin(dim - 1, y * sample_step);
+    const qint64 row = static_cast<qint64>(sy) * static_cast<qint64>(dim);
+    for (int x = 0; x < out_w; ++x) {
+      const int sx = qMin(dim - 1, x * sample_step);
+      const int idx = static_cast<int>(src[row + sx]);
+      const QRgb c = (*external_palette)[idx];
+      if (transparent_255 && idx == 255) {
+        dst[x] = qRgba(qRed(c), qGreen(c), qBlue(c), 0);
+      } else {
+        dst[x] = c;
+      }
+    }
+  }
+
+  return img;
+}
+
 [[nodiscard]] bool try_extract_embedded_palette(const QByteArray& bytes,
                                                 quint32 offset0,
                                                 int width,
@@ -108,7 +172,11 @@ QImage decode_miptex_image(const QByteArray& bytes,
   }
 
   if (bytes.size() < 40) {
-    if (error) {
+    QImage raw = decode_raw_mip_payload(bytes, external_palette, mip_level, texture_name, error);
+    if (!raw.isNull()) {
+      return raw;
+    }
+    if (error && error->isEmpty()) {
       *error = "MIP texture header is incomplete.";
     }
     return {};
@@ -117,6 +185,10 @@ QImage decode_miptex_image(const QByteArray& bytes,
   const quint32 width_u = read_u32_le_from(bytes.constData() + 16);
   const quint32 height_u = read_u32_le_from(bytes.constData() + 20);
   if (width_u == 0 || height_u == 0 || width_u > 8192 || height_u > 8192) {
+    QImage raw = decode_raw_mip_payload(bytes, external_palette, mip_level, texture_name, error);
+    if (!raw.isNull()) {
+      return raw;
+    }
     if (error) {
       *error = "MIP texture dimensions are invalid.";
     }

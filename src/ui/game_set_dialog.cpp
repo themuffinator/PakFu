@@ -1,5 +1,7 @@
 #include "ui/game_set_dialog.h"
 
+#include <algorithm>
+
 #include <QUuid>
 
 #include <QDialogButtonBox>
@@ -42,6 +44,39 @@ GameSet make_new_game_set_template() {
   set.name = game_display_name(set.game);
   set.palette_id = default_palette_for_game(set.game);
   return set;
+}
+
+QString installation_primary_label(const GameSet& set) {
+  return set.name.isEmpty() ? game_display_name(set.game) : set.name;
+}
+
+QString installation_list_label(const GameSet& set) {
+  const QString primary = installation_primary_label(set);
+  if (primary != game_display_name(set.game)) {
+    return QString("%1 — %2").arg(primary, game_display_name(set.game));
+  }
+  return primary;
+}
+
+bool installation_less(const GameSet* a, const GameSet* b) {
+  if (!a || !b) {
+    return a != nullptr;
+  }
+  const QString a_primary = installation_primary_label(*a);
+  const QString b_primary = installation_primary_label(*b);
+  const int by_primary = QString::compare(a_primary, b_primary, Qt::CaseInsensitive);
+  if (by_primary != 0) {
+    return by_primary < 0;
+  }
+
+  const QString a_game = game_display_name(a->game);
+  const QString b_game = game_display_name(b->game);
+  const int by_game = QString::compare(a_game, b_game, Qt::CaseInsensitive);
+  if (by_game != 0) {
+    return by_game < 0;
+  }
+
+  return QString::compare(a->uid, b->uid, Qt::CaseInsensitive) < 0;
 }
 }  // namespace
 
@@ -138,16 +173,20 @@ void GameSetDialog::refresh_list() {
 
   list_->clear();
 
+  QVector<const GameSet*> sorted;
+  sorted.reserve(state_.sets.size());
   for (const GameSet& set : state_.sets) {
-    const QString primary = set.name.isEmpty() ? game_display_name(set.game) : set.name;
-    QString label = primary;
-    if (primary != game_display_name(set.game)) {
-      label = QString("%1 — %2").arg(primary, game_display_name(set.game));
-    }
+    sorted.push_back(&set);
+  }
+  std::sort(sorted.begin(), sorted.end(), installation_less);
 
-    auto* item = new QListWidgetItem(label);
-    item->setData(Qt::UserRole, set.uid);
-    item->setToolTip(detail_tooltip_for(set));
+  for (const GameSet* set : sorted) {
+    if (!set) {
+      continue;
+    }
+    auto* item = new QListWidgetItem(installation_list_label(*set));
+    item->setData(Qt::UserRole, set->uid);
+    item->setToolTip(detail_tooltip_for(*set));
     list_->addItem(item);
   }
 

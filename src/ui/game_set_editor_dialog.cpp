@@ -232,6 +232,14 @@ QString GameSetEditorDialog::suggested_default_dir(GameId game, const QString& r
         return root.filePath("rerelease/id1");
       }
       return root.filePath("rerelease");
+    case GameId::HalfLife:
+      if (QFileInfo::exists(root.filePath("valve"))) {
+        return root.filePath("valve");
+      }
+      if (QFileInfo::exists(root.filePath("valve_hd"))) {
+        return root.filePath("valve_hd");
+      }
+      return root.filePath("valve");
     case GameId::Quake2:
       return root.filePath("baseq2");
     case GameId::Quake2Rerelease:
@@ -242,11 +250,102 @@ QString GameSetEditorDialog::suggested_default_dir(GameId game, const QString& r
         return root.filePath("baseq2");
       }
       return root.filePath("rerelease");
+    case GameId::Quake2RTX:
+      if (QFileInfo::exists(root.filePath("baseq2"))) {
+        return root.filePath("baseq2");
+      }
+      if (QFileInfo::exists(root.filePath("q2rtx"))) {
+        return root.filePath("q2rtx");
+      }
+      return root.filePath("baseq2");
+    case GameId::SiNGold:
+      if (QFileInfo::exists(root.filePath("sin"))) {
+        return root.filePath("sin");
+      }
+      return root_dir;
+    case GameId::KingpinLifeOfCrime:
+      if (QFileInfo::exists(root.filePath("main"))) {
+        return root.filePath("main");
+      }
+      return root_dir;
+    case GameId::Daikatana:
+    case GameId::Anachronox:
+      if (QFileInfo::exists(root.filePath("data"))) {
+        return root.filePath("data");
+      }
+      return root_dir;
+    case GameId::Heretic2:
+      if (QFileInfo::exists(root.filePath("base"))) {
+        return root.filePath("base");
+      }
+      return root_dir;
+    case GameId::GravityBone:
+      if (QFileInfo::exists(root.filePath("ValveTestApp242720"))) {
+        return root.filePath("ValveTestApp242720");
+      }
+      if (QFileInfo::exists(root.filePath("gravitybone"))) {
+        return root.filePath("gravitybone");
+      }
+      return root_dir;
+    case GameId::ThirtyFlightsOfLoving:
+      if (QFileInfo::exists(root.filePath("ValveTestApp214700"))) {
+        return root.filePath("ValveTestApp214700");
+      }
+      if (QFileInfo::exists(root.filePath("thirty_flights_of_loving"))) {
+        return root.filePath("thirty_flights_of_loving");
+      }
+      return root_dir;
     case GameId::Quake3Arena:
     case GameId::QuakeLive:
       return root.filePath("baseq3");
+    case GameId::ReturnToCastleWolfenstein:
+      if (QFileInfo::exists(root.filePath("Main"))) {
+        return root.filePath("Main");
+      }
+      return root.filePath("main");
+    case GameId::WolfensteinEnemyTerritory:
+      return root.filePath("etmain");
+    case GameId::JediOutcast:
+    case GameId::JediAcademy:
+      if (QFileInfo::exists(root.filePath("GameData/base"))) {
+        return root.filePath("GameData/base");
+      }
+      if (QFileInfo::exists(root.filePath("gamedata/base"))) {
+        return root.filePath("gamedata/base");
+      }
+      return root.filePath("base");
+    case GameId::StarTrekVoyagerEliteForce:
+      if (QFileInfo::exists(root.filePath("baseEF"))) {
+        return root.filePath("baseEF");
+      }
+      return root.filePath("baseef");
+    case GameId::EliteForce2:
+      if (QFileInfo::exists(root.filePath("base"))) {
+        return root.filePath("base");
+      }
+      return root_dir;
+    case GameId::Warsow:
+      if (QFileInfo::exists(root.filePath("basewsw"))) {
+        return root.filePath("basewsw");
+      }
+      return root_dir;
+    case GameId::WorldOfPadman:
+      if (QFileInfo::exists(root.filePath("wop"))) {
+        return root.filePath("wop");
+      }
+      return root_dir;
+    case GameId::HeavyMetalFakk2:
+      if (QFileInfo::exists(root.filePath("fakk"))) {
+        return root.filePath("fakk");
+      }
+      return root_dir;
     case GameId::Quake4:
       return root.filePath("q4base");
+    case GameId::Doom3:
+    case GameId::Doom3BFGEdition:
+    case GameId::Prey:
+    case GameId::EnemyTerritoryQuakeWars:
+      return root.filePath("base");
   }
   return root_dir;
 }

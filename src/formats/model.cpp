@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <limits>
 
 #include <QDir>
@@ -1260,6 +1261,1079 @@ std::optional<LoadedModel> load_md3(const QString& file_path, QString* error) {
   out.mesh.indices = std::move(indices);
   out.surfaces = std::move(surfaces);
   compute_smooth_normals(&out.mesh);
+  compute_bounds(&out.mesh);
+  return out;
+}
+
+[[nodiscard]] bool bytes_range_ok(const QByteArray& bytes, qint64 offset, qint64 length) {
+  if (offset < 0 || length < 0) {
+    return false;
+  }
+  const qint64 size = bytes.size();
+  if (offset > size) {
+    return false;
+  }
+  return length <= (size - offset);
+}
+
+[[nodiscard]] bool read_i16_at(const QByteArray& bytes, int offset, qint16* out) {
+  if (!out || !bytes_range_ok(bytes, offset, 2)) {
+    return false;
+  }
+  const auto* p = reinterpret_cast<const unsigned char*>(bytes.constData() + offset);
+  const quint16 u = static_cast<quint16>(p[0] | (p[1] << 8));
+  *out = static_cast<qint16>(u);
+  return true;
+}
+
+[[nodiscard]] bool read_i32_at(const QByteArray& bytes, int offset, qint32* out) {
+  if (!out || !bytes_range_ok(bytes, offset, 4)) {
+    return false;
+  }
+  const auto* p = reinterpret_cast<const unsigned char*>(bytes.constData() + offset);
+  const quint32 u = static_cast<quint32>(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24));
+  *out = static_cast<qint32>(u);
+  return true;
+}
+
+[[nodiscard]] bool read_u32_at(const QByteArray& bytes, int offset, quint32* out) {
+  qint32 v = 0;
+  if (!out || !read_i32_at(bytes, offset, &v)) {
+    return false;
+  }
+  *out = static_cast<quint32>(v);
+  return true;
+}
+
+[[nodiscard]] bool read_f32_at(const QByteArray& bytes, int offset, float* out) {
+  if (!out) {
+    return false;
+  }
+  quint32 u = 0;
+  if (!read_u32_at(bytes, offset, &u)) {
+    return false;
+  }
+  float f = 0.0f;
+  static_assert(sizeof(float) == sizeof(quint32));
+  memcpy(&f, &u, sizeof(float));
+  *out = f;
+  return true;
+}
+
+[[nodiscard]] QString read_fixed_latin1_string_at(const QByteArray& bytes, int offset, int n) {
+  if (n <= 0 || !bytes_range_ok(bytes, offset, n)) {
+    return {};
+  }
+  const QByteArray raw = bytes.mid(offset, n);
+  int end = raw.indexOf('\0');
+  if (end < 0) {
+    end = raw.size();
+  }
+  return QString::fromLatin1(raw.constData(), end);
+}
+
+[[nodiscard]] QString find_case_insensitive_sibling(const QString& candidate_path) {
+  if (candidate_path.isEmpty()) {
+    return {};
+  }
+  const QFileInfo want_info(candidate_path);
+  const QDir dir(want_info.absolutePath());
+  if (!dir.exists()) {
+    return {};
+  }
+  const QString want_name = want_info.fileName().toLower();
+  const QStringList files = dir.entryList(QDir::Files | QDir::NoDotAndDotDot, QDir::Name);
+  for (const QString& f : files) {
+    if (f.toLower() == want_name) {
+      return dir.filePath(f);
+    }
+  }
+  return {};
+}
+
+[[nodiscard]] QString companion_path_with_ext(const QString& model_path, const QString& ext) {
+  const QFileInfo info(model_path);
+  if (!info.exists()) {
+    return {};
+  }
+  const QString candidate = QDir(info.absolutePath()).filePath(info.completeBaseName() + ext);
+  if (QFileInfo::exists(candidate)) {
+    return candidate;
+  }
+  return find_case_insensitive_sibling(candidate);
+}
+
+[[nodiscard]] QString resolve_glm_gla_path(const QString& glm_path, const QString& anim_name_hint) {
+  const QFileInfo model_info(glm_path);
+  const QDir model_dir(model_info.absolutePath());
+  if (!model_dir.exists()) {
+    return {};
+  }
+
+  QVector<QString> candidates;
+  candidates.reserve(8);
+
+  const auto add_candidate = [&](const QString& p) {
+    if (!p.isEmpty()) {
+      candidates.push_back(QDir::cleanPath(p));
+    }
+  };
+
+  add_candidate(model_dir.filePath(model_info.completeBaseName() + ".gla"));
+
+  QString anim = anim_name_hint.trimmed();
+  anim.replace('\\', '/');
+  while (anim.startsWith('/')) {
+    anim.remove(0, 1);
+  }
+  if (!anim.isEmpty()) {
+    if (!anim.endsWith(".gla", Qt::CaseInsensitive)) {
+      anim += ".gla";
+    }
+    add_candidate(model_dir.filePath(anim));
+    add_candidate(model_dir.filePath(QFileInfo(anim).fileName()));
+  }
+
+  for (const QString& p : candidates) {
+    if (QFileInfo::exists(p)) {
+      return p;
+    }
+    const QString ci = find_case_insensitive_sibling(p);
+    if (!ci.isEmpty()) {
+      return ci;
+    }
+  }
+  return {};
+}
+
+constexpr float kShortToAngle = 360.0f / 65536.0f;
+
+[[nodiscard]] float short_to_angle(qint16 value) {
+  return static_cast<float>(value) * kShortToAngle;
+}
+
+[[nodiscard]] QVector3D local_angle_vector(float pitch_deg, float yaw_deg) {
+  const float yaw = yaw_deg * static_cast<float>(M_PI * 2.0 / 360.0);
+  const float pitch = pitch_deg * static_cast<float>(M_PI * 2.0 / 360.0);
+  const float sy = std::sin(yaw);
+  const float cy = std::cos(yaw);
+  const float sp = std::sin(pitch);
+  const float cp = std::cos(pitch);
+  return QVector3D(cp * cy, cp * sy, -sp);
+}
+
+struct BoneTransform {
+  QVector3D row0 = QVector3D(1.0f, 0.0f, 0.0f);
+  QVector3D row1 = QVector3D(0.0f, 1.0f, 0.0f);
+  QVector3D row2 = QVector3D(0.0f, 0.0f, 1.0f);
+  QVector3D translation = QVector3D(0.0f, 0.0f, 0.0f);
+  bool valid = false;
+};
+
+void angles_to_axis(float pitch_deg, float yaw_deg, float roll_deg, QVector3D* axis0, QVector3D* axis1, QVector3D* axis2) {
+  if (!axis0 || !axis1 || !axis2) {
+    return;
+  }
+
+  const float yaw = yaw_deg * static_cast<float>(M_PI * 2.0 / 360.0);
+  const float pitch = pitch_deg * static_cast<float>(M_PI * 2.0 / 360.0);
+  const float roll = roll_deg * static_cast<float>(M_PI * 2.0 / 360.0);
+
+  const float sy = std::sin(yaw);
+  const float cy = std::cos(yaw);
+  const float sp = std::sin(pitch);
+  const float cp = std::cos(pitch);
+  const float sr = std::sin(roll);
+  const float cr = std::cos(roll);
+
+  QVector3D forward(cp * cy, cp * sy, -sp);
+  QVector3D right((-sr * sp * cy) + (-cr * -sy), (-sr * sp * sy) + (-cr * cy), -sr * cp);
+  QVector3D up((cr * sp * cy) + (-sr * -sy), (cr * sp * sy) + (-sr * cy), cr * cp);
+
+  *axis0 = forward;
+  *axis1 = -right;
+  *axis2 = up;
+}
+
+[[nodiscard]] QVector3D transform_point(const BoneTransform& bone, const QVector3D& p) {
+  return QVector3D(QVector3D::dotProduct(bone.row0, p) + bone.translation.x(),
+                   QVector3D::dotProduct(bone.row1, p) + bone.translation.y(),
+                   QVector3D::dotProduct(bone.row2, p) + bone.translation.z());
+}
+
+[[nodiscard]] QVector3D transform_direction(const BoneTransform& bone, const QVector3D& n) {
+  return QVector3D(QVector3D::dotProduct(bone.row0, n), QVector3D::dotProduct(bone.row1, n), QVector3D::dotProduct(bone.row2, n));
+}
+
+[[nodiscard]] bool load_mdx_bind_transforms(const QString& mdx_path, QVector<BoneTransform>* out_bones, int* out_num_frames, QString* error) {
+  if (error) {
+    error->clear();
+  }
+  if (out_bones) {
+    out_bones->clear();
+  }
+  if (out_num_frames) {
+    *out_num_frames = 1;
+  }
+
+  QFile f(mdx_path);
+  if (!f.open(QIODevice::ReadOnly)) {
+    if (error) {
+      *error = "Unable to open MDX.";
+    }
+    return false;
+  }
+  const QByteArray bytes = f.readAll();
+  if (bytes.size() < 96) {
+    if (error) {
+      *error = "MDX header is incomplete.";
+    }
+    return false;
+  }
+
+  constexpr quint32 kMdxIdent = 0x5758444Du;  // "MDXW"
+  constexpr qint32 kMdxVersion = 2;
+
+  quint32 ident = 0;
+  qint32 version = 0;
+  qint32 num_frames = 0;
+  qint32 num_bones = 0;
+  qint32 ofs_frames = 0;
+  qint32 ofs_bones = 0;
+  qint32 torso_parent = 0;
+  qint32 ofs_end = 0;
+
+  if (!read_u32_at(bytes, 0, &ident) || !read_i32_at(bytes, 4, &version) || !read_i32_at(bytes, 72, &num_frames) ||
+      !read_i32_at(bytes, 76, &num_bones) || !read_i32_at(bytes, 80, &ofs_frames) || !read_i32_at(bytes, 84, &ofs_bones) ||
+      !read_i32_at(bytes, 88, &torso_parent) || !read_i32_at(bytes, 92, &ofs_end)) {
+    if (error) {
+      *error = "MDX header is incomplete.";
+    }
+    return false;
+  }
+  (void)torso_parent;
+
+  if (ident != kMdxIdent || version != kMdxVersion) {
+    if (error) {
+      *error = "Not a supported MDX (expected MDXW v2).";
+    }
+    return false;
+  }
+
+  if (num_frames <= 0 || num_frames > 10000 || num_bones <= 0 || num_bones > 2048) {
+    if (error) {
+      *error = "MDX header values are invalid.";
+    }
+    return false;
+  }
+  if (ofs_end <= 0 || ofs_end > bytes.size()) {
+    if (error) {
+      *error = "MDX EOF offset is invalid.";
+    }
+    return false;
+  }
+
+  constexpr int kMdxBoneInfoBytes = 80;
+  constexpr int kMdxFrameBytes = 52;
+  constexpr int kMdxBoneFrameCompressedBytes = 12;
+
+  const qint64 bone_info_bytes = static_cast<qint64>(num_bones) * kMdxBoneInfoBytes;
+  if (!bytes_range_ok(bytes, ofs_bones, bone_info_bytes)) {
+    if (error) {
+      *error = "MDX bone info table is out of bounds.";
+    }
+    return false;
+  }
+
+  const qint64 frame_stride = static_cast<qint64>(kMdxFrameBytes) + static_cast<qint64>(num_bones) * kMdxBoneFrameCompressedBytes;
+  if (frame_stride <= 0 || !bytes_range_ok(bytes, ofs_frames, frame_stride)) {
+    if (error) {
+      *error = "MDX frame data is out of bounds.";
+    }
+    return false;
+  }
+
+  struct BoneInfo {
+    int parent = -1;
+    float parent_dist = 0.0f;
+  };
+
+  QVector<BoneInfo> info;
+  info.resize(num_bones);
+  for (int i = 0; i < num_bones; ++i) {
+    const int bo = ofs_bones + i * kMdxBoneInfoBytes;
+    qint32 parent = -1;
+    float parent_dist = 0.0f;
+    if (!read_i32_at(bytes, bo + 64, &parent) || !read_f32_at(bytes, bo + 72, &parent_dist)) {
+      if (error) {
+        *error = "MDX bone info is incomplete.";
+      }
+      return false;
+    }
+    info[i].parent = parent;
+    info[i].parent_dist = parent_dist;
+  }
+
+  QVector3D parent_offset(0.0f, 0.0f, 0.0f);
+  if (!read_f32_at(bytes, ofs_frames + 40, &parent_offset[0]) || !read_f32_at(bytes, ofs_frames + 44, &parent_offset[1]) ||
+      !read_f32_at(bytes, ofs_frames + 48, &parent_offset[2])) {
+    if (error) {
+      *error = "MDX frame parent offset is incomplete.";
+    }
+    return false;
+  }
+
+  const int bones_off = ofs_frames + kMdxFrameBytes;
+  QVector<BoneTransform> bones;
+  bones.resize(num_bones);
+  QVector<int> state(num_bones, 0);
+
+  std::function<bool(int)> build_bone = [&](int bone_index) -> bool {
+    if (bone_index < 0 || bone_index >= num_bones) {
+      return false;
+    }
+    if (state[bone_index] == 2) {
+      return bones[bone_index].valid;
+    }
+    if (state[bone_index] == 1) {
+      return false;
+    }
+    state[bone_index] = 1;
+
+    const int co = bones_off + bone_index * kMdxBoneFrameCompressedBytes;
+    qint16 a0 = 0, a1 = 0, a2 = 0;
+    qint16 ofs_pitch = 0, ofs_yaw = 0;
+    if (!read_i16_at(bytes, co + 0, &a0) || !read_i16_at(bytes, co + 2, &a1) || !read_i16_at(bytes, co + 4, &a2) ||
+        !read_i16_at(bytes, co + 8, &ofs_pitch) || !read_i16_at(bytes, co + 10, &ofs_yaw)) {
+      state[bone_index] = 2;
+      bones[bone_index].valid = false;
+      return false;
+    }
+
+    BoneTransform b;
+    angles_to_axis(short_to_angle(a0), short_to_angle(a1), short_to_angle(a2), &b.row0, &b.row1, &b.row2);
+
+    const int parent = info[bone_index].parent;
+    if (parent >= 0 && parent < num_bones && build_bone(parent) && bones[parent].valid) {
+      const QVector3D dir = local_angle_vector(short_to_angle(ofs_pitch), short_to_angle(ofs_yaw));
+      b.translation = bones[parent].translation + dir * info[bone_index].parent_dist;
+    } else {
+      b.translation = parent_offset;
+    }
+
+    b.valid = true;
+    bones[bone_index] = b;
+    state[bone_index] = 2;
+    return true;
+  };
+
+  for (int i = 0; i < num_bones; ++i) {
+    (void)build_bone(i);
+  }
+
+  if (out_bones) {
+    *out_bones = std::move(bones);
+  }
+  if (out_num_frames) {
+    *out_num_frames = num_frames;
+  }
+  return true;
+}
+
+[[nodiscard]] bool load_mdxa_base_transforms(const QString& mdxa_path, QVector<BoneTransform>* out_bones, QString* error) {
+  if (error) {
+    error->clear();
+  }
+  if (out_bones) {
+    out_bones->clear();
+  }
+
+  QFile f(mdxa_path);
+  if (!f.open(QIODevice::ReadOnly)) {
+    if (error) {
+      *error = "Unable to open GLA.";
+    }
+    return false;
+  }
+  const QByteArray bytes = f.readAll();
+  if (bytes.size() < 100) {
+    if (error) {
+      *error = "GLA header is incomplete.";
+    }
+    return false;
+  }
+
+  constexpr quint32 kMdxaIdent = 0x41474C32u;  // "2LGA"
+  constexpr qint32 kMdxaVersion = 6;
+
+  quint32 ident = 0;
+  qint32 version = 0;
+  qint32 num_bones = 0;
+  qint32 ofs_skel = 0;
+  qint32 ofs_end = 0;
+
+  if (!read_u32_at(bytes, 0, &ident) || !read_i32_at(bytes, 4, &version) || !read_i32_at(bytes, 84, &num_bones) ||
+      !read_i32_at(bytes, 92, &ofs_skel) || !read_i32_at(bytes, 96, &ofs_end)) {
+    if (error) {
+      *error = "GLA header is incomplete.";
+    }
+    return false;
+  }
+
+  if (ident != kMdxaIdent || version != kMdxaVersion) {
+    if (error) {
+      *error = "Not a supported GLA (expected 2LGA v6).";
+    }
+    return false;
+  }
+  if (num_bones <= 0 || num_bones > 2048) {
+    if (error) {
+      *error = "GLA bone count is invalid.";
+    }
+    return false;
+  }
+  if (ofs_end <= 0 || ofs_end > bytes.size()) {
+    if (error) {
+      *error = "GLA EOF offset is invalid.";
+    }
+    return false;
+  }
+
+  int offsets_base = ofs_skel;
+  if (!bytes_range_ok(bytes, offsets_base, static_cast<qint64>(num_bones) * 4)) {
+    offsets_base = 100;  // OpenJK readers historically locate the skeleton offset table right after header.
+  }
+  if (!bytes_range_ok(bytes, offsets_base, static_cast<qint64>(num_bones) * 4)) {
+    if (error) {
+      *error = "GLA skeleton table is out of bounds.";
+    }
+    return false;
+  }
+
+  QVector<BoneTransform> bones;
+  bones.resize(num_bones);
+
+  constexpr int kSkelFixedBytes = 172;  // mdxaSkel_t up to numChildren
+  for (int i = 0; i < num_bones; ++i) {
+    qint32 rel = 0;
+    if (!read_i32_at(bytes, offsets_base + i * 4, &rel)) {
+      continue;
+    }
+    const int bone_off = offsets_base + rel;
+    if (!bytes_range_ok(bytes, bone_off, kSkelFixedBytes)) {
+      continue;
+    }
+
+    BoneTransform b;
+    float m00 = 0.0f, m01 = 0.0f, m02 = 0.0f, tx = 0.0f;
+    float m10 = 0.0f, m11 = 0.0f, m12 = 0.0f, ty = 0.0f;
+    float m20 = 0.0f, m21 = 0.0f, m22 = 0.0f, tz = 0.0f;
+    if (!read_f32_at(bytes, bone_off + 72, &m00) || !read_f32_at(bytes, bone_off + 76, &m01) || !read_f32_at(bytes, bone_off + 80, &m02) ||
+        !read_f32_at(bytes, bone_off + 84, &tx) || !read_f32_at(bytes, bone_off + 88, &m10) || !read_f32_at(bytes, bone_off + 92, &m11) ||
+        !read_f32_at(bytes, bone_off + 96, &m12) || !read_f32_at(bytes, bone_off + 100, &ty) || !read_f32_at(bytes, bone_off + 104, &m20) ||
+        !read_f32_at(bytes, bone_off + 108, &m21) || !read_f32_at(bytes, bone_off + 112, &m22) || !read_f32_at(bytes, bone_off + 116, &tz)) {
+      continue;
+    }
+
+    b.row0 = QVector3D(m00, m01, m02);
+    b.row1 = QVector3D(m10, m11, m12);
+    b.row2 = QVector3D(m20, m21, m22);
+    b.translation = QVector3D(tx, ty, tz);
+    b.valid = true;
+    bones[i] = b;
+  }
+
+  if (out_bones) {
+    *out_bones = std::move(bones);
+  }
+  return true;
+}
+
+std::optional<LoadedModel> load_mdm(const QString& file_path, QString* error) {
+  if (error) {
+    error->clear();
+  }
+
+  QFile f(file_path);
+  if (!f.open(QIODevice::ReadOnly)) {
+    if (error) {
+      *error = "Unable to open MDM.";
+    }
+    return std::nullopt;
+  }
+  const QByteArray bytes = f.readAll();
+  if (bytes.size() < 100) {
+    if (error) {
+      *error = "MDM header is incomplete.";
+    }
+    return std::nullopt;
+  }
+
+  constexpr quint32 kMdmIdent = 0x574D444Du;  // "MDMW"
+  constexpr qint32 kMdmVersion = 3;
+
+  quint32 ident = 0;
+  qint32 version = 0;
+  qint32 num_surfaces = 0;
+  qint32 ofs_surfaces = 0;
+  qint32 num_tags = 0;
+  qint32 ofs_tags = 0;
+  qint32 ofs_end = 0;
+  if (!read_u32_at(bytes, 0, &ident) || !read_i32_at(bytes, 4, &version) || !read_i32_at(bytes, 80, &num_surfaces) ||
+      !read_i32_at(bytes, 84, &ofs_surfaces) || !read_i32_at(bytes, 88, &num_tags) || !read_i32_at(bytes, 92, &ofs_tags) ||
+      !read_i32_at(bytes, 96, &ofs_end)) {
+    if (error) {
+      *error = "MDM header is incomplete.";
+    }
+    return std::nullopt;
+  }
+  (void)num_tags;
+  (void)ofs_tags;
+
+  if (ident != kMdmIdent || version != kMdmVersion) {
+    if (error) {
+      *error = "Not a supported MDM (expected MDMW v3).";
+    }
+    return std::nullopt;
+  }
+  if (num_surfaces <= 0 || num_surfaces > 4096 || ofs_surfaces < 0 || ofs_surfaces >= bytes.size() || ofs_end <= 0 || ofs_end > bytes.size()) {
+    if (error) {
+      *error = "MDM header values are invalid.";
+    }
+    return std::nullopt;
+  }
+
+  QVector<BoneTransform> bones;
+  int frame_count = 1;
+  QString mdx_err;
+  const QString mdx_path = companion_path_with_ext(file_path, ".mdx");
+  if (!mdx_path.isEmpty()) {
+    (void)load_mdx_bind_transforms(mdx_path, &bones, &frame_count, &mdx_err);
+  }
+
+  QVector<ModelVertex> vertices;
+  QVector<std::uint32_t> indices;
+  QVector<ModelSurface> surfaces;
+  surfaces.reserve(num_surfaces);
+
+  int surf_off = ofs_surfaces;
+  for (int s = 0; s < num_surfaces; ++s) {
+    if (!bytes_range_ok(bytes, surf_off, 176)) {
+      break;
+    }
+
+    qint32 surf_ident = 0;
+    qint32 shader_index = 0;
+    qint32 min_lod = 0;
+    qint32 surf_ofs_header = 0;
+    qint32 num_verts = 0;
+    qint32 ofs_verts = 0;
+    qint32 num_tris = 0;
+    qint32 ofs_tris = 0;
+    qint32 ofs_collapse = 0;
+    qint32 num_bone_refs = 0;
+    qint32 ofs_bone_refs = 0;
+    qint32 ofs_surf_end = 0;
+
+    if (!read_i32_at(bytes, surf_off + 0, &surf_ident) || !read_i32_at(bytes, surf_off + 132, &shader_index) || !read_i32_at(bytes, surf_off + 136, &min_lod) ||
+        !read_i32_at(bytes, surf_off + 140, &surf_ofs_header) || !read_i32_at(bytes, surf_off + 144, &num_verts) ||
+        !read_i32_at(bytes, surf_off + 148, &ofs_verts) || !read_i32_at(bytes, surf_off + 152, &num_tris) ||
+        !read_i32_at(bytes, surf_off + 156, &ofs_tris) || !read_i32_at(bytes, surf_off + 160, &ofs_collapse) ||
+        !read_i32_at(bytes, surf_off + 164, &num_bone_refs) || !read_i32_at(bytes, surf_off + 168, &ofs_bone_refs) ||
+        !read_i32_at(bytes, surf_off + 172, &ofs_surf_end)) {
+      break;
+    }
+    (void)surf_ident;
+    (void)shader_index;
+    (void)min_lod;
+    (void)surf_ofs_header;
+    (void)ofs_collapse;
+
+    if (num_verts <= 0 || num_verts > 2'000'000 || num_tris < 0 || num_tris > 4'000'000 || num_bone_refs < 0 || num_bone_refs > 4096 || ofs_surf_end <= 0) {
+      if (error) {
+        *error = "MDM surface values are invalid.";
+      }
+      return std::nullopt;
+    }
+
+    const QString surf_name = read_fixed_latin1_string_at(bytes, surf_off + 4, 64);
+    const QString shader_name = read_fixed_latin1_string_at(bytes, surf_off + 68, 64);
+
+    QVector<int> bone_refs;
+    bone_refs.resize(num_bone_refs);
+    if (!bytes_range_ok(bytes, static_cast<qint64>(surf_off) + ofs_bone_refs, static_cast<qint64>(num_bone_refs) * 4)) {
+      if (error) {
+        *error = "MDM surface bone references are out of bounds.";
+      }
+      return std::nullopt;
+    }
+    for (int i = 0; i < num_bone_refs; ++i) {
+      qint32 ref = 0;
+      (void)read_i32_at(bytes, surf_off + ofs_bone_refs + i * 4, &ref);
+      bone_refs[i] = ref;
+    }
+
+    const int base_vertex = vertices.size();
+    qint64 vptr = static_cast<qint64>(surf_off) + ofs_verts;
+    for (int v = 0; v < num_verts; ++v) {
+      if (!bytes_range_ok(bytes, vptr, 24)) {
+        if (error) {
+          *error = "MDM vertex data is incomplete.";
+        }
+        return std::nullopt;
+      }
+
+      float nx = 0.0f, ny = 0.0f, nz = 1.0f;
+      float tu = 0.0f, tv = 0.0f;
+      qint32 num_weights = 0;
+      (void)read_f32_at(bytes, static_cast<int>(vptr + 0), &nx);
+      (void)read_f32_at(bytes, static_cast<int>(vptr + 4), &ny);
+      (void)read_f32_at(bytes, static_cast<int>(vptr + 8), &nz);
+      (void)read_f32_at(bytes, static_cast<int>(vptr + 12), &tu);
+      (void)read_f32_at(bytes, static_cast<int>(vptr + 16), &tv);
+      (void)read_i32_at(bytes, static_cast<int>(vptr + 20), &num_weights);
+
+      if (num_weights < 0 || num_weights > 128) {
+        if (error) {
+          *error = "MDM vertex has invalid weight count.";
+        }
+        return std::nullopt;
+      }
+
+      const qint64 weight_bytes = static_cast<qint64>(num_weights) * 20;
+      if (!bytes_range_ok(bytes, vptr + 24, weight_bytes)) {
+        if (error) {
+          *error = "MDM vertex weights are incomplete.";
+        }
+        return std::nullopt;
+      }
+
+      const QVector3D src_normal(nx, ny, nz);
+      QVector3D p(0.0f, 0.0f, 0.0f);
+      QVector3D n(0.0f, 0.0f, 0.0f);
+      float total_w = 0.0f;
+
+      for (int w = 0; w < num_weights; ++w) {
+        const int wo = static_cast<int>(vptr + 24 + static_cast<qint64>(w) * 20);
+        qint32 local_bone = -1;
+        float bw = 0.0f;
+        float ox = 0.0f, oy = 0.0f, oz = 0.0f;
+        (void)read_i32_at(bytes, wo + 0, &local_bone);
+        (void)read_f32_at(bytes, wo + 4, &bw);
+        (void)read_f32_at(bytes, wo + 8, &ox);
+        (void)read_f32_at(bytes, wo + 12, &oy);
+        (void)read_f32_at(bytes, wo + 16, &oz);
+
+        if (bw <= 0.0f || local_bone < 0 || local_bone >= bone_refs.size()) {
+          continue;
+        }
+
+        const int global_bone = bone_refs[local_bone];
+        const bool bone_ok = (global_bone >= 0 && global_bone < bones.size() && bones[global_bone].valid);
+        const QVector3D offset(ox, oy, oz);
+        if (bone_ok) {
+          p += transform_point(bones[global_bone], offset) * bw;
+          n += transform_direction(bones[global_bone], src_normal) * bw;
+        } else {
+          p += offset * bw;
+          n += src_normal * bw;
+        }
+        total_w += bw;
+      }
+
+      if (total_w <= 0.0f) {
+        // Fallback: retain deterministic geometry when companion skeleton data is missing.
+        if (num_weights > 0) {
+          float ox = 0.0f, oy = 0.0f, oz = 0.0f;
+          const int wo0 = static_cast<int>(vptr + 24);
+          (void)read_f32_at(bytes, wo0 + 8, &ox);
+          (void)read_f32_at(bytes, wo0 + 12, &oy);
+          (void)read_f32_at(bytes, wo0 + 16, &oz);
+          p = QVector3D(ox, oy, oz);
+        }
+        n = src_normal;
+      }
+
+      if (n.lengthSquared() < 1e-12f) {
+        n = QVector3D(0.0f, 0.0f, 1.0f);
+      } else {
+        n.normalize();
+      }
+
+      ModelVertex mv;
+      mv.px = p.x();
+      mv.py = p.y();
+      mv.pz = p.z();
+      mv.nx = n.x();
+      mv.ny = n.y();
+      mv.nz = n.z();
+      mv.u = tu;
+      mv.v = 1.0f - tv;
+      vertices.push_back(mv);
+
+      vptr += 24 + weight_bytes;
+    }
+
+    const int tri_off = surf_off + ofs_tris;
+    if (!bytes_range_ok(bytes, tri_off, static_cast<qint64>(num_tris) * 12)) {
+      if (error) {
+        *error = "MDM triangles are out of bounds.";
+      }
+      return std::nullopt;
+    }
+
+    const int first_index = indices.size();
+    for (int t = 0; t < num_tris; ++t) {
+      qint32 i0 = 0, i1 = 0, i2 = 0;
+      const int to = tri_off + t * 12;
+      (void)read_i32_at(bytes, to + 0, &i0);
+      (void)read_i32_at(bytes, to + 4, &i1);
+      (void)read_i32_at(bytes, to + 8, &i2);
+      if (i0 < 0 || i1 < 0 || i2 < 0 || i0 >= num_verts || i1 >= num_verts || i2 >= num_verts) {
+        continue;
+      }
+      indices.push_back(static_cast<std::uint32_t>(base_vertex + i0));
+      indices.push_back(static_cast<std::uint32_t>(base_vertex + i1));
+      indices.push_back(static_cast<std::uint32_t>(base_vertex + i2));
+    }
+
+    const int index_count = indices.size() - first_index;
+    if (index_count > 0) {
+      ModelSurface ms;
+      ms.name = surf_name;
+      ms.shader = shader_name;
+      ms.first_index = first_index;
+      ms.index_count = index_count;
+      surfaces.push_back(std::move(ms));
+    }
+
+    surf_off += ofs_surf_end;
+    if (surf_off <= 0 || surf_off > ofs_end) {
+      break;
+    }
+  }
+
+  if (vertices.isEmpty() || indices.isEmpty()) {
+    if (error) {
+      *error = "MDM contains no drawable geometry.";
+    }
+    return std::nullopt;
+  }
+  if (surfaces.isEmpty()) {
+    surfaces = {ModelSurface{QString("model"), QString(), 0, static_cast<int>(indices.size())}};
+  }
+
+  LoadedModel out;
+  out.format = "mdm";
+  out.frame_count = frame_count;
+  out.surface_count = std::max(1, static_cast<int>(surfaces.size()));
+  out.mesh.vertices = std::move(vertices);
+  out.mesh.indices = std::move(indices);
+  out.surfaces = std::move(surfaces);
+  compute_bounds(&out.mesh);
+  return out;
+}
+
+std::optional<LoadedModel> load_glm(const QString& file_path, QString* error) {
+  if (error) {
+    error->clear();
+  }
+
+  QFile f(file_path);
+  if (!f.open(QIODevice::ReadOnly)) {
+    if (error) {
+      *error = "Unable to open GLM.";
+    }
+    return std::nullopt;
+  }
+  const QByteArray bytes = f.readAll();
+  if (bytes.size() < 164) {
+    if (error) {
+      *error = "GLM header is incomplete.";
+    }
+    return std::nullopt;
+  }
+
+  constexpr quint32 kMdxmIdent = 0x4D474C32u;  // "2LGM"
+  constexpr qint32 kMdxmVersion = 6;
+
+  quint32 ident = 0;
+  qint32 version = 0;
+  qint32 num_bones = 0;
+  qint32 num_lods = 0;
+  qint32 ofs_lods = 0;
+  qint32 num_surfaces = 0;
+  qint32 ofs_surf_hierarchy = 0;
+  qint32 ofs_end = 0;
+
+  if (!read_u32_at(bytes, 0, &ident) || !read_i32_at(bytes, 4, &version) || !read_i32_at(bytes, 136, &num_bones) ||
+      !read_i32_at(bytes, 140, &num_lods) || !read_i32_at(bytes, 144, &ofs_lods) || !read_i32_at(bytes, 148, &num_surfaces) ||
+      !read_i32_at(bytes, 152, &ofs_surf_hierarchy) || !read_i32_at(bytes, 156, &ofs_end)) {
+    if (error) {
+      *error = "GLM header is incomplete.";
+    }
+    return std::nullopt;
+  }
+  (void)num_bones;
+
+  if (ident != kMdxmIdent || version != kMdxmVersion) {
+    if (error) {
+      *error = "Not a supported GLM (expected 2LGM v6).";
+    }
+    return std::nullopt;
+  }
+  if (num_lods <= 0 || num_lods > 64 || num_surfaces <= 0 || num_surfaces > 4096 || ofs_lods < 0 || ofs_lods >= bytes.size() || ofs_end <= 0 ||
+      ofs_end > bytes.size()) {
+    if (error) {
+      *error = "GLM header values are invalid.";
+    }
+    return std::nullopt;
+  }
+
+  const QString anim_name = read_fixed_latin1_string_at(bytes, 72, 64);
+
+  QVector<BoneTransform> bones;
+  QString gla_err;
+  const QString gla_path = resolve_glm_gla_path(file_path, anim_name);
+  if (!gla_path.isEmpty()) {
+    (void)load_mdxa_base_transforms(gla_path, &bones, &gla_err);
+  }
+
+  struct SurfaceHierarchyInfo {
+    QString name;
+    QString shader;
+  };
+  QVector<SurfaceHierarchyInfo> hierarchy;
+  hierarchy.resize(num_surfaces);
+
+  if (ofs_surf_hierarchy >= 0 && ofs_surf_hierarchy < bytes.size()) {
+    qint64 hptr = ofs_surf_hierarchy;
+    for (int i = 0; i < num_surfaces; ++i) {
+      if (!bytes_range_ok(bytes, hptr, 144)) {
+        break;
+      }
+      hierarchy[i].name = read_fixed_latin1_string_at(bytes, static_cast<int>(hptr + 0), 64);
+      hierarchy[i].shader = read_fixed_latin1_string_at(bytes, static_cast<int>(hptr + 68), 64);
+
+      qint32 num_children = 0;
+      (void)read_i32_at(bytes, static_cast<int>(hptr + 140), &num_children);
+      if (num_children < 0 || num_children > 10000) {
+        break;
+      }
+      const qint64 step = 144 + static_cast<qint64>(num_children) * 4;
+      if (!bytes_range_ok(bytes, hptr, step)) {
+        break;
+      }
+      hptr += step;
+    }
+  }
+
+  qint32 lod_ofs_end = 0;
+  if (!read_i32_at(bytes, ofs_lods, &lod_ofs_end)) {
+    if (error) {
+      *error = "GLM LOD header is incomplete.";
+    }
+    return std::nullopt;
+  }
+  (void)lod_ofs_end;
+
+  const int lod_offset_table = ofs_lods + 4;
+  if (!bytes_range_ok(bytes, lod_offset_table, static_cast<qint64>(num_surfaces) * 4)) {
+    if (error) {
+      *error = "GLM LOD surface offset table is invalid.";
+    }
+    return std::nullopt;
+  }
+
+  QVector<ModelVertex> vertices;
+  QVector<std::uint32_t> indices;
+  QVector<ModelSurface> surfaces;
+  surfaces.reserve(num_surfaces);
+
+  for (int s = 0; s < num_surfaces; ++s) {
+    qint32 rel_surf = 0;
+    (void)read_i32_at(bytes, lod_offset_table + s * 4, &rel_surf);
+    const int surf_off = ofs_lods + rel_surf;
+    if (!bytes_range_ok(bytes, surf_off, 40)) {
+      continue;
+    }
+
+    qint32 surf_ident = 0;
+    qint32 this_surface_index = s;
+    qint32 surf_ofs_header = 0;
+    qint32 num_verts = 0;
+    qint32 ofs_verts = 0;
+    qint32 num_tris = 0;
+    qint32 ofs_tris = 0;
+    qint32 num_bone_refs = 0;
+    qint32 ofs_bone_refs = 0;
+    qint32 ofs_surf_end = 0;
+
+    if (!read_i32_at(bytes, surf_off + 0, &surf_ident) || !read_i32_at(bytes, surf_off + 4, &this_surface_index) ||
+        !read_i32_at(bytes, surf_off + 8, &surf_ofs_header) || !read_i32_at(bytes, surf_off + 12, &num_verts) ||
+        !read_i32_at(bytes, surf_off + 16, &ofs_verts) || !read_i32_at(bytes, surf_off + 20, &num_tris) ||
+        !read_i32_at(bytes, surf_off + 24, &ofs_tris) || !read_i32_at(bytes, surf_off + 28, &num_bone_refs) ||
+        !read_i32_at(bytes, surf_off + 32, &ofs_bone_refs) || !read_i32_at(bytes, surf_off + 36, &ofs_surf_end)) {
+      continue;
+    }
+    (void)surf_ident;
+    (void)surf_ofs_header;
+    (void)ofs_surf_end;
+
+    if (num_verts <= 0 || num_verts > 2'000'000 || num_tris < 0 || num_tris > 4'000'000 || num_bone_refs < 0 || num_bone_refs > 4096) {
+      continue;
+    }
+
+    const qint64 verts_off = static_cast<qint64>(surf_off) + ofs_verts;
+    const qint64 verts_bytes = static_cast<qint64>(num_verts) * 32;
+    if (!bytes_range_ok(bytes, verts_off, verts_bytes)) {
+      continue;
+    }
+    const qint64 tex_off = verts_off + verts_bytes;
+    if (!bytes_range_ok(bytes, tex_off, static_cast<qint64>(num_verts) * 8)) {
+      continue;
+    }
+
+    QVector<int> bone_refs;
+    bone_refs.resize(num_bone_refs);
+    if (bytes_range_ok(bytes, static_cast<qint64>(surf_off) + ofs_bone_refs, static_cast<qint64>(num_bone_refs) * 4)) {
+      for (int i = 0; i < num_bone_refs; ++i) {
+        qint32 ref = 0;
+        (void)read_i32_at(bytes, surf_off + ofs_bone_refs + i * 4, &ref);
+        bone_refs[i] = ref;
+      }
+    } else {
+      bone_refs.clear();
+    }
+
+    const int base_vertex = vertices.size();
+    for (int v = 0; v < num_verts; ++v) {
+      const int vo = static_cast<int>(verts_off + static_cast<qint64>(v) * 32);
+      const int to = static_cast<int>(tex_off + static_cast<qint64>(v) * 8);
+
+      float nx = 0.0f, ny = 0.0f, nz = 1.0f;
+      float px = 0.0f, py = 0.0f, pz = 0.0f;
+      quint32 packed = 0;
+      (void)read_f32_at(bytes, vo + 0, &nx);
+      (void)read_f32_at(bytes, vo + 4, &ny);
+      (void)read_f32_at(bytes, vo + 8, &nz);
+      (void)read_f32_at(bytes, vo + 12, &px);
+      (void)read_f32_at(bytes, vo + 16, &py);
+      (void)read_f32_at(bytes, vo + 20, &pz);
+      (void)read_u32_at(bytes, vo + 24, &packed);
+
+      const auto* bwp = reinterpret_cast<const unsigned char*>(bytes.constData() + vo + 28);
+      const quint8 bw[4] = {bwp[0], bwp[1], bwp[2], bwp[3]};
+
+      const QVector3D src_pos(px, py, pz);
+      const QVector3D src_nrm(nx, ny, nz);
+      QVector3D out_pos = src_pos;
+      QVector3D out_nrm = src_nrm;
+
+      if (!bones.isEmpty() && !bone_refs.isEmpty()) {
+        const int nweights = std::clamp(static_cast<int>((packed >> 30) & 0x3) + 1, 1, 4);
+        float total_w = 0.0f;
+        QVector3D p(0.0f, 0.0f, 0.0f);
+        QVector3D n(0.0f, 0.0f, 0.0f);
+        for (int wi = 0; wi < nweights; ++wi) {
+          float w = 0.0f;
+          if (wi == nweights - 1) {
+            w = std::max(0.0f, 1.0f - total_w);
+          } else {
+            int packed_w = static_cast<int>(bw[wi]);
+            packed_w |= static_cast<int>((packed >> (12 + wi * 2)) & 0x300u);
+            w = static_cast<float>(packed_w) * (1.0f / 1023.0f);
+            total_w += w;
+          }
+          if (w <= 0.0f) {
+            continue;
+          }
+
+          const int local_ref = static_cast<int>((packed >> (wi * 5)) & 0x1Fu);
+          if (local_ref < 0 || local_ref >= bone_refs.size()) {
+            continue;
+          }
+          const int global_bone = bone_refs[local_ref];
+          if (global_bone < 0 || global_bone >= bones.size() || !bones[global_bone].valid) {
+            continue;
+          }
+
+          p += transform_point(bones[global_bone], src_pos) * w;
+          n += transform_direction(bones[global_bone], src_nrm) * w;
+        }
+        if (p.lengthSquared() > 0.0f) {
+          out_pos = p;
+        }
+        if (n.lengthSquared() > 1e-12f) {
+          out_nrm = n.normalized();
+        }
+      }
+
+      float tu = 0.0f, tv = 0.0f;
+      (void)read_f32_at(bytes, to + 0, &tu);
+      (void)read_f32_at(bytes, to + 4, &tv);
+
+      ModelVertex mv;
+      mv.px = out_pos.x();
+      mv.py = out_pos.y();
+      mv.pz = out_pos.z();
+      mv.nx = out_nrm.x();
+      mv.ny = out_nrm.y();
+      mv.nz = out_nrm.z();
+      mv.u = tu;
+      mv.v = 1.0f - tv;
+      vertices.push_back(mv);
+    }
+
+    const int tri_off = surf_off + ofs_tris;
+    if (!bytes_range_ok(bytes, tri_off, static_cast<qint64>(num_tris) * 12)) {
+      continue;
+    }
+
+    const int first_index = indices.size();
+    for (int t = 0; t < num_tris; ++t) {
+      qint32 i0 = 0, i1 = 0, i2 = 0;
+      const int to = tri_off + t * 12;
+      (void)read_i32_at(bytes, to + 0, &i0);
+      (void)read_i32_at(bytes, to + 4, &i1);
+      (void)read_i32_at(bytes, to + 8, &i2);
+      if (i0 < 0 || i1 < 0 || i2 < 0 || i0 >= num_verts || i1 >= num_verts || i2 >= num_verts) {
+        continue;
+      }
+      indices.push_back(static_cast<std::uint32_t>(base_vertex + i0));
+      indices.push_back(static_cast<std::uint32_t>(base_vertex + i1));
+      indices.push_back(static_cast<std::uint32_t>(base_vertex + i2));
+    }
+
+    const int index_count = indices.size() - first_index;
+    if (index_count > 0) {
+      ModelSurface ms;
+      const int hi = (this_surface_index >= 0 && this_surface_index < hierarchy.size()) ? this_surface_index : s;
+      ms.name = (hi >= 0 && hi < hierarchy.size()) ? hierarchy[hi].name : QString("surface%1").arg(s);
+      ms.shader = (hi >= 0 && hi < hierarchy.size()) ? hierarchy[hi].shader : QString();
+      ms.first_index = first_index;
+      ms.index_count = index_count;
+      surfaces.push_back(std::move(ms));
+    }
+  }
+
+  if (vertices.isEmpty() || indices.isEmpty()) {
+    if (error) {
+      *error = "GLM contains no drawable geometry.";
+    }
+    return std::nullopt;
+  }
+  if (surfaces.isEmpty()) {
+    surfaces = {ModelSurface{QString("model"), QString(), 0, static_cast<int>(indices.size())}};
+  }
+
+  LoadedModel out;
+  out.format = "glm";
+  out.frame_count = 1;
+  out.surface_count = std::max(1, static_cast<int>(surfaces.size()));
+  out.mesh.vertices = std::move(vertices);
+  out.mesh.indices = std::move(indices);
+  out.surfaces = std::move(surfaces);
   compute_bounds(&out.mesh);
   return out;
 }
@@ -3273,6 +4347,12 @@ std::optional<LoadedModel> load_model_file(const QString& file_path, QString* er
   }
   if (ext == "md3") {
     return load_md3(info.absoluteFilePath(), error);
+  }
+  if (ext == "mdm") {
+    return load_mdm(info.absoluteFilePath(), error);
+  }
+  if (ext == "glm") {
+    return load_glm(info.absoluteFilePath(), error);
   }
   if (ext == "iqm") {
     return load_iqm(info.absoluteFilePath(), error);

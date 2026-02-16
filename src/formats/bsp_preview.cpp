@@ -23,7 +23,18 @@ struct BspLump {
 struct BspHeader {
   QString magic;
   int version = 0;
+  int lump_count = 0;
   QVector<BspLump> lumps;
+  BspFamily family = BspFamily::Unknown;
+  bool q1_bsp2 = false;
+  int q3_textures_lump = -1;
+  int q3_vertices_lump = -1;
+  int q3_meshverts_lump = -1;
+  int q3_faces_lump = -1;
+  int q3_lightmaps_lump = -1;
+  int q3_vertex_stride = 44;
+  int q3_texture_stride = 72;
+  int q3_face_stride = 104;
 };
 
 struct Vec3 {
@@ -49,13 +60,33 @@ struct Tri {
 };
 
 constexpr int kQ1Version = 29;
+constexpr int kGoldSrcVersion = 30;
+constexpr int kQ1BetaVersion = 28;
+constexpr int kQ1AlphaVersion = 27;
 constexpr int kQ2Version = 38;
+constexpr int kQ2ExtendedVersion = 41;
 constexpr int kQ3Version = 46;
 constexpr int kQLVersion = 47;
+constexpr int kRavenBspVersion = 1;
+constexpr int kFusionBspVersion = 1;
+constexpr int kFakk2Version = 12;
+constexpr int kEf2DemoVersion = 19;
+constexpr int kEf2Version = 20;
+
+constexpr bool is_q1_release_or_goldsrc_bsp_version(int version) {
+  return version == kQ1Version || version == kGoldSrcVersion;
+}
+
+constexpr bool is_q1_legacy_compatible_bsp_version(int version) {
+  return is_q1_release_or_goldsrc_bsp_version(version) || version == kQ1BetaVersion || version == kQ1AlphaVersion;
+}
 
 constexpr int kQ1LumpCount = 15;
 constexpr int kQ2LumpCount = 19;
 constexpr int kQ3LumpCount = 17;
+constexpr int kQ3ExtendedLumpCount = 18;
+constexpr int kFakk2LumpCount = 20;
+constexpr int kEf2LumpCount = 30;
 
 enum Q1Lump {
   Q1_ENTITIES = 0,
@@ -116,6 +147,116 @@ enum Q3Lump {
   Q3_LIGHTVOLS = 15,
   Q3_VISDATA = 16,
 };
+
+bool classify_format(const QString& magic, int version, int file_size, BspHeader* out, QString* error) {
+  if (!out) {
+    return false;
+  }
+
+  out->family = BspFamily::Unknown;
+  out->lump_count = 0;
+  out->q1_bsp2 = false;
+  out->q3_textures_lump = -1;
+  out->q3_vertices_lump = -1;
+  out->q3_meshverts_lump = -1;
+  out->q3_faces_lump = -1;
+  out->q3_lightmaps_lump = -1;
+  out->q3_vertex_stride = 44;
+  out->q3_texture_stride = 72;
+  out->q3_face_stride = 104;
+
+  auto set_q3_layout = [&](int lump_count,
+                           int textures,
+                           int vertices,
+                           int meshverts,
+                           int faces,
+                           int lightmaps,
+                           int vertex_stride,
+                           int texture_stride,
+                           int face_stride) {
+    out->family = BspFamily::Quake3;
+    out->lump_count = lump_count;
+    out->q3_textures_lump = textures;
+    out->q3_vertices_lump = vertices;
+    out->q3_meshverts_lump = meshverts;
+    out->q3_faces_lump = faces;
+    out->q3_lightmaps_lump = lightmaps;
+    out->q3_vertex_stride = vertex_stride;
+    out->q3_texture_stride = texture_stride;
+    out->q3_face_stride = face_stride;
+  };
+
+  if (magic == "BSP2" || magic == "2PSB") {
+    out->family = BspFamily::Quake1;
+    out->lump_count = kQ1LumpCount;
+    out->q1_bsp2 = true;
+    return true;
+  }
+
+  if (magic == "IBSP" || magic == "Q1BS") {
+    const bool q1_ok = (magic == "IBSP")
+                         ? is_q1_release_or_goldsrc_bsp_version(version)
+                         : is_q1_legacy_compatible_bsp_version(version);
+    if (q1_ok) {
+      out->family = BspFamily::Quake1;
+      out->lump_count = kQ1LumpCount;
+      return true;
+    }
+    if (magic == "Q1BS") {
+      if (error) {
+        *error = QString("Unsupported Quake-family BSP version %1.").arg(QString::number(version));
+      }
+      return false;
+    }
+    if (version == kQ2Version || version == kQ2ExtendedVersion) {
+      out->family = BspFamily::Quake2;
+      out->lump_count = kQ2LumpCount;
+      return true;
+    }
+    if (version == kQ3Version || version == kQLVersion) {
+      set_q3_layout(kQ3LumpCount, Q3_TEXTURES, Q3_VERTICES, Q3_MESHVERTS, Q3_FACES, Q3_LIGHTMAPS, 44, 72, 104);
+      return true;
+    }
+  }
+
+  if (magic == "QBSP" && version == kQ2Version) {
+    out->family = BspFamily::Quake2;
+    out->lump_count = kQ2LumpCount;
+    return true;
+  }
+
+  if (magic == "RBSP" && version == kRavenBspVersion) {
+    const int lump_count = (file_size >= (8 + kQ3ExtendedLumpCount * 8)) ? kQ3ExtendedLumpCount : kQ3LumpCount;
+    set_q3_layout(lump_count, Q3_TEXTURES, Q3_VERTICES, Q3_MESHVERTS, Q3_FACES, Q3_LIGHTMAPS, 44, 72, 104);
+    return true;
+  }
+
+  if (magic == "FBSP" && version == kFusionBspVersion) {
+    const int lump_count = (file_size >= (8 + kQ3ExtendedLumpCount * 8)) ? kQ3ExtendedLumpCount : kQ3LumpCount;
+    set_q3_layout(lump_count, Q3_TEXTURES, Q3_VERTICES, Q3_MESHVERTS, Q3_FACES, Q3_LIGHTMAPS, 80, 72, 148);
+    return true;
+  }
+
+  if (magic == "FAKK" && version == kFakk2Version) {
+    set_q3_layout(kFakk2LumpCount, 0, 4, 5, 3, 2, 44, 76, 108);
+    return true;
+  }
+
+  if (magic == "FAKK" && version == kEf2DemoVersion) {
+    set_q3_layout(kEf2LumpCount, 0, 6, 7, 5, 2, 44, 76, 132);
+    return true;
+  }
+
+  if (magic == "EF2!" && version == kEf2Version) {
+    set_q3_layout(kEf2LumpCount, 0, 6, 7, 5, 2, 44, 76, 132);
+    return true;
+  }
+
+  if (error) {
+    *error = QString("Unsupported BSP format: %1 version %2").arg(magic, QString::number(version));
+  }
+  return false;
+}
 
 bool read_bytes(const QByteArray& data, int offset, void* dst, int size) {
   if (offset < 0 || size < 0 || offset + size > data.size()) {
@@ -278,66 +419,113 @@ bool parse_header(const QByteArray& data, BspHeader* out, QString* error) {
     }
     return false;
   }
-  char magic[5]{};
-  if (!read_bytes(data, 0, magic, 4)) {
+  auto parse_lumps = [&](BspHeader* h, int lumps_offset, QString* err) -> bool {
+    if (!h) {
+      return false;
+    }
+    const int lump_count = h->lump_count;
+    if (lump_count <= 0) {
+      if (err) {
+        *err = QString("Unsupported BSP format: %1 version %2").arg(h->magic, QString::number(h->version));
+      }
+      return false;
+    }
+    const int header_size = lumps_offset + lump_count * 8;
+    if (data.size() < header_size) {
+      if (err) {
+        *err = "Truncated BSP header.";
+      }
+      return false;
+    }
+
+    QVector<BspLump> lumps;
+    lumps.reserve(lump_count);
+    int offset = lumps_offset;
+    for (int i = 0; i < lump_count; ++i) {
+      bool ok1 = false;
+      bool ok2 = false;
+      const int lofs = read_i32_le(data, offset, &ok1);
+      const int llen = read_i32_le(data, offset + 4, &ok2);
+      if (!ok1 || !ok2) {
+        if (err) {
+          *err = "Failed to parse BSP lumps.";
+        }
+        return false;
+      }
+      lumps.push_back(BspLump{lofs, llen});
+      offset += 8;
+    }
+    h->lumps = std::move(lumps);
+    return true;
+  };
+
+  // First try modern layout: [magic][version][lumps...].
+  char magic_raw[5]{};
+  if (!read_bytes(data, 0, magic_raw, 4)) {
     if (error) {
       *error = "Unable to read BSP header.";
     }
     return false;
   }
-  bool ok = false;
-  const int version = read_i32_le(data, 4, &ok);
-  if (!ok) {
-    if (error) {
-      *error = "Unable to read BSP version.";
-    }
-    return false;
-  }
 
-  int lump_count = 0;
-  if (version == kQ1Version) {
-    lump_count = kQ1LumpCount;
-  } else if (version == kQ2Version) {
-    lump_count = kQ2LumpCount;
-  } else if (version == kQ3Version || version == kQLVersion) {
-    lump_count = kQ3LumpCount;
-  } else {
-    if (error) {
-      *error = QString("Unsupported BSP version: %1").arg(version);
-    }
-    return false;
-  }
-
-  const int header_size = 8 + lump_count * 8;
-  if (data.size() < header_size) {
-    if (error) {
-      *error = "Truncated BSP header.";
-    }
-    return false;
-  }
-
-  QVector<BspLump> lumps;
-  lumps.reserve(lump_count);
-  int offset = 8;
-  for (int i = 0; i < lump_count; ++i) {
-    bool ok1 = false;
-    bool ok2 = false;
-    const int lofs = read_i32_le(data, offset, &ok1);
-    const int llen = read_i32_le(data, offset + 4, &ok2);
-    if (!ok1 || !ok2) {
-      if (error) {
-        *error = "Failed to parse BSP lumps.";
+  const QString header_magic = QString::fromLatin1(magic_raw, 4);
+  if (header_magic == "BSP2" || header_magic == "2PSB") {
+    BspHeader bsp2{};
+    bsp2.magic = header_magic;
+    bsp2.version = 0;
+    QString bsp2_err;
+    if (classify_format(bsp2.magic, bsp2.version, data.size(), &bsp2, &bsp2_err)) {
+      if (parse_lumps(&bsp2, 4, &bsp2_err)) {
+        *out = std::move(bsp2);
+        return true;
       }
-      return false;
     }
-    lumps.push_back(BspLump{lofs, llen});
-    offset += 8;
+    if (error && !bsp2_err.isEmpty()) {
+      *error = bsp2_err;
+    }
   }
 
-  out->magic = QString::fromLatin1(magic, 4);
-  out->version = version;
-  out->lumps = std::move(lumps);
-  return true;
+  bool ok_version_modern = false;
+  const int version_modern = read_i32_le(data, 4, &ok_version_modern);
+  if (ok_version_modern) {
+    BspHeader modern{};
+    modern.magic = QString::fromLatin1(magic_raw, 4);
+    modern.version = version_modern;
+    QString modern_err;
+    if (classify_format(modern.magic, modern.version, data.size(), &modern, &modern_err)) {
+      if (parse_lumps(&modern, 8, &modern_err)) {
+        *out = std::move(modern);
+        return true;
+      }
+    }
+    if (error && !modern_err.isEmpty()) {
+      *error = modern_err;
+    }
+  }
+
+  // Fallback for Quake/GoldSrc classic layout: [version][lumps...].
+  bool ok_version_legacy = false;
+  const int version_legacy = read_i32_le(data, 0, &ok_version_legacy);
+  if (ok_version_legacy && is_q1_legacy_compatible_bsp_version(version_legacy)) {
+    BspHeader legacy{};
+    legacy.magic = "Q1BS";
+    legacy.version = version_legacy;
+    QString legacy_err;
+    if (classify_format(legacy.magic, legacy.version, data.size(), &legacy, &legacy_err)) {
+      if (parse_lumps(&legacy, 4, &legacy_err)) {
+        *out = std::move(legacy);
+        return true;
+      }
+    }
+    if (error && !legacy_err.isEmpty()) {
+      *error = legacy_err;
+    }
+  }
+
+  if (error && error->isEmpty()) {
+    *error = "Unable to parse BSP header.";
+  }
+  return false;
 }
 
 struct Q1TexInfo {
@@ -398,6 +586,11 @@ struct Q2LightSampleSource {
 struct Edge16 {
   quint16 v0 = 0;
   quint16 v1 = 0;
+};
+
+struct Edge32 {
+  int v0 = 0;
+  int v1 = 0;
 };
 
 struct Q3Vertex {
@@ -483,8 +676,9 @@ bool is_sky_texture_name(const QString& name) {
   return false;
 }
 
+template <typename EdgeT>
 float average_light_q1q2(const QVector<Vec3>& verts,
-                         const QVector<Edge16>& edges,
+                         const QVector<EdgeT>& edges,
                          const QVector<int>& surfedges,
                          const QVector<Q1TexInfo>& texinfo,
                          const Q1Face& face,
@@ -505,7 +699,7 @@ float average_light_q1q2(const QVector<Vec3>& verts,
     if (edge_index < 0 || edge_index >= edges.size()) {
       continue;
     }
-    const Edge16& e = edges[edge_index];
+    const EdgeT& e = edges[edge_index];
     const int v_index = (se >= 0) ? e.v0 : e.v1;
     if (v_index < 0 || v_index >= verts.size()) {
       continue;
@@ -598,6 +792,33 @@ QVector<Edge16> parse_q1_edges(const QByteArray& data, const BspLump& lump) {
     Edge16 e;
     e.v0 = static_cast<quint16>(v01 & 0xFFFF);
     e.v1 = static_cast<quint16>((v01 >> 16) & 0xFFFF);
+    out.push_back(e);
+  }
+  return out;
+}
+
+QVector<Edge32> parse_q1_edges_bsp2(const QByteArray& data, const BspLump& lump) {
+  QVector<Edge32> out;
+  const int stride = 8;
+  if (lump.length < stride) {
+    return out;
+  }
+  const int count = lump.length / stride;
+  out.reserve(count);
+  for (int i = 0; i < count; ++i) {
+    const int o = lump.offset + i * stride;
+    bool ok = false;
+    const quint32 v0_u = read_u32_le(data, o + 0, &ok);
+    if (!ok) {
+      break;
+    }
+    const quint32 v1_u = read_u32_le(data, o + 4, &ok);
+    if (!ok) {
+      break;
+    }
+    Edge32 e;
+    e.v0 = static_cast<int>(v0_u);
+    e.v1 = static_cast<int>(v1_u);
     out.push_back(e);
   }
   return out;
@@ -739,6 +960,50 @@ Q1Face f{};
   return out;
 }
 
+QVector<Q1Face> parse_q1_faces_bsp2(const QByteArray& data, const BspLump& lump) {
+  QVector<Q1Face> out;
+  const int stride = 28;
+  if (lump.length < stride) {
+    return out;
+  }
+  const int count = lump.length / stride;
+  out.reserve(count);
+  for (int i = 0; i < count; ++i) {
+    const int o = lump.offset + i * stride;
+    bool ok = false;
+    Q1Face f{};
+    f.plane = read_i32_le(data, o + 0, &ok);
+    if (!ok) {
+      return out;
+    }
+    f.side = read_i32_le(data, o + 4, &ok);
+    if (!ok) {
+      return out;
+    }
+    f.firstedge = read_i32_le(data, o + 8, &ok);
+    if (!ok) {
+      return out;
+    }
+    f.numedges = read_i32_le(data, o + 12, &ok);
+    if (!ok) {
+      return out;
+    }
+    f.texinfo = read_i32_le(data, o + 16, &ok);
+    if (!ok) {
+      return out;
+    }
+    if (!read_bytes(data, o + 20, f.styles, 4)) {
+      return out;
+    }
+    f.lightofs = read_i32_le(data, o + 24, &ok);
+    if (!ok) {
+      return out;
+    }
+    out.push_back(f);
+  }
+  return out;
+}
+
 QVector<Q2Face> parse_q2_faces(const QByteArray& data, const BspLump& lump) {
   QVector<Q2Face> out;
   const int stride = 20;
@@ -809,9 +1074,11 @@ QVector<int> parse_q1_miptex_offsets(const QByteArray& data, const BspLump& lump
   return out;
 }
 
-QVector<Q3Vertex> parse_q3_vertices(const QByteArray& data, const BspLump& lump) {
+QVector<Q3Vertex> parse_q3_vertices(const QByteArray& data, const BspLump& lump, int stride) {
   QVector<Q3Vertex> out;
-  const int stride = 44;
+  if (stride < 28) {
+    return out;
+  }
   if (lump.length < stride) {
     return out;
   }
@@ -873,9 +1140,11 @@ QVector<int> parse_q3_meshverts(const QByteArray& data, const BspLump& lump) {
   return out;
 }
 
-QVector<Q3Face> parse_q3_faces(const QByteArray& data, const BspLump& lump) {
+QVector<Q3Face> parse_q3_faces(const QByteArray& data, const BspLump& lump, int stride) {
   QVector<Q3Face> out;
-  const int stride = 104;
+  if (stride < 104) {
+    return out;
+  }
   if (lump.length < stride) {
     return out;
   }
@@ -994,9 +1263,11 @@ QVector<Q3Face> parse_q3_faces(const QByteArray& data, const BspLump& lump) {
   return out;
 }
 
-QVector<QString> parse_q3_textures(const QByteArray& data, const BspLump& lump) {
+QVector<QString> parse_q3_textures(const QByteArray& data, const BspLump& lump, int stride) {
   QVector<QString> out;
-  const int stride = 72;
+  if (stride < 64) {
+    return out;
+  }
   if (lump.length < stride) {
     return out;
   }
@@ -1754,31 +2025,17 @@ bool build_mesh_from_tris(const QVector<Tri>& tris, BspMesh* out) {
   return true;
 }
 
-QVector<Tri> build_q1_mesh(const QByteArray& data, const BspHeader& header, bool lightmapped, QString* error) {
+template <typename EdgeT>
+QVector<Tri> build_q1_mesh_impl(const QVector<Vec3>& verts,
+                                const QVector<EdgeT>& edges,
+                                const QVector<int>& surfedges,
+                                const QVector<Q1TexInfo>& texinfo,
+                                const QVector<Q1Face>& faces,
+                                const QVector<int>& miptex_offsets,
+                                const QByteArray& tex_lump,
+                                const QByteArray& lightdata,
+                                bool lightmapped) {
   QVector<Tri> tris;
-  if (header.lumps.size() < kQ1LumpCount) {
-    if (error) {
-      *error = "Invalid BSP header.";
-    }
-    return tris;
-  }
-
-  const QVector<Vec3> verts = parse_q1_vertices(data, header.lumps[Q1_VERTICES]);
-  const QVector<Edge16> edges = parse_q1_edges(data, header.lumps[Q1_EDGES]);
-  const QVector<int> surfedges = parse_surfedges(data, header.lumps[Q1_SURFEDGES]);
-  const QVector<Q1TexInfo> texinfo = parse_q1_texinfo(data, header.lumps[Q1_TEXINFO]);
-  const QVector<Q1Face> faces = parse_q1_faces(data, header.lumps[Q1_FACES]);
-  const QVector<int> miptex_offsets = parse_q1_miptex_offsets(data, header.lumps[Q1_TEXTURES]);
-  const QByteArray tex_lump = data.mid(header.lumps[Q1_TEXTURES].offset, header.lumps[Q1_TEXTURES].length);
-  const QByteArray lightdata = data.mid(header.lumps[Q1_LIGHTING].offset, header.lumps[Q1_LIGHTING].length);
-
-  if (verts.isEmpty() || faces.isEmpty() || edges.isEmpty() || surfedges.isEmpty()) {
-    if (error) {
-      *error = "Unable to parse BSP geometry.";
-    }
-    return tris;
-  }
-
   tris.reserve(faces.size() * 2);
 
   for (const Q1Face& f : faces) {
@@ -1804,7 +2061,7 @@ QVector<Tri> build_q1_mesh(const QByteArray& data, const BspHeader& header, bool
       if (edge_index < 0 || edge_index >= edges.size()) {
         continue;
       }
-      const Edge16& e = edges[edge_index];
+      const EdgeT& e = edges[edge_index];
       const int v_index = (se >= 0) ? e.v0 : e.v1;
       if (v_index < 0 || v_index >= verts.size()) {
         continue;
@@ -1842,6 +2099,53 @@ QVector<Tri> build_q1_mesh(const QByteArray& data, const BspHeader& header, bool
     }
   }
   return tris;
+}
+
+QVector<Tri> build_q1_mesh(const QByteArray& data, const BspHeader& header, bool lightmapped, QString* error) {
+  QVector<Tri> tris;
+  if (header.lumps.size() < kQ1LumpCount) {
+    if (error) {
+      *error = "Invalid BSP header.";
+    }
+    return tris;
+  }
+
+  const QVector<Vec3> verts = parse_q1_vertices(data, header.lumps[Q1_VERTICES]);
+  const QVector<int> surfedges = parse_surfedges(data, header.lumps[Q1_SURFEDGES]);
+  const QVector<Q1TexInfo> texinfo = parse_q1_texinfo(data, header.lumps[Q1_TEXINFO]);
+  const QVector<Q1Face> faces = header.q1_bsp2
+                                  ? parse_q1_faces_bsp2(data, header.lumps[Q1_FACES])
+                                  : parse_q1_faces(data, header.lumps[Q1_FACES]);
+  const QVector<int> miptex_offsets = parse_q1_miptex_offsets(data, header.lumps[Q1_TEXTURES]);
+  const QByteArray tex_lump = data.mid(header.lumps[Q1_TEXTURES].offset, header.lumps[Q1_TEXTURES].length);
+  const QByteArray lightdata = data.mid(header.lumps[Q1_LIGHTING].offset, header.lumps[Q1_LIGHTING].length);
+
+  if (verts.isEmpty() || faces.isEmpty() || surfedges.isEmpty()) {
+    if (error) {
+      *error = "Unable to parse BSP geometry.";
+    }
+    return tris;
+  }
+
+  if (header.q1_bsp2) {
+    const QVector<Edge32> edges = parse_q1_edges_bsp2(data, header.lumps[Q1_EDGES]);
+    if (edges.isEmpty()) {
+      if (error) {
+        *error = "Unable to parse BSP geometry.";
+      }
+      return tris;
+    }
+    return build_q1_mesh_impl(verts, edges, surfedges, texinfo, faces, miptex_offsets, tex_lump, lightdata, lightmapped);
+  }
+
+  const QVector<Edge16> edges = parse_q1_edges(data, header.lumps[Q1_EDGES]);
+  if (edges.isEmpty()) {
+    if (error) {
+      *error = "Unable to parse BSP geometry.";
+    }
+    return tris;
+  }
+  return build_q1_mesh_impl(verts, edges, surfedges, texinfo, faces, miptex_offsets, tex_lump, lightdata, lightmapped);
 }
 
 QVector<Tri> build_q2_mesh(const QByteArray& data,
@@ -2109,22 +2413,32 @@ QVector<Tri> build_q3_mesh(const QByteArray& data,
                            QString* error,
                            QVector<QImage>* out_lightmaps = nullptr) {
   QVector<Tri> tris;
-  if (header.lumps.size() < kQ3LumpCount) {
+  if (header.lumps.size() < header.lump_count) {
     if (error) {
       *error = "Invalid BSP header.";
     }
     return tris;
   }
+  if (header.q3_vertices_lump < 0 || header.q3_vertices_lump >= header.lumps.size() ||
+      header.q3_meshverts_lump < 0 || header.q3_meshverts_lump >= header.lumps.size() ||
+      header.q3_faces_lump < 0 || header.q3_faces_lump >= header.lumps.size() ||
+      header.q3_textures_lump < 0 || header.q3_textures_lump >= header.lumps.size() ||
+      header.q3_lightmaps_lump < 0 || header.q3_lightmaps_lump >= header.lumps.size()) {
+    if (error) {
+      *error = "Unsupported BSP lump layout.";
+    }
+    return tris;
+  }
 
-  const QVector<Q3Vertex> verts = parse_q3_vertices(data, header.lumps[Q3_VERTICES]);
-  const QVector<int> meshverts = parse_q3_meshverts(data, header.lumps[Q3_MESHVERTS]);
-  const QVector<Q3Face> faces = parse_q3_faces(data, header.lumps[Q3_FACES]);
-  const QVector<QString> shaders = parse_q3_textures(data, header.lumps[Q3_TEXTURES]);
-  const QVector<QColor> lightmap_colors = parse_q3_lightmap_colors(data, header.lumps[Q3_LIGHTMAPS]);
+  const QVector<Q3Vertex> verts = parse_q3_vertices(data, header.lumps[header.q3_vertices_lump], header.q3_vertex_stride);
+  const QVector<int> meshverts = parse_q3_meshverts(data, header.lumps[header.q3_meshverts_lump]);
+  const QVector<Q3Face> faces = parse_q3_faces(data, header.lumps[header.q3_faces_lump], header.q3_face_stride);
+  const QVector<QString> shaders = parse_q3_textures(data, header.lumps[header.q3_textures_lump], header.q3_texture_stride);
+  const QVector<QColor> lightmap_colors = parse_q3_lightmap_colors(data, header.lumps[header.q3_lightmaps_lump]);
   if (out_lightmaps) {
     out_lightmaps->clear();
     if (lightmapped) {
-      *out_lightmaps = parse_q3_lightmaps(data, header.lumps[Q3_LIGHTMAPS]);
+      *out_lightmaps = parse_q3_lightmaps(data, header.lumps[header.q3_lightmaps_lump]);
     }
   }
 
@@ -2309,21 +2623,17 @@ BspPreviewResult render_bsp_preview_bytes(const QByteArray& bytes,
     return out;
   }
 
-  if (header.magic != "IBSP") {
-    out.error = "Unsupported BSP magic.";
-    return out;
-  }
-
   QVector<Tri> tris;
   const bool lightmapped = (style == BspPreviewStyle::Lightmapped);
-  if (header.version == kQ1Version) {
+  if (header.family == BspFamily::Quake1) {
     tris = build_q1_mesh(bytes, header, lightmapped, &out.error);
-  } else if (header.version == kQ2Version) {
+  } else if (header.family == BspFamily::Quake2) {
     tris = build_q2_mesh(bytes, header, lightmapped, &out.error);
-  } else if (header.version == kQ3Version || header.version == kQLVersion) {
+  } else if (header.family == BspFamily::Quake3) {
     tris = build_q3_mesh(bytes, header, lightmapped, &out.error);
   } else {
-    out.error = QString("Unsupported BSP version: %1").arg(header.version);
+    out.error = QString("Unsupported BSP format: %1 version %2")
+      .arg(header.magic, QString::number(header.version));
     return out;
   }
 
@@ -2396,23 +2706,17 @@ bool load_bsp_mesh_bytes(const QByteArray& bytes,
     return false;
   }
 
-  if (header.magic != "IBSP") {
-    if (error) {
-      *error = "Unsupported BSP magic.";
-    }
-    return false;
-  }
-
   QVector<Tri> tris;
-  if (header.version == kQ1Version) {
+  if (header.family == BspFamily::Quake1) {
     tris = build_q1_mesh(bytes, header, use_lightmap, error);
-  } else if (header.version == kQ2Version) {
+  } else if (header.family == BspFamily::Quake2) {
     tris = build_q2_mesh(bytes, header, use_lightmap, error, &out->lightmaps);
-  } else if (header.version == kQ3Version || header.version == kQLVersion) {
+  } else if (header.family == BspFamily::Quake3) {
     tris = build_q3_mesh(bytes, header, use_lightmap, error, &out->lightmaps);
   } else {
     if (error) {
-      *error = QString("Unsupported BSP version: %1").arg(header.version);
+      *error = QString("Unsupported BSP format: %1 version %2")
+        .arg(header.magic, QString::number(header.version));
     }
     return false;
   }
@@ -2467,7 +2771,8 @@ QHash<QString, QImage> extract_bsp_embedded_textures_bytes(const QByteArray& byt
     return out;
   }
 
-  if (header.magic != "IBSP" || header.version != kQ1Version) {
+  if (header.family != BspFamily::Quake1 ||
+      (!is_q1_legacy_compatible_bsp_version(header.version) && !header.q1_bsp2)) {
     return out;
   }
 
@@ -2543,4 +2848,15 @@ int bsp_version_bytes(const QByteArray& bytes, QString* error) {
     return -1;
   }
   return header.version;
+}
+
+BspFamily bsp_family_bytes(const QByteArray& bytes, QString* error) {
+  if (error) {
+    error->clear();
+  }
+  BspHeader header;
+  if (!parse_header(bytes, &header, error)) {
+    return BspFamily::Unknown;
+  }
+  return header.family;
 }

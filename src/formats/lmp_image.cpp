@@ -7,6 +7,7 @@
 namespace {
 constexpr int kPaletteBytes = 256 * 3;
 constexpr int kQPicHeaderBytes = 8;
+constexpr int kWad3PaletteCountBytes = 2;
 constexpr int kConcharsWidth = 128;
 constexpr int kConcharsHeight = 128;
 constexpr int kColormapWidth = 256;
@@ -19,6 +20,10 @@ constexpr int kPaletteGridRows = 16;
 [[nodiscard]] quint32 read_u32le(const uchar* p) {
   return (static_cast<quint32>(p[0]) | (static_cast<quint32>(p[1]) << 8) | (static_cast<quint32>(p[2]) << 16) |
           (static_cast<quint32>(p[3]) << 24));
+}
+
+[[nodiscard]] quint16 read_u16le(const uchar* p) {
+  return (static_cast<quint16>(p[0]) | (static_cast<quint16>(p[1]) << 8));
 }
 
 [[nodiscard]] bool decode_paletted_indices(const uchar* indices,
@@ -331,24 +336,70 @@ QImage decode_lmp_image(const QByteArray& bytes, const QString& file_name, const
     return {};
   }
 
-  const quint64 want_bytes = static_cast<quint64>(kQPicHeaderBytes) + pixel_count;
-  if (want_bytes > static_cast<quint64>(bytes.size())) {
+  const quint64 qpic_data_end = static_cast<quint64>(kQPicHeaderBytes) + pixel_count;
+  if (qpic_data_end > static_cast<quint64>(bytes.size())) {
     if (error) {
       *error = "LMP image data exceeds file size.";
     }
     return {};
   }
 
+  const auto* indices = data + kQPicHeaderBytes;
+
+  // Half-Life / WAD3-style QPIC stores an embedded 8-bit palette trailer:
+  // [u16 color_count][RGB triples][optional trailing u16].
+  // Prefer this palette when present so GoldSrc .lmp files decode without gfx/palette.lmp.
+  const quint64 remain_after_qpic = static_cast<quint64>(bytes.size()) - qpic_data_end;
+  if (remain_after_qpic >= kWad3PaletteCountBytes) {
+    const auto* pal_hdr = data + qpic_data_end;
+    const quint16 color_count = read_u16le(pal_hdr);
+    if (color_count > 0 && color_count <= 256) {
+      const quint64 pal_bytes = static_cast<quint64>(color_count) * 3ULL;
+      if (remain_after_qpic >= static_cast<quint64>(kWad3PaletteCountBytes) + pal_bytes) {
+        QVector<QRgb> embedded_palette;
+        embedded_palette.resize(256);
+        for (int i = 0; i < 256; ++i) {
+          embedded_palette[i] = qRgba(0, 0, 0, 255);
+        }
+
+        const auto* pal_data = pal_hdr + kWad3PaletteCountBytes;
+        for (int i = 0; i < static_cast<int>(color_count); ++i) {
+          const uchar r = pal_data[i * 3 + 0];
+          const uchar g = pal_data[i * 3 + 1];
+          const uchar b = pal_data[i * 3 + 2];
+          embedded_palette[i] = qRgba(r, g, b, 255);
+        }
+
+        QImage img;
+        QString err;
+        if (!decode_paletted_indices(indices,
+                                     pixel_count,
+                                     static_cast<int>(w_u32),
+                                     static_cast<int>(h_u32),
+                                     embedded_palette,
+                                     /*transparent_index=*/255,
+                                     &img,
+                                     &err)) {
+          if (error) {
+            *error = err.isEmpty() ? "Unable to decode embedded-palette LMP image." : err;
+          }
+          return {};
+        }
+        return img;
+      }
+    }
+  }
+
   if (!palette || palette->size() != 256) {
     if (error) {
-      *error = "LMP images require a 256-color Quake palette (gfx/palette.lmp).";
+      *error = "LMP image requires a palette (embedded WAD3/GoldSrc palette or external gfx/palette.lmp).";
     }
     return {};
   }
 
   QImage img;
   QString err;
-  if (!decode_paletted_indices(data + kQPicHeaderBytes,
+  if (!decode_paletted_indices(indices,
                                pixel_count,
                                static_cast<int>(w_u32),
                                static_cast<int>(h_u32),

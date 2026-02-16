@@ -37,6 +37,31 @@ QString describe_game_set_line(const GameSet& set, bool selected) {
   return line;
 }
 
+QString installation_primary_label(const GameSet& set) {
+  return set.name.isEmpty() ? game_display_name(set.game) : set.name;
+}
+
+bool installation_less(const GameSet* a, const GameSet* b) {
+  if (!a || !b) {
+    return a != nullptr;
+  }
+  const QString a_primary = installation_primary_label(*a);
+  const QString b_primary = installation_primary_label(*b);
+  const int by_primary = QString::compare(a_primary, b_primary, Qt::CaseInsensitive);
+  if (by_primary != 0) {
+    return by_primary < 0;
+  }
+
+  const QString a_game = game_display_name(a->game);
+  const QString b_game = game_display_name(b->game);
+  const int by_game = QString::compare(a_game, b_game, Qt::CaseInsensitive);
+  if (by_game != 0) {
+    return by_game < 0;
+  }
+
+  return QString::compare(a->uid, b->uid, Qt::CaseInsensitive) < 0;
+}
+
 int apply_auto_detect_to_state(GameSetState& state, QStringList* log) {
   const GameAutoDetectResult detected = auto_detect_supported_games();
   if (log) {
@@ -203,7 +228,7 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   parser.addOption(update_repo_option);
   parser.addOption(update_channel_option);
   parser.addOption(output_option);
-  parser.addPositionalArgument("archive", "Path to an archive or folder (PAK/PK3/PK4/PKZ/ZIP/WAD/WAD2/WAD3).");
+  parser.addPositionalArgument("archive", "Path to an archive or folder (PAK/SIN/PK3/PK4/PKZ/ZIP/RESOURCES/WAD/WAD2/WAD3).");
 
   if (!parser.parse(app.arguments())) {
     if (output) {
@@ -319,8 +344,18 @@ int run_cli(const CliOptions& options) {
         out << "No Game Sets configured.\n";
         return 0;
       }
+      QVector<const GameSet*> sorted;
+      sorted.reserve(state.sets.size());
       for (const GameSet& set : state.sets) {
-        out << describe_game_set_line(set, set.uid == state.selected_uid) << "\n";
+        sorted.push_back(&set);
+      }
+      std::sort(sorted.begin(), sorted.end(), installation_less);
+
+      for (const GameSet* set : sorted) {
+        if (!set) {
+          continue;
+        }
+        out << describe_game_set_line(*set, set->uid == state.selected_uid) << "\n";
       }
     }
 

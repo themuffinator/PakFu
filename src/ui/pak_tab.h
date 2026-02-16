@@ -15,6 +15,7 @@
 #include <QUrl>
 
 #include <memory>
+#include <vector>
 
 #include "archive/archive.h"
 #include "game/game_set.h"
@@ -132,9 +133,13 @@ private:
 	void select_adjacent_video(int delta);
   bool mount_wad_from_selected_file(const QString& pak_path, QString* error);
   void unmount_wad();
-  [[nodiscard]] bool is_wad_mounted() const { return wad_mounted_; }
-  [[nodiscard]] const Archive& view_archive() const { return (wad_mounted_ && wad_archive_) ? *wad_archive_ : archive_; }
-  [[nodiscard]] Archive& view_archive_mut() { return (wad_mounted_ && wad_archive_) ? *wad_archive_ : archive_; }
+  [[nodiscard]] bool is_wad_mounted() const { return !mounted_archives_.empty(); }
+  [[nodiscard]] const Archive& view_archive() const {
+    return (is_wad_mounted() && mounted_archives_.back().archive) ? *mounted_archives_.back().archive : archive_;
+  }
+  [[nodiscard]] Archive& view_archive_mut() {
+    return (is_wad_mounted() && mounted_archives_.back().archive) ? *mounted_archives_.back().archive : archive_;
+  }
   bool ensure_quake1_palette(QString* error);
   bool ensure_quake2_palette(QString* error);
   SaveOptions default_save_options_for_current_path() const;
@@ -246,11 +251,13 @@ private:
   int export_seq_ = 1;
   QStringList current_dir_;
   Archive archive_;
-  bool wad_mounted_ = false;
-  std::unique_ptr<Archive> wad_archive_;
-  QString wad_mount_name_;
-  QString wad_mount_fs_path_;
-  QStringList outer_dir_before_wad_mount_;
+  struct MountedArchiveLayer {
+    std::unique_ptr<Archive> archive;
+    QString mount_name;
+    QString mount_fs_path;
+    QStringList outer_dir_before_mount;
+  };
+  std::vector<MountedArchiveLayer> mounted_archives_;
   QVector<AddedFile> added_files_;
   QHash<QString, int> added_index_by_name_;
   QSet<QString> virtual_dirs_;

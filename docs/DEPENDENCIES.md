@@ -9,7 +9,7 @@
   - Network
   - Widgets
   - OpenGL (Qt OpenGL helpers)
-  - OpenGLWidgets (model preview: MDL/MD2/MD3/IQM/MD5/LWO/OBJ)
+  - OpenGLWidgets (model preview: MDL/MD2/MD3/MDM/GLM/IQM/MD5/LWO/OBJ)
   - Multimedia (audio/video playback via available backend codecs; prefers FFmpeg when available)
   - MultimediaWidgets (video output: QVideoWidget)
 
@@ -22,8 +22,8 @@
 ## Implemented
 - Multimedia playback:
   - Qt 6 Multimedia + MultimediaWidgets (codec support depends on backend; prefers FFmpeg when available):
-    - Audio: WAV, MP3, Ogg Vorbis
-    - Video: formats supported by the installed backend (e.g. OGV/Theora when FFmpeg is available)
+    - Audio: WAV, MP3, Ogg Vorbis, BIK (backend-dependent)
+    - Video: formats supported by the installed backend (e.g. OGV/Theora/Bink when available on the installed backend)
   - Built-in cinematic playback:
     - CIN, ROQ
 
@@ -31,16 +31,21 @@
   - PNG, JPEG: Qt 6 (QtGui)
   - TGA: built-in decoder (uncompressed + RLE; true-color, grayscale, color-mapped)
   - PCX: built-in decoder (RLE; 8bpp paletted, 24-bit, 16-color)
-  - LMP: built-in decoder (Quake QPIC + conchars.lmp/colormap.lmp/pop.lmp raw lumps; palette.lmp preview; most LMPs require `gfx/palette.lmp`)
-  - MIP: built-in decoder (Quake/GoldSrc MIPTEX; requires a 256-color Quake palette via `gfx/palette.lmp` or a WAD `palette` lump)
+  - LMP: built-in decoder (Quake QPIC + Half-Life/WAD3 QPIC with embedded palettes + conchars.lmp/colormap.lmp/pop.lmp raw lumps; palette.lmp preview; external `gfx/palette.lmp` used when no embedded palette is present)
+  - MIP: built-in decoder (Quake/GoldSrc MIPTEX plus raw conchars-style indexed payloads; requires a 256-color Quake palette via `gfx/palette.lmp` or a WAD `palette` lump)
   - WAL: built-in decoder (Quake II; requires `pics/colormap.pcx` palette; previews all mip levels)
+  - SWL: built-in decoder (SiN texture; embedded palette; previews mip levels)
   - DDS: built-in decoder (uncompressed masks + BC1/BC2/BC3/BC4/BC5, including DX10 headers)
 
 - Archive support:
-  - PAK: built-in reader/writer (Quake/Quake II)
-  - WAD: built-in reader/writer (WAD2), reader/extractor (WAD3)
-  - PK3/PK4/PKZ/ZIP: built-in reader/writer via vendored miniz
+  - PAK/SIN: built-in reader/writer (Quake/Quake II and SiN SPAK variant)
+  - WAD: built-in reader/writer (WAD2), reader/extractor (WAD3), plus Doom 3 BFG `.wad` ZIP-style containers via ZIP loader fallback
+  - PK3/PK4/PKZ/ZIP/RESOURCES: built-in reader/writer via vendored miniz
   - Quake Live Beta encrypted PK3: built-in decrypt/encrypt (XOR) loader/writer
+
+- Model loaders:
+  - MDM: built-in loader (Enemy Territory skeletal mesh; companion `.mdx` skeletal data)
+  - GLM: built-in loader (Ghoul2 mesh; companion `.gla` base pose when available)
 
 - Cinematics (built-in decoders; used for thumbnails + playback widget):
   - CIN: id Quake II cinematic (PAL8 + optional PCM audio)
@@ -54,4 +59,4 @@
   - QVM: Quake III VM bytecode header + segment summary
 
 - Text/script preview:
-  - Includes Quake-style script/config assets such as `cfg`, `arena`, `bot`, `skin`, `shaderlist`, `shader`, and `menu`
+  - Includes Quake-style script/config assets such as `cfg`, `config`, `rc`, `arena`, `bot`, `skin`, `shaderlist`, `shader`, `menu`, and `vdf`

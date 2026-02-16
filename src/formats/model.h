@@ -34,7 +34,7 @@ struct ModelSurface {
 };
 
 struct LoadedModel {
-  QString format;  // "mdl", "md2", "md3", "iqm", "md5mesh", "lwo", "obj"
+  QString format;  // "mdl", "md2", "md3", "mdm", "glm", "iqm", "md5mesh", "lwo", "obj"
   int frame_count = 1;
   int surface_count = 1;
   ModelMesh mesh;

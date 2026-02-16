@@ -341,6 +341,85 @@ struct GameSupportInfo {
   QStringList executable_candidates;
 };
 
+QString normalize_name_token(const QString& text) {
+  QString out;
+  out.reserve(text.size());
+  for (const QChar c : text.toLower()) {
+    if (c.isLetterOrNumber()) {
+      out.push_back(c);
+    }
+  }
+  return out;
+}
+
+bool root_matches_folder_names(const QString& root, const QStringList& folder_names) {
+  if (folder_names.isEmpty()) {
+    return true;
+  }
+
+  const QString cleaned = clean_path(root);
+  QStringList normalized_components;
+  const QStringList components = cleaned.split('/', Qt::SkipEmptyParts);
+  normalized_components.reserve(components.size());
+  for (const QString& component : components) {
+    const QString normalized = normalize_name_token(component);
+    if (!normalized.isEmpty()) {
+      normalized_components.push_back(normalized);
+    }
+  }
+
+  for (const QString& folder_name : folder_names) {
+    const QString normalized_folder = normalize_name_token(folder_name);
+    if (normalized_folder.isEmpty()) {
+      continue;
+    }
+    for (const QString& normalized_component : normalized_components) {
+      if (normalized_component == normalized_folder) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+struct GameRootMatch {
+  int score = -1;
+  QString executable_path;
+};
+
+GameRootMatch match_root_for_support(const QString& root,
+                                     const GameSupportInfo& support,
+                                     bool require_folder_name_hint) {
+  GameRootMatch out;
+
+  const bool marker_match = any_marker_exists(root, support.marker_any);
+  out.executable_path = first_existing_file(root, support.executable_candidates);
+  const bool executable_match = !out.executable_path.isEmpty();
+
+  if (!marker_match && !executable_match) {
+    return out;
+  }
+
+  const bool folder_hint_match = root_matches_folder_names(root, support.folder_names);
+  if (require_folder_name_hint && !folder_hint_match && !executable_match) {
+    return out;
+  }
+
+  out.score = 0;
+  if (marker_match) {
+    out.score += 100;
+  }
+  if (executable_match) {
+    out.score += 80;
+  }
+  if (folder_hint_match) {
+    out.score += 30;
+  }
+
+  return out;
+}
+
 QVector<GameSupportInfo> supported_game_support() {
   QVector<GameSupportInfo> out;
 
@@ -361,6 +440,15 @@ QVector<GameSupportInfo> supported_game_support() {
   });
 
   out.push_back(GameSupportInfo{
+    .game = GameId::HalfLife,
+    .folder_names = {"Half-Life", "Half Life", "Half-Life 1", "HalfLife"},
+    .marker_any = {"valve/pak0.pak", "valve/PAK0.PAK", "valve_hd/pak0.pak", "valve_hd/PAK0.PAK",
+                   "hl.exe", "hl.sh", "hl_linux"},
+    .default_dir_candidates = {"valve", "valve_hd"},
+    .executable_candidates = {"hl.exe", "hl", "hl.sh", "hl_linux", "hlds.exe", "hlds"},
+  });
+
+  out.push_back(GameSupportInfo{
     .game = GameId::Quake2,
     .folder_names = {"Quake II", "Quake II Enhanced"},
     .marker_any = {"baseq2/pak0.pak", "baseq2/PAK0.PAK"},
@@ -378,8 +466,73 @@ QVector<GameSupportInfo> supported_game_support() {
   });
 
   out.push_back(GameSupportInfo{
+    .game = GameId::Quake2RTX,
+    .folder_names = {"Quake II RTX", "Quake 2 RTX", "Q2RTX"},
+    .marker_any = {"baseq2/pak0.pak", "baseq2/PAK0.PAK", "q2rtx", "q2rtx/q2rtx.cfg", "q2rtx.exe", "Q2RTX.exe"},
+    .default_dir_candidates = {"baseq2", "q2rtx"},
+    .executable_candidates = {"q2rtx.exe", "Q2RTX.exe", "q2rtx", "q2rtx.x64"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::SiNGold,
+    .folder_names = {"SiN Gold", "SiN Gold (1998)", "SiN"},
+    .marker_any = {"sin/pak0.pak", "sin/PAK0.PAK"},
+    .default_dir_candidates = {"sin"},
+    .executable_candidates = {"sin.exe", "SiN.exe", "sin", "SiN"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::KingpinLifeOfCrime,
+    .folder_names = {"Kingpin", "Kingpin - Life of Crime", "Kingpin: Life of Crime"},
+    .marker_any = {"main/pak0.pak", "main/PAK0.PAK"},
+    .default_dir_candidates = {"main"},
+    .executable_candidates = {"kingpin.exe", "Kingpin.exe", "kingpin", "Kingpin"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::Daikatana,
+    .folder_names = {"Daikatana", "ValveTestApp242980"},
+    .marker_any = {"data/pak0.pak", "data/PAK0.PAK", "daikatana.exe", "Daikatana.exe", "ValveTestApp242980"},
+    .default_dir_candidates = {"data", "ValveTestApp242980"},
+    .executable_candidates = {"daikatana.exe", "Daikatana.exe", "daikatana"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::Anachronox,
+    .folder_names = {"Anachronox", "ValveTestApp242940"},
+    .marker_any = {"data/pak0.pak", "data/PAK0.PAK", "anox.exe", "Anox.exe", "anachronox.exe", "ValveTestApp242940"},
+    .default_dir_candidates = {"data", "ValveTestApp242940"},
+    .executable_candidates = {"anox.exe", "Anox.exe", "anachronox.exe", "Anachronox.exe", "anox"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::Heretic2,
+    .folder_names = {"Heretic II", "Heretic 2", "Heretic2"},
+    .marker_any = {"base/htic2-0.pak", "base/HTIC2-0.PAK", "base/pak0.pak", "base/PAK0.PAK",
+                   "heretic2.exe", "Heretic2.exe"},
+    .default_dir_candidates = {"base"},
+    .executable_candidates = {"heretic2.exe", "Heretic2.exe", "heretic2"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::GravityBone,
+    .folder_names = {"Gravity Bone", "gravitybone"},
+    .marker_any = {"gravitybone.exe", "GravityBone.exe", "gravitybone"},
+    .default_dir_candidates = {"ValveTestApp242720", "gravitybone"},
+    .executable_candidates = {"gravitybone.exe", "GravityBone.exe", "gravitybone"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::ThirtyFlightsOfLoving,
+    .folder_names = {"Thirty Flights of Loving", "thirty_flights_of_loving"},
+    .marker_any = {"tfol.exe", "TFOL.exe", "thirty_flights_of_loving", "ValveTestApp214700"},
+    .default_dir_candidates = {"ValveTestApp214700", "thirty_flights_of_loving"},
+    .executable_candidates = {"tfol.exe", "TFOL.exe", "thirtyflightsofloving.exe", "tfol"},
+  });
+
+  out.push_back(GameSupportInfo{
     .game = GameId::Quake3Arena,
-    .folder_names = {"Quake III Arena"},
+    .folder_names = {"Quake III Arena", "Quake 3 Arena"},
     .marker_any = {"baseq3/pak0.pk3", "baseq3/PAK0.PK3"},
     .default_dir_candidates = {"baseq3"},
     .executable_candidates = {"quake3.exe", "Quake3.exe", "quake3", "ioquake3.x86_64", "ioquake3"},
@@ -394,11 +547,127 @@ QVector<GameSupportInfo> supported_game_support() {
   });
 
   out.push_back(GameSupportInfo{
+    .game = GameId::ReturnToCastleWolfenstein,
+    .folder_names = {"Return to Castle Wolfenstein", "Return to Castle Wolfenstein Single Player",
+                     "Return to Castle Wolfenstein Multiplayer", "RTCW"},
+    .marker_any = {"Main/pak0.pk3", "Main/PAK0.PK3", "main/pak0.pk3", "main/PAK0.PK3"},
+    .default_dir_candidates = {"Main", "main"},
+    .executable_candidates = {"WolfSP.exe", "wolfsp.exe", "WolfMP.exe", "wolfmp.exe", "iowolfsp.x86_64",
+                              "iowolfsp", "iowolfmp.x86_64", "iowolfmp", "WolfSP", "WolfMP"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::WolfensteinEnemyTerritory,
+    .folder_names = {"Wolfenstein Enemy Territory", "Wolfenstein: Enemy Territory", "Enemy Territory", "W:ET"},
+    .marker_any = {"etmain/pak0.pk3", "etmain/PAK0.PK3"},
+    .default_dir_candidates = {"etmain"},
+    .executable_candidates = {"ET.exe", "et.exe", "etl.exe", "etlegacy.x86_64", "etl.x86_64", "et.x86_64",
+                              "etlegacy", "etl", "et"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::JediOutcast,
+    .folder_names = {"STAR WARS Jedi Knight II - Jedi Outcast", "Star Wars Jedi Knight II - Jedi Outcast",
+                     "Star Wars Jedi Knight II Jedi Outcast", "Jedi Outcast", "Jedi Knight II"},
+    .marker_any = {"GameData/base/assets0.pk3", "GameData/base/Assets0.pk3", "gamedata/base/assets0.pk3", "base/assets0.pk3"},
+    .default_dir_candidates = {"GameData/base", "gamedata/base", "base", "GameData", "gamedata"},
+    .executable_candidates = {"GameData/JediOutcast.exe", "JediOutcast.exe", "GameData/josp.exe", "josp.exe",
+                              "openjo_sp.x86_64", "openjo_sp", "jk2sp.exe", "jk2sp"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::JediAcademy,
+    .folder_names = {"STAR WARS Jedi Knight - Jedi Academy", "Star Wars Jedi Knight - Jedi Academy", "Jedi Academy"},
+    .marker_any = {"GameData/base/assets0.pk3", "GameData/base/Assets0.pk3", "gamedata/base/assets0.pk3", "base/assets0.pk3"},
+    .default_dir_candidates = {"GameData/base", "gamedata/base", "base", "GameData", "gamedata"},
+    .executable_candidates = {"GameData/JediAcademy.exe", "JediAcademy.exe", "GameData/jasp.exe", "jasp.exe",
+                              "openjk.x86_64", "openjk", "jk3.exe", "jk3"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::StarTrekVoyagerEliteForce,
+    .folder_names = {"Star Trek Voyager Elite Force", "Star Trek: Voyager - Elite Force", "Elite Force"},
+    .marker_any = {"baseEF/pak0.pk3", "baseEF/PAK0.PK3", "baseef/pak0.pk3", "baseef/PAK0.PK3"},
+    .default_dir_candidates = {"baseEF", "baseef"},
+    .executable_candidates = {"stvoy.exe", "STVoy.exe", "holomatch.exe", "stvoy", "holomatch"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::EliteForce2,
+    .folder_names = {"Star Trek: Elite Force II", "Star Trek Elite Force II", "Elite Force II", "EliteForce2"},
+    .marker_any = {"base/pak0.pk3", "base/PAK0.PK3", "EF2.exe", "ef2.exe", "EliteForce2.exe", "eliteforce2.exe"},
+    .default_dir_candidates = {"base"},
+    .executable_candidates = {"EF2.exe", "ef2.exe", "EliteForce2.exe", "eliteforce2.exe", "ef2"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::Warsow,
+    .folder_names = {"Warsow", "Warfork"},
+    .marker_any = {"basewsw", "basewsw/data0_00.pk3", "basewsw/pak0.pk3", "warsow.exe", "Warsow.exe",
+                   "warfork.exe", "Warfork.exe"},
+    .default_dir_candidates = {"basewsw"},
+    .executable_candidates = {"warsow.exe", "Warsow.exe", "warfork.exe", "Warfork.exe", "warsow.x86_64",
+                              "warfork.x86_64", "warsow", "warfork"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::WorldOfPadman,
+    .folder_names = {"World of Padman", "WorldOfPadman", "WoP"},
+    .marker_any = {"wop", "wop/wop_00.pk3", "wop/WOP_00.PK3", "wop/wop_01.pk3", "wop/pak0.pk3",
+                   "wop.exe", "WoP.exe", "worldofpadman.exe", "WorldOfPadman.exe"},
+    .default_dir_candidates = {"wop"},
+    .executable_candidates = {"wop.exe", "WoP.exe", "worldofpadman.exe", "WorldOfPadman.exe", "wop"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::HeavyMetalFakk2,
+    .folder_names = {"Heavy Metal F.A.K.K.2", "Heavy Metal FAKK2", "FAKK2", "HeavyMetalFakk2"},
+    .marker_any = {"fakk", "fakk/pak0.pak", "fakk/PAK0.PAK", "fakk/pak0.pk3", "fakk/PAK0.PK3",
+                   "fakk2.exe", "Fakk2.exe"},
+    .default_dir_candidates = {"fakk"},
+    .executable_candidates = {"fakk2.exe", "Fakk2.exe", "heavymetalfakk2.exe", "fakk2"},
+  });
+
+  out.push_back(GameSupportInfo{
     .game = GameId::Quake4,
     .folder_names = {"Quake 4", "Quake4"},
     .marker_any = {"q4base/pak001.pk4", "q4base/PAK001.PK4", "q4base/pak000.pk4", "q4base/pak00.pk4"},
     .default_dir_candidates = {"q4base"},
     .executable_candidates = {"Quake4.exe", "quake4.exe", "quake4", "Quake4"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::Doom3,
+    .folder_names = {"DOOM 3", "Doom 3", "DOOM3", "Doom3"},
+    .marker_any = {"base/pak000.pk4", "base/PAK000.PK4", "base/pak001.pk4", "base/PAK001.PK4",
+                   "Doom3.exe", "doom3.exe", "DOOM3.exe"},
+    .default_dir_candidates = {"base"},
+    .executable_candidates = {"Doom3.exe", "doom3.exe", "DOOM3.exe", "dhewm3.exe", "dhewm3", "doom3"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::Doom3BFGEdition,
+    .folder_names = {"DOOM 3 BFG Edition", "Doom 3 BFG Edition"},
+    .marker_any = {"base/pak000.pk4", "base/PAK000.PK4", "base/pak001.pk4", "base/PAK001.PK4",
+                   "DOOM3BFG.exe", "doom3bfg.exe", "BFGFramework.dll", "bfgframework.dll"},
+    .default_dir_candidates = {"base"},
+    .executable_candidates = {"DOOM3BFG.exe", "doom3bfg.exe"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::Prey,
+    .folder_names = {"Prey", "Prey (2006)"},
+    .marker_any = {"base/pak000.pk4", "base/PAK000.PK4", "base/pak001.pk4", "base/PAK001.PK4", "Prey.exe", "prey.exe"},
+    .default_dir_candidates = {"base"},
+    .executable_candidates = {"Prey.exe", "prey.exe", "prey.x86_64", "prey.x86", "prey"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::EnemyTerritoryQuakeWars,
+    .folder_names = {"Enemy Territory: Quake Wars", "Enemy Territory Quake Wars", "Enemy Territory - QUAKE Wars", "ETQW"},
+    .marker_any = {"base/pak002.pk4", "base/PAK002.PK4", "base/pak001.pk4", "base/PAK001.PK4", "ETQW.exe", "etqw.exe"},
+    .default_dir_candidates = {"base"},
+    .executable_candidates = {"ETQW.exe", "etqw.exe", "etqw.x86_64", "etqw.x86", "etqw", "etqw-dedicated.exe", "etqw-dedicated"},
   });
 
   return out;
@@ -415,9 +684,10 @@ GameAutoDetectResult auto_detect_supported_games() {
   const QStringList eos_roots = epic_install_roots(eos_manifest_dirs);
 
   for (const GameSupportInfo& support : supported_game_support()) {
-    const auto try_roots = [&](const QStringList& roots, const QString& source) -> bool {
+    const auto try_roots = [&](const QStringList& roots, const QString& source, bool require_folder_name_hint) -> bool {
       for (const QString& root : roots) {
-        if (!any_marker_exists(root, support.marker_any)) {
+        const GameRootMatch match = match_root_for_support(root, support, require_folder_name_hint);
+        if (match.score < 0) {
           continue;
         }
 
@@ -425,7 +695,7 @@ GameAutoDetectResult auto_detect_supported_games() {
         install.game = support.game;
         install.root_dir = root;
         install.default_dir = choose_default_dir(root, support.default_dir_candidates);
-        install.launch.executable_path = first_existing_file(root, support.executable_candidates);
+        install.launch.executable_path = match.executable_path;
         install.launch.working_dir = root;
         out.installs.push_back(install);
         out.log.push_back(QString("Detected %1 (%2): %3").arg(game_display_name(support.game), source, root));
@@ -435,18 +705,18 @@ GameAutoDetectResult auto_detect_supported_games() {
     };
 
     const QStringList steam_roots = roots_from_named_folders(steam_dirs, support.folder_names);
-    if (try_roots(steam_roots, "Steam")) {
+    if (try_roots(steam_roots, "Steam", false)) {
       continue;
     }
 
     QStringList gog_roots = gog_reg;
     gog_roots.append(roots_from_named_folders(gog_bases, support.folder_names));
     gog_roots = dedupe_existing_dirs(gog_roots);
-    if (try_roots(gog_roots, "GOG.com")) {
+    if (try_roots(gog_roots, "GOG.com", true)) {
       continue;
     }
 
-    if (try_roots(eos_roots, "EOS")) {
+    if (try_roots(eos_roots, "EOS", true)) {
       continue;
     }
 
@@ -502,22 +772,47 @@ std::optional<GameId> detect_game_id_for_path(const QString& file_or_dir_path) {
 
   push_if(GameId::QuakeRerelease);
   push_if(GameId::Quake);
+  push_if(GameId::HalfLife);
   push_if(GameId::Quake2Rerelease);
+  push_if(GameId::Quake2RTX);
   push_if(GameId::Quake2);
-  push_if(GameId::Quake3Arena);
+  push_if(GameId::SiNGold);
+  push_if(GameId::KingpinLifeOfCrime);
+  push_if(GameId::Daikatana);
+  push_if(GameId::Anachronox);
+  push_if(GameId::Heretic2);
+  push_if(GameId::GravityBone);
+  push_if(GameId::ThirtyFlightsOfLoving);
   push_if(GameId::QuakeLive);
+  push_if(GameId::Quake3Arena);
+  push_if(GameId::ReturnToCastleWolfenstein);
+  push_if(GameId::WolfensteinEnemyTerritory);
+  push_if(GameId::JediOutcast);
+  push_if(GameId::JediAcademy);
+  push_if(GameId::StarTrekVoyagerEliteForce);
+  push_if(GameId::EliteForce2);
+  push_if(GameId::Warsow);
+  push_if(GameId::WorldOfPadman);
+  push_if(GameId::HeavyMetalFakk2);
   push_if(GameId::Quake4);
+  push_if(GameId::Doom3BFGEdition);
+  push_if(GameId::Doom3);
+  push_if(GameId::Prey);
+  push_if(GameId::EnemyTerritoryQuakeWars);
 
   auto match_dir = [&](const QString& root) -> std::optional<GameId> {
+    int best_score = -1;
+    std::optional<GameId> best_game = std::nullopt;
+
     for (const GameSupportInfo& s : priority) {
-      if (any_marker_exists(root, s.marker_any)) {
-        return s.game;
-      }
-      if (!first_existing_file(root, s.executable_candidates).isEmpty()) {
-        return s.game;
+      const GameRootMatch match = match_root_for_support(root, s, false);
+      if (match.score > best_score) {
+        best_score = match.score;
+        best_game = s.game;
       }
     }
-    return std::nullopt;
+
+    return best_game;
   };
 
   QString cur = dir;

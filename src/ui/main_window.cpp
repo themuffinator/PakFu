@@ -1,5 +1,6 @@
 #include "main_window.h"
 
+#include <algorithm>
 #include <functional>
 
 #include <QAction>
@@ -93,7 +94,8 @@ bool is_supported_archive_extension(const QString& path) {
   const QString lower = path.toLower();
   return lower.endsWith(".pak") || lower.endsWith(".pk3") ||
          lower.endsWith(".pk4") || lower.endsWith(".pkz") ||
-         lower.endsWith(".zip") || lower.endsWith(".wad") ||
+         lower.endsWith(".zip") || lower.endsWith(".resources") || lower.endsWith(".sin") ||
+         lower.endsWith(".wad") ||
          lower.endsWith(".wad2") || lower.endsWith(".wad3");
 }
 
@@ -178,6 +180,31 @@ QString clean_path(const QString& path) {
   return QDir::cleanPath(QDir::fromNativeSeparators(path));
 }
 
+QString installation_primary_label(const GameSet& set) {
+  return set.name.isEmpty() ? game_display_name(set.game) : set.name;
+}
+
+bool installation_less(const GameSet* a, const GameSet* b) {
+  if (!a || !b) {
+    return a != nullptr;
+  }
+  const QString a_primary = installation_primary_label(*a);
+  const QString b_primary = installation_primary_label(*b);
+  const int by_primary = QString::compare(a_primary, b_primary, Qt::CaseInsensitive);
+  if (by_primary != 0) {
+    return by_primary < 0;
+  }
+
+  const QString a_game = game_display_name(a->game);
+  const QString b_game = game_display_name(b->game);
+  const int by_game = QString::compare(a_game, b_game, Qt::CaseInsensitive);
+  if (by_game != 0) {
+    return by_game < 0;
+  }
+
+  return QString::compare(a->uid, b->uid, Qt::CaseInsensitive) < 0;
+}
+
 bool path_is_under(const QString& path, const QString& root) {
   const QString p = clean_path(path);
   QString r = clean_path(root);
@@ -194,16 +221,19 @@ bool path_is_under(const QString& path, const QString& root) {
 #endif
 }
 
-bool is_numbered_archive_name(const QString& lower_file, const QString& ext) {
+bool is_prefixed_numbered_archive_name(const QString& lower_file, const QString& prefix, const QString& ext) {
+  if (prefix.isEmpty()) {
+    return false;
+  }
   const QString suffix = "." + ext;
   if (!lower_file.endsWith(suffix)) {
     return false;
   }
   const QString base = lower_file.left(lower_file.size() - suffix.size());
-  if (!base.startsWith("pak")) {
+  if (!base.startsWith(prefix)) {
     return false;
   }
-  const QString digits = base.mid(3);
+  const QString digits = base.mid(prefix.size());
   if (digits.isEmpty()) {
     return false;
   }
@@ -215,17 +245,90 @@ bool is_numbered_archive_name(const QString& lower_file, const QString& ext) {
   return true;
 }
 
+bool is_numbered_archive_name(const QString& lower_file, const QString& ext) {
+  return is_prefixed_numbered_archive_name(lower_file, "pak", ext);
+}
+
+bool is_assets_archive_name(const QString& lower_file) {
+  return is_prefixed_numbered_archive_name(lower_file, "assets", "pk3");
+}
+
+bool is_heretic2_archive_name(const QString& lower_file) {
+  return is_prefixed_numbered_archive_name(lower_file, "htic2-", "pak");
+}
+
+bool is_warsow_data_archive_name(const QString& lower_file) {
+  if (!lower_file.endsWith(".pk3")) {
+    return false;
+  }
+  const QString base = lower_file.left(lower_file.size() - 4);
+  if (!base.startsWith("data")) {
+    return false;
+  }
+  const int underscore = base.indexOf('_', 4);
+  if (underscore <= 4 || underscore >= base.size() - 1) {
+    return false;
+  }
+
+  const QString major = base.mid(4, underscore - 4);
+  const QString minor = base.mid(underscore + 1);
+  if (major.isEmpty() || minor.isEmpty()) {
+    return false;
+  }
+  for (const QChar c : major) {
+    if (!c.isDigit()) {
+      return false;
+    }
+  }
+  for (const QChar c : minor) {
+    if (!c.isDigit()) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool is_official_archive_name(GameId game, const QString& lower_file) {
   switch (game) {
     case GameId::Quake:
     case GameId::QuakeRerelease:
+    case GameId::HalfLife:
     case GameId::Quake2:
     case GameId::Quake2Rerelease:
+    case GameId::Quake2RTX:
+    case GameId::KingpinLifeOfCrime:
+    case GameId::Daikatana:
+    case GameId::Anachronox:
       return is_numbered_archive_name(lower_file, "pak");
+    case GameId::SiNGold:
+      return is_numbered_archive_name(lower_file, "pak") || is_numbered_archive_name(lower_file, "sin");
+    case GameId::Heretic2:
+      return is_numbered_archive_name(lower_file, "pak") || is_heretic2_archive_name(lower_file);
+    case GameId::GravityBone:
+    case GameId::ThirtyFlightsOfLoving:
+      return false;
     case GameId::Quake3Arena:
     case GameId::QuakeLive:
+    case GameId::ReturnToCastleWolfenstein:
+    case GameId::WolfensteinEnemyTerritory:
+    case GameId::StarTrekVoyagerEliteForce:
+    case GameId::EliteForce2:
       return is_numbered_archive_name(lower_file, "pk3");
+    case GameId::Warsow:
+      return is_numbered_archive_name(lower_file, "pk3") || is_warsow_data_archive_name(lower_file);
+    case GameId::WorldOfPadman:
+      return is_numbered_archive_name(lower_file, "pk3")
+        || is_prefixed_numbered_archive_name(lower_file, "wop_", "pk3");
+    case GameId::HeavyMetalFakk2:
+      return is_numbered_archive_name(lower_file, "pak") || is_numbered_archive_name(lower_file, "pk3");
+    case GameId::JediOutcast:
+    case GameId::JediAcademy:
+      return is_numbered_archive_name(lower_file, "pk3") || is_assets_archive_name(lower_file);
     case GameId::Quake4:
+    case GameId::Doom3:
+    case GameId::Doom3BFGEdition:
+    case GameId::Prey:
+    case GameId::EnemyTerritoryQuakeWars:
       return is_numbered_archive_name(lower_file, "pk4");
   }
   return false;
@@ -895,10 +998,12 @@ void MainWindow::open_pak_dialog() {
   dialog.setWindowTitle("Open Archive");
   dialog.setFileMode(QFileDialog::ExistingFile);
   dialog.setNameFilters({
-    "Archives (*.pak *.pk3 *.pk4 *.pkz *.zip *.wad *.wad2 *.wad3)",
+    "Archives (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3)",
     "Quake PAK (*.pak)",
-    "Quake WAD (WAD2/WAD3) (*.wad *.wad2 *.wad3)",
-    "ZIP-based (PK3/PK4/PKZ/ZIP) (*.pk3 *.pk4 *.pkz *.zip)",
+    "SiN Archive (*.sin)",
+    "WAD (Quake WAD2/WAD3 + Doom 3 BFG .wad) (*.wad *.wad2 *.wad3)",
+    "Doom 3 BFG Resources (*.resources)",
+    "ZIP-based (PK3/PK4/PKZ/ZIP/RESOURCES) (*.pk3 *.pk4 *.pkz *.zip *.resources)",
     "All files (*.*)",
   });
   dialog.setDirectory(default_directory_for_dialogs());
@@ -1120,9 +1225,18 @@ void MainWindow::rebuild_game_combo() {
   updating_game_combo_ = true;
   game_combo_->clear();
 
+  QVector<const GameSet*> sorted;
+  sorted.reserve(game_sets_.sets.size());
   for (const GameSet& set : game_sets_.sets) {
-    const QString label = set.name.isEmpty() ? game_display_name(set.game) : set.name;
-    game_combo_->addItem(label, set.uid);
+    sorted.push_back(&set);
+  }
+  std::sort(sorted.begin(), sorted.end(), installation_less);
+
+  for (const GameSet* set : sorted) {
+    if (!set) {
+      continue;
+    }
+    game_combo_->addItem(installation_primary_label(*set), set->uid);
   }
 
   if (game_combo_->count() > 0) {
@@ -1565,12 +1679,14 @@ bool MainWindow::save_tab_as(PakTab* tab) {
     if (is_new || fmt == Archive::Format::Unknown || fmt == Archive::Format::Directory) {
       filters = {
         "Quake PAK (*.pak)",
+        "SiN Archive (*.sin)",
         "Quake WAD2 (*.wad *.wad2)",
         "PK3 (ZIP) (*.pk3)",
         "PK3 (Quake Live encrypted) (*.pk3)",
         "PK4 (ZIP) (*.pk4)",
         "PKZ (ZIP) (*.pkz)",
         "ZIP (*.zip)",
+        "Doom 3 BFG Resources (*.resources)",
         "All files (*.*)",
       };
     } else if (fmt == Archive::Format::Wad) {
@@ -1581,6 +1697,7 @@ bool MainWindow::save_tab_as(PakTab* tab) {
     } else if (fmt == Archive::Format::Pak) {
       filters = {
         "Quake PAK (*.pak)",
+        "SiN Archive (*.sin)",
         "All files (*.*)",
       };
     } else {
@@ -1590,6 +1707,7 @@ bool MainWindow::save_tab_as(PakTab* tab) {
         "PK4 (ZIP) (*.pk4)",
         "PKZ (ZIP) (*.pkz)",
         "ZIP (*.zip)",
+        "Doom 3 BFG Resources (*.resources)",
         "All files (*.*)",
       };
     }
@@ -1630,9 +1748,15 @@ bool MainWindow::save_tab_as(PakTab* tab) {
   } else if (filter.contains("PKZ", Qt::CaseInsensitive)) {
     options.format = Archive::Format::Zip;
     want_ext = ".pkz";
+  } else if (filter.contains("RESOURCES", Qt::CaseInsensitive)) {
+    options.format = Archive::Format::Zip;
+    want_ext = ".resources";
   } else if (filter.contains("ZIP", Qt::CaseInsensitive)) {
     options.format = Archive::Format::Zip;
     want_ext = ".zip";
+  } else if (filter.contains("SIN", Qt::CaseInsensitive)) {
+    options.format = Archive::Format::Pak;
+    want_ext = ".sin";
   } else if (filter.contains("PAK", Qt::CaseInsensitive)) {
     options.format = Archive::Format::Pak;
     want_ext = ".pak";
@@ -1642,7 +1766,7 @@ bool MainWindow::save_tab_as(PakTab* tab) {
     const int sep = std::max(dest.lastIndexOf('/'), dest.lastIndexOf('\\'));
     const int dot = dest.lastIndexOf('.');
     const QString current_ext = (dot > sep) ? dest.mid(dot).toLower() : QString();
-    const QSet<QString> known_exts = {".pak", ".wad", ".wad2", ".wad3", ".pk3", ".pk4", ".pkz", ".zip"};
+    const QSet<QString> known_exts = {".pak", ".sin", ".wad", ".wad2", ".wad3", ".pk3", ".pk4", ".pkz", ".zip", ".resources"};
     const bool keep_wad2_ext = (options.format == Archive::Format::Wad && current_ext == ".wad2");
     if (!keep_wad2_ext && known_exts.contains(current_ext) && dot > sep) {
       dest = dest.left(dot) + want_ext;

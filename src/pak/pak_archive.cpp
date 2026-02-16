@@ -12,8 +12,64 @@
 
 namespace {
 constexpr int kPakHeaderSize = 12;
-constexpr int kPakDirEntrySize = 64;
-constexpr int kPakNameBytes = 56;
+constexpr int kQuakePakDirEntrySize = 64;
+constexpr int kQuakePakNameBytes = 56;
+constexpr int kSinDirEntrySize = 128;
+constexpr int kSinNameBytes = 120;
+
+struct PakLayout {
+  QByteArray signature;
+  int dir_entry_size = 0;
+  int name_bytes = 0;
+  bool sin_archive = false;
+};
+
+PakLayout quake_pak_layout() {
+  PakLayout out;
+  out.signature = "PACK";
+  out.dir_entry_size = kQuakePakDirEntrySize;
+  out.name_bytes = kQuakePakNameBytes;
+  out.sin_archive = false;
+  return out;
+}
+
+PakLayout sin_pak_layout() {
+  PakLayout out;
+  out.signature = "SPAK";
+  out.dir_entry_size = kSinDirEntrySize;
+  out.name_bytes = kSinNameBytes;
+  out.sin_archive = true;
+  return out;
+}
+
+bool pak_layout_from_signature(const QByteArray& signature, PakLayout* out) {
+  if (!out) {
+    return false;
+  }
+  if (signature == "PACK") {
+    *out = quake_pak_layout();
+    return true;
+  }
+  if (signature == "SPAK") {
+    *out = sin_pak_layout();
+    return true;
+  }
+  return false;
+}
+
+PakLayout pak_layout_for_output_path(const QString& dest_path, bool prefer_sin_variant) {
+  const QString ext = QFileInfo(dest_path).suffix().toLower();
+  if (ext == "sin") {
+    return sin_pak_layout();
+  }
+  if (ext == "pak") {
+    return quake_pak_layout();
+  }
+  if (prefer_sin_variant) {
+    return sin_pak_layout();
+  }
+  return quake_pak_layout();
+}
 
 bool read_u32_le(const QByteArray& bytes, int offset, quint32* out) {
   if (!out || offset < 0 || offset + 4 > bytes.size()) {
@@ -90,6 +146,10 @@ QString normalize_lookup_name(QString name) {
 
 bool PakArchive::load(const QString& path, QString* error) {
   loaded_ = false;
+  sin_archive_ = false;
+  dir_entry_size_ = kQuakePakDirEntrySize;
+  name_bytes_ = kQuakePakNameBytes;
+  signature_ = "PACK";
   path_.clear();
   file_size_ = 0;
   entries_.clear();
@@ -107,53 +167,59 @@ bool PakArchive::load(const QString& path, QString* error) {
   QByteArray header = file.read(kPakHeaderSize);
   if (header.size() != kPakHeaderSize) {
     if (error) {
-      *error = "PAK file is too small.";
+      *error = "Archive file is too small.";
     }
     return false;
   }
 
-  if (header[0] != 'P' || header[1] != 'A' || header[2] != 'C' || header[3] != 'K') {
+  PakLayout layout;
+  if (!pak_layout_from_signature(header.left(4), &layout)) {
     if (error) {
-      *error = "Not a valid Quake PAK (missing PACK header).";
+      *error = "Not a valid Quake/SiN archive (missing PACK/SPAK header).";
     }
     return false;
   }
+  sin_archive_ = layout.sin_archive;
+  dir_entry_size_ = layout.dir_entry_size;
+  name_bytes_ = layout.name_bytes;
+  signature_ = layout.signature;
+  const QString archive_label = sin_archive_ ? "SiN archive" : "PAK";
 
   quint32 dir_offset = 0;
   quint32 dir_length = 0;
   if (!read_u32_le(header, 4, &dir_offset) || !read_u32_le(header, 8, &dir_length)) {
     if (error) {
-      *error = "Unable to read PAK header.";
+      *error = QString("Unable to read %1 header.").arg(archive_label);
     }
     return false;
   }
 
-  if (dir_length % kPakDirEntrySize != 0) {
+  if (dir_length % static_cast<quint32>(dir_entry_size_) != 0) {
     if (error) {
-      *error = "PAK directory has an invalid size.";
+      *error = QString("%1 directory has an invalid size.").arg(archive_label);
     }
     return false;
   }
 
   if (static_cast<qint64>(dir_offset) + static_cast<qint64>(dir_length) > file_size_) {
     if (error) {
-      *error = "PAK directory extends past end of file.";
+      *error = QString("%1 directory extends past end of file.").arg(archive_label);
     }
     return false;
   }
 
   if (!file.seek(dir_offset)) {
     if (error) {
-      *error = "PAK directory offset is invalid.";
+      *error = QString("%1 directory offset is invalid.").arg(archive_label);
     }
     return false;
   }
 
-  const int count = static_cast<int>(dir_length / kPakDirEntrySize);
+  const int count = static_cast<int>(dir_length / static_cast<quint32>(dir_entry_size_));
   constexpr int kMaxEntries = 1'000'000;
   if (count > kMaxEntries) {
     if (error) {
-      *error = "PAK directory is too large.";
+      *error = QString("%1 directory is too large.").arg(archive_label);
     }
     return false;
   }
@@ -161,21 +227,21 @@ bool PakArchive::load(const QString& path, QString* error) {
   entries_.reserve(count);
 
   for (int i = 0; i < count; ++i) {
-    const QByteArray entry_bytes = file.read(kPakDirEntrySize);
-    if (entry_bytes.size() != kPakDirEntrySize) {
+    const QByteArray entry_bytes = file.read(dir_entry_size_);
+    if (entry_bytes.size() != dir_entry_size_) {
       if (error) {
-        *error = "Unable to read PAK directory.";
+        *error = QString("Unable to read %1 directory.").arg(archive_label);
       }
       return false;
     }
 
-    const QByteArray raw_name = entry_bytes.left(kPakNameBytes);
+    const QByteArray raw_name = entry_bytes.left(name_bytes_);
     quint32 offset = 0;
     quint32 size = 0;
-    if (!read_u32_le(entry_bytes, kPakNameBytes, &offset) ||
-        !read_u32_le(entry_bytes, kPakNameBytes + 4, &size)) {
+    if (!read_u32_le(entry_bytes, name_bytes_, &offset) ||
+        !read_u32_le(entry_bytes, name_bytes_ + 4, &size)) {
       if (error) {
-        *error = "Unable to read PAK directory entry.";
+        *error = QString("Unable to read %1 directory entry.").arg(archive_label);
       }
       return false;
     }
@@ -183,7 +249,7 @@ bool PakArchive::load(const QString& path, QString* error) {
     const QString name = sanitize_entry_name(raw_name);
     if (!is_safe_entry_name(name)) {
       if (error) {
-        *error = QString("PAK contains an unsafe entry name: %1").arg(name);
+        *error = QString("%1 contains an unsafe entry name: %2").arg(archive_label, name);
       }
       return false;
     }
@@ -191,7 +257,7 @@ bool PakArchive::load(const QString& path, QString* error) {
     const qint64 end = static_cast<qint64>(offset) + static_cast<qint64>(size);
     if (end < 0 || end > file_size_) {
       if (error) {
-        *error = QString("PAK entry extends past end of file: %1").arg(name);
+        *error = QString("%1 entry extends past end of file: %2").arg(archive_label, name);
       }
       return false;
     }
@@ -234,7 +300,7 @@ bool PakArchive::read_entry_bytes(const QString& name,
   }
   if (!loaded_ || path_.isEmpty()) {
     if (error) {
-      *error = "No PAK is loaded.";
+      *error = "No archive is loaded.";
     }
     return false;
   }
@@ -250,7 +316,7 @@ bool PakArchive::read_entry_bytes(const QString& name,
   QFile file(path_);
   if (!file.open(QIODevice::ReadOnly)) {
     if (error) {
-      *error = "Unable to open PAK for reading.";
+      *error = "Unable to open archive for reading.";
     }
     return false;
   }
@@ -259,7 +325,7 @@ bool PakArchive::read_entry_bytes(const QString& name,
   const qint64 file_size = file.size();
   if (end < 0 || end > file_size) {
     if (error) {
-      *error = QString("PAK entry is out of bounds: %1").arg(entry->name);
+      *error = QString("Archive entry is out of bounds: %1").arg(entry->name);
     }
     return false;
   }
@@ -293,7 +359,7 @@ bool PakArchive::read_entry_bytes(const QString& name,
 bool PakArchive::extract_entry_to_file(const QString& name, const QString& dest_path, QString* error) const {
   if (!loaded_ || path_.isEmpty()) {
     if (error) {
-      *error = "No PAK is loaded.";
+      *error = "No archive is loaded.";
     }
     return false;
   }
@@ -320,7 +386,7 @@ bool PakArchive::extract_entry_to_file(const QString& name, const QString& dest_
   QFile src(path_);
   if (!src.open(QIODevice::ReadOnly)) {
     if (error) {
-      *error = "Unable to open source PAK for reading.";
+      *error = "Unable to open source archive for reading.";
     }
     return false;
   }
@@ -329,7 +395,7 @@ bool PakArchive::extract_entry_to_file(const QString& name, const QString& dest_
   const qint64 end = static_cast<qint64>(entry->offset) + static_cast<qint64>(entry->size);
   if (end < 0 || end > src_size) {
     if (error) {
-      *error = QString("PAK entry is out of bounds: %1").arg(entry->name);
+      *error = QString("Archive entry is out of bounds: %1").arg(entry->name);
     }
     return false;
   }
@@ -383,32 +449,32 @@ bool PakArchive::extract_entry_to_file(const QString& name, const QString& dest_
 }
 
 bool PakArchive::write_empty(const QString& dest_path, QString* error) {
+  const PakLayout layout = pak_layout_for_output_path(dest_path, false);
+  const QString archive_label = layout.sin_archive ? "SiN archive" : "PAK";
+
   QSaveFile out(dest_path);
   if (!out.open(QIODevice::WriteOnly)) {
     if (error) {
-      *error = "Unable to create PAK file.";
+      *error = QString("Unable to create %1 file.").arg(archive_label);
     }
     return false;
   }
 
   QByteArray header(kPakHeaderSize, '\0');
-  header[0] = 'P';
-  header[1] = 'A';
-  header[2] = 'C';
-  header[3] = 'K';
+  std::memcpy(header.data(), layout.signature.constData(), 4);
   write_u32_le(&header, 4, static_cast<quint32>(kPakHeaderSize));
   write_u32_le(&header, 8, 0);
 
   if (out.write(header) != header.size()) {
     if (error) {
-      *error = "Unable to write PAK header.";
+      *error = QString("Unable to write %1 header.").arg(archive_label);
     }
     return false;
   }
 
   if (!out.commit()) {
     if (error) {
-      *error = "Unable to finalize PAK file.";
+      *error = QString("Unable to finalize %1 file.").arg(archive_label);
     }
     return false;
   }
@@ -419,15 +485,20 @@ bool PakArchive::write_empty(const QString& dest_path, QString* error) {
 bool PakArchive::save_as(const QString& dest_path, QString* error) const {
   if (!loaded_ || path_.isEmpty()) {
     if (error) {
-      *error = "No PAK is loaded.";
+      *error = "No archive is loaded.";
     }
     return false;
   }
 
+  const PakLayout layout = pak_layout_for_output_path(dest_path, sin_archive_);
+  const QString archive_label = layout.sin_archive ? "SiN archive" : "PAK";
+  const int dir_entry_size = layout.dir_entry_size;
+  const int max_name_bytes = layout.name_bytes;
+
   QFile src(path_);
   if (!src.open(QIODevice::ReadOnly)) {
     if (error) {
-      *error = "Unable to open source PAK for reading.";
+      *error = QString("Unable to open source %1 for reading.").arg(archive_label);
     }
     return false;
   }
@@ -437,20 +508,17 @@ bool PakArchive::save_as(const QString& dest_path, QString* error) const {
   QSaveFile out(dest_path);
   if (!out.open(QIODevice::WriteOnly)) {
     if (error) {
-      *error = "Unable to create destination PAK.";
+      *error = QString("Unable to create destination %1.").arg(archive_label);
     }
     return false;
   }
 
   QByteArray header(kPakHeaderSize, '\0');
-  header[0] = 'P';
-  header[1] = 'A';
-  header[2] = 'C';
-  header[3] = 'K';
+  std::memcpy(header.data(), layout.signature.constData(), 4);
   // Offsets will be patched later.
   if (out.write(header) != header.size()) {
     if (error) {
-      *error = "Unable to write PAK header.";
+      *error = QString("Unable to write %1 header.").arg(archive_label);
     }
     return false;
   }
@@ -470,10 +538,10 @@ bool PakArchive::save_as(const QString& dest_path, QString* error) const {
       return false;
     }
 
-    const QByteArray name_bytes = e.name.toLatin1();
-    if (name_bytes.size() > kPakNameBytes) {
+    const QByteArray entry_name_bytes = e.name.toLatin1();
+    if (entry_name_bytes.size() > max_name_bytes) {
       if (error) {
-        *error = QString("PAK entry name is too long: %1").arg(e.name);
+        *error = QString("%1 entry name is too long: %2").arg(archive_label, e.name);
       }
       return false;
     }
@@ -481,7 +549,7 @@ bool PakArchive::save_as(const QString& dest_path, QString* error) const {
     const qint64 end = static_cast<qint64>(e.offset) + static_cast<qint64>(e.size);
     if (end < 0 || end > src_size) {
       if (error) {
-        *error = QString("PAK entry is out of bounds: %1").arg(e.name);
+        *error = QString("%1 entry is out of bounds: %2").arg(archive_label, e.name);
       }
       return false;
     }
@@ -489,7 +557,7 @@ bool PakArchive::save_as(const QString& dest_path, QString* error) const {
     const qint64 out_offset64 = out.pos();
     if (out_offset64 < 0 || out_offset64 > std::numeric_limits<quint32>::max()) {
       if (error) {
-        *error = "PAK output exceeds format limits.";
+        *error = QString("%1 output exceeds format limits.").arg(archive_label);
       }
       return false;
     }
@@ -532,16 +600,16 @@ bool PakArchive::save_as(const QString& dest_path, QString* error) const {
   const qint64 dir_offset64 = out.pos();
   if (dir_offset64 < 0 || dir_offset64 > std::numeric_limits<quint32>::max()) {
     if (error) {
-      *error = "PAK output exceeds format limits.";
+      *error = QString("%1 output exceeds format limits.").arg(archive_label);
     }
     return false;
   }
   const quint32 dir_offset = static_cast<quint32>(dir_offset64);
 
-  const qint64 dir_length64 = static_cast<qint64>(new_entries.size()) * kPakDirEntrySize;
+  const qint64 dir_length64 = static_cast<qint64>(new_entries.size()) * dir_entry_size;
   if (dir_length64 < 0 || dir_length64 > std::numeric_limits<quint32>::max()) {
     if (error) {
-      *error = "PAK directory exceeds format limits.";
+      *error = QString("%1 directory exceeds format limits.").arg(archive_label);
     }
     return false;
   }
@@ -553,16 +621,16 @@ bool PakArchive::save_as(const QString& dest_path, QString* error) const {
 
   for (int i = 0; i < new_entries.size(); ++i) {
     const ArchiveEntry& e = new_entries[i];
-    const int base = i * kPakDirEntrySize;
+    const int base = i * dir_entry_size;
     const QByteArray name = e.name.toLatin1();
     std::memcpy(dir.data() + base, name.constData(), static_cast<size_t>(name.size()));
-    write_u32_le(&dir, base + kPakNameBytes, e.offset);
-    write_u32_le(&dir, base + kPakNameBytes + 4, e.size);
+    write_u32_le(&dir, base + max_name_bytes, e.offset);
+    write_u32_le(&dir, base + max_name_bytes + 4, e.size);
   }
 
   if (out.write(dir) != dir.size()) {
     if (error) {
-      *error = "Unable to write PAK directory.";
+      *error = QString("Unable to write %1 directory.").arg(archive_label);
     }
     return false;
   }
@@ -575,14 +643,14 @@ bool PakArchive::save_as(const QString& dest_path, QString* error) const {
   write_u32_le(&header, 8, dir_length);
   if (!out.seek(0) || out.write(header) != header.size()) {
     if (error) {
-      *error = "Unable to update PAK header.";
+      *error = QString("Unable to update %1 header.").arg(archive_label);
     }
     return false;
   }
 
   if (!out.commit()) {
     if (error) {
-      *error = "Unable to finalize destination PAK.";
+      *error = QString("Unable to finalize destination %1.").arg(archive_label);
     }
     return false;
   }

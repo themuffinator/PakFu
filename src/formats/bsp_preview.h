@@ -17,6 +17,13 @@ enum class BspPreviewStyle {
   Silhouette,
 };
 
+enum class BspFamily {
+  Unknown = 0,
+  Quake1,
+  Quake2,
+  Quake3,
+};
+
 struct BspPreviewResult {
   QImage image;
   QString error;
@@ -73,3 +80,4 @@ struct BspMesh {
     QString* error = nullptr);
 
 [[nodiscard]] int bsp_version_bytes(const QByteArray& bytes, QString* error = nullptr);
+[[nodiscard]] BspFamily bsp_family_bytes(const QByteArray& bytes, QString* error = nullptr);
