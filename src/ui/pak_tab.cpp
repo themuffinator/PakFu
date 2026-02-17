@@ -53,6 +53,7 @@
 #include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <QTimer>
+#include <QTextStream>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -71,6 +72,7 @@
 #include "formats/model.h"
 #include "formats/pcx_image.h"
 #include "formats/quake3_skin.h"
+#include "formats/quake3_shader.h"
 #include "formats/sprite_loader.h"
 #include "third_party/miniz/miniz.h"
 #include "pak/pak_archive.h"
@@ -1099,7 +1101,8 @@ bool is_video_file_name(const QString& name) {
 
 bool is_model_file_name(const QString& name) {
   const QString ext = file_ext_lower(name);
-  return (ext == "mdl" || ext == "md2" || ext == "md3" || ext == "mdm" || ext == "glm" || ext == "iqm" || ext == "md5mesh" || ext == "obj" ||
+  return (ext == "mdl" || ext == "md2" || ext == "md3" || ext == "mdc" || ext == "md4" || ext == "mdr" || ext == "skb" || ext == "skd" || ext == "mdm" || ext == "glm" || ext == "iqm" || ext == "md5mesh" ||
+          ext == "obj" ||
           ext == "lwo");
 }
 
@@ -1108,17 +1111,229 @@ bool is_bsp_file_name(const QString& name) {
   return (ext == "bsp");
 }
 
+bool is_font_file_name(const QString& name) {
+  const QString ext = file_ext_lower(name);
+  return (ext == "ttf" || ext == "otf");
+}
+
 bool is_cfg_like_text_ext(const QString& ext) {
   return ext == "cfg" || ext == "config" || ext == "rc" || ext == "arena" || ext == "bot" || ext == "skin" || ext == "shaderlist";
+}
+
+bool is_plain_text_script_ext(const QString& ext) {
+  static const QSet<QString> kPlainTextScriptExts = {
+    "txt", "log", "md", "ini", "xml", "lst", "lang", "tik", "anim", "cam", "camera", "char", "voice", "gui", "bgui", "efx", "guide", "lipsync", "viseme", "vdf",
+    "def", "mtr", "sndshd", "af", "pd", "decl", "ent", "map", "sab", "siege", "veh", "npc", "jts", "bset", "weap", "ammo",
+    "campaign"
+  };
+  return kPlainTextScriptExts.contains(ext);
 }
 
 bool is_text_file_name(const QString& name) {
   const QString ext = file_ext_lower(name);
   static const QSet<QString> kTextExts = {
     "cfg", "config", "rc", "arena", "bot", "skin", "shaderlist", "txt", "log", "md", "ini", "json", "xml", "shader", "menu", "script",
-    "lst", "lang", "gui", "efx", "guide", "lipsync", "viseme", "vdf", "c", "h"
+    "lst", "lang", "tik", "anim", "cam", "camera", "char", "voice", "gui", "bgui", "efx", "guide", "lipsync", "viseme", "vdf", "def", "mtr", "sndshd", "af", "pd", "decl", "ent", "map",
+    "qc", "sab", "siege", "veh", "npc", "jts", "bset", "weap", "ammo", "campaign", "c", "h"
   };
   return kTextExts.contains(ext);
+}
+
+QString canonical_doom_lump_name(QString name) {
+  name = name.trimmed();
+  name.replace('\\', '/');
+  const int slash = name.lastIndexOf('/');
+  if (slash >= 0) {
+    name = name.mid(slash + 1);
+  }
+  const int dot = name.indexOf('.');
+  if (dot > 0) {
+    name = name.left(dot);
+  }
+  const int us = name.lastIndexOf('_');
+  if (us > 0 && us + 1 < name.size()) {
+    bool numeric_suffix = true;
+    for (int i = us + 1; i < name.size(); ++i) {
+      if (!name[i].isDigit()) {
+        numeric_suffix = false;
+        break;
+      }
+    }
+    if (numeric_suffix) {
+      name = name.left(us);
+    }
+  }
+  return name.toUpper();
+}
+
+bool is_doom_map_marker_name(const QString& name) {
+  const QString n = canonical_doom_lump_name(name);
+  if (n.size() == 4 && n[0] == 'E' && n[2] == 'M' && n[1].isDigit() && n[3].isDigit()) {
+    return true;
+  }
+  if (n.size() == 5 && n.startsWith("MAP") && n[3].isDigit() && n[4].isDigit()) {
+    return true;
+  }
+  return false;
+}
+
+bool is_doom_map_lump_name(const QString& name) {
+  const QString n = canonical_doom_lump_name(name);
+  static const QSet<QString> kMapLumps = {
+    "THINGS", "LINEDEFS", "SIDEDEFS", "VERTEXES", "SEGS", "SSECTORS", "NODES", "SECTORS", "REJECT", "BLOCKMAP",
+    "BEHAVIOR", "SCRIPTS", "TEXTMAP", "ZNODES", "LEAFS", "GL_VERT", "GL_SEGS", "GL_SSECT", "GL_NODES", "GL_PVS",
+    "GL_PORTALS"
+  };
+  return kMapLumps.contains(n);
+}
+
+int doom_count_from_size(qint64 size, int stride) {
+  if (size <= 0 || stride <= 0) {
+    return 0;
+  }
+  return static_cast<int>(size / stride);
+}
+
+QString format_doom_lump_line(const QString& lump, qint64 size) {
+  return QString("%1: %2 bytes").arg(lump).arg(size);
+}
+
+QString build_doom_map_summary(const QVector<ArchiveEntry>& entries, int marker_index, QString* error) {
+  if (error) {
+    error->clear();
+  }
+  if (marker_index < 0 || marker_index >= entries.size()) {
+    if (error) {
+      *error = "Invalid Doom map marker index.";
+    }
+    return {};
+  }
+
+  const QString marker = canonical_doom_lump_name(entries[marker_index].name);
+  if (!is_doom_map_marker_name(marker)) {
+    if (error) {
+      *error = "Selected lump is not a Doom map marker.";
+    }
+    return {};
+  }
+
+  struct LumpInfo {
+    QString name;
+    qint64 size = 0;
+  };
+  QHash<QString, LumpInfo> lumps;
+
+  for (int i = marker_index + 1; i < entries.size(); ++i) {
+    const QString cname = canonical_doom_lump_name(entries[i].name);
+    if (is_doom_map_marker_name(cname)) {
+      break;
+    }
+    if (!is_doom_map_lump_name(cname)) {
+      continue;
+    }
+    if (!lumps.contains(cname)) {
+      lumps.insert(cname, LumpInfo{cname, entries[i].size});
+    }
+  }
+
+  if (lumps.isEmpty()) {
+    if (error) {
+      *error = "No Doom map lumps were found after this marker.";
+    }
+    return {};
+  }
+
+  const bool has_textmap = lumps.contains("TEXTMAP");
+  const bool has_behavior = lumps.contains("BEHAVIOR");
+  const bool has_gl_nodes = lumps.contains("GL_NODES") || lumps.contains("ZNODES");
+
+  QString map_format = "Doom / Strife binary";
+  if (has_textmap) {
+    map_format = "UDMF (text map)";
+  } else if (has_behavior) {
+    map_format = "Hexen binary";
+  }
+
+  const int thing_stride = has_behavior ? 20 : 10;
+  const int linedef_stride = has_behavior ? 16 : 14;
+
+  const qint64 things_size = lumps.value("THINGS").size;
+  const qint64 linedefs_size = lumps.value("LINEDEFS").size;
+  const qint64 sidedefs_size = lumps.value("SIDEDEFS").size;
+  const qint64 vertexes_size = lumps.value("VERTEXES").size;
+  const qint64 segs_size = lumps.value("SEGS").size;
+  const qint64 ssectors_size = lumps.value("SSECTORS").size;
+  const qint64 nodes_size = lumps.value("NODES").size;
+  const qint64 sectors_size = lumps.value("SECTORS").size;
+  const qint64 reject_size = lumps.value("REJECT").size;
+  const qint64 blockmap_size = lumps.value("BLOCKMAP").size;
+
+  QString summary;
+  QTextStream s(&summary);
+  s << "Type: idTech1 Doom-family map\n";
+  s << "Map marker: " << marker << "\n";
+  s << "Format: " << map_format << "\n";
+  s << "Lump count: " << lumps.size() << "\n";
+  s << "Things: " << doom_count_from_size(things_size, thing_stride);
+  if (things_size > 0 && (things_size % thing_stride) != 0) {
+    s << " (non-standard size)";
+  }
+  s << "\n";
+  s << "Linedefs: " << doom_count_from_size(linedefs_size, linedef_stride);
+  if (linedefs_size > 0 && (linedefs_size % linedef_stride) != 0) {
+    s << " (non-standard size)";
+  }
+  s << "\n";
+  s << "Sidedefs: " << doom_count_from_size(sidedefs_size, 30) << "\n";
+  s << "Vertexes: " << doom_count_from_size(vertexes_size, 4) << "\n";
+  s << "Sectors: " << doom_count_from_size(sectors_size, 26) << "\n";
+  s << "BSP segs: " << doom_count_from_size(segs_size, 12) << "\n";
+  s << "BSP subsectors: " << doom_count_from_size(ssectors_size, 4) << "\n";
+  s << "BSP nodes: " << doom_count_from_size(nodes_size, 28) << "\n";
+  if (has_gl_nodes) {
+    s << "GL/extended nodes: present\n";
+  }
+  if (reject_size > 0) {
+    s << "REJECT bytes: " << reject_size << "\n";
+  }
+  if (blockmap_size > 0) {
+    s << "BLOCKMAP bytes: " << blockmap_size << "\n";
+  }
+
+  static const QStringList kOrder = {"THINGS",   "LINEDEFS", "SIDEDEFS", "VERTEXES", "SEGS",     "SSECTORS",
+                                     "NODES",    "SECTORS",  "REJECT",   "BLOCKMAP", "BEHAVIOR", "SCRIPTS",
+                                     "TEXTMAP",  "ZNODES",   "LEAFS",    "GL_VERT",  "GL_SEGS",  "GL_SSECT",
+                                     "GL_NODES", "GL_PVS",   "GL_PORTALS"};
+  s << "Lumps present:\n";
+  for (const QString& lump : kOrder) {
+    const auto it = lumps.constFind(lump);
+    if (it == lumps.constEnd()) {
+      continue;
+    }
+    s << "  " << format_doom_lump_line(it->name, it->size) << "\n";
+  }
+
+  return summary;
+}
+
+int find_doom_map_marker_index_for_lump(const QVector<ArchiveEntry>& entries, int selected_index) {
+  if (selected_index < 0 || selected_index >= entries.size()) {
+    return -1;
+  }
+  const QString selected = canonical_doom_lump_name(entries[selected_index].name);
+  if (is_doom_map_marker_name(selected)) {
+    return selected_index;
+  }
+  if (!is_doom_map_lump_name(selected)) {
+    return -1;
+  }
+  for (int i = selected_index - 1; i >= 0; --i) {
+    const QString n = canonical_doom_lump_name(entries[i].name);
+    if (is_doom_map_marker_name(n)) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 bool looks_like_text(const QByteArray& bytes) {
@@ -1473,10 +1688,16 @@ void PakTab::cut() {
 }
 
 void PakTab::copy() {
+  if (try_copy_shader_selection_to_clipboard()) {
+    return;
+  }
   copy_selected(false);
 }
 
 void PakTab::paste() {
+  if (try_paste_shader_blocks_from_clipboard()) {
+    return;
+  }
   paste_from_clipboard();
 }
 
@@ -1869,15 +2090,15 @@ void PakTab::build_ui() {
 
   auto* cut_sc = new QShortcut(QKeySequence::Cut, this);
   cut_sc->setContext(Qt::WidgetWithChildrenShortcut);
-  connect(cut_sc, &QShortcut::activated, this, [this]() { copy_selected(true); });
+  connect(cut_sc, &QShortcut::activated, this, [this]() { cut(); });
 
   auto* copy_sc = new QShortcut(QKeySequence::Copy, this);
   copy_sc->setContext(Qt::WidgetWithChildrenShortcut);
-  connect(copy_sc, &QShortcut::activated, this, [this]() { copy_selected(false); });
+  connect(copy_sc, &QShortcut::activated, this, [this]() { copy(); });
 
   auto* paste_sc = new QShortcut(QKeySequence::Paste, this);
   paste_sc->setContext(Qt::WidgetWithChildrenShortcut);
-  connect(paste_sc, &QShortcut::activated, this, [this]() { paste_from_clipboard(); });
+  connect(paste_sc, &QShortcut::activated, this, [this]() { paste(); });
 
   auto* rename_sc = new QShortcut(QKeySequence(Qt::Key_F2), this);
   rename_sc->setContext(Qt::WidgetWithChildrenShortcut);
@@ -1981,15 +2202,15 @@ void PakTab::show_context_menu(QWidget* view, const QPoint& pos) {
 
   auto* cut_action = menu.addAction("Cut");
   cut_action->setShortcut(QKeySequence::Cut);
-  connect(cut_action, &QAction::triggered, this, [this]() { copy_selected(true); });
+  connect(cut_action, &QAction::triggered, this, [this]() { cut(); });
 
   auto* copy_action = menu.addAction("Copy");
   copy_action->setShortcut(QKeySequence::Copy);
-  connect(copy_action, &QAction::triggered, this, [this]() { copy_selected(false); });
+  connect(copy_action, &QAction::triggered, this, [this]() { copy(); });
 
   auto* paste_action = menu.addAction("Paste");
   paste_action->setShortcut(QKeySequence::Paste);
-  connect(paste_action, &QAction::triggered, this, [this]() { paste_from_clipboard(); });
+  connect(paste_action, &QAction::triggered, this, [this]() { paste(); });
 
   auto* rename_action = menu.addAction("Rename");
   rename_action->setShortcut(QKeySequence(Qt::Key_F2));
@@ -3639,6 +3860,139 @@ QMimeData* PakTab::make_mime_data_for_items(const QVector<QPair<QString, bool>>&
   mime->setUrls(urls);
   mime->setData(kPakFuMimeType, QJsonDocument(root).toJson(QJsonDocument::Compact));
   return mime;
+}
+
+bool PakTab::try_copy_shader_selection_to_clipboard() {
+  if (!preview_ || !preview_->is_shader_view_active()) {
+    return false;
+  }
+  const QString text = preview_->selected_shader_blocks_text();
+  if (text.trimmed().isEmpty()) {
+    return false;
+  }
+  auto* mime = new QMimeData();
+  mime->setText(text);
+  QApplication::clipboard()->setMimeData(mime);
+  return true;
+}
+
+bool PakTab::try_paste_shader_blocks_from_clipboard() {
+  if (!preview_ || !preview_->is_shader_view_active()) {
+    return false;
+  }
+  if (!loaded_) {
+    return true;
+  }
+
+  const QVector<QPair<QString, bool>> items = selected_items();
+  if (items.size() != 1 || items.first().second) {
+    return false;
+  }
+
+  const QString pak_path = normalize_pak_path(items.first().first);
+  const QString leaf = pak_leaf_name(pak_path);
+  if (file_ext_lower(leaf) != "shader") {
+    return false;
+  }
+
+  const QMimeData* mime = QApplication::clipboard()->mimeData();
+  if (!mime || !mime->hasText()) {
+    return false;
+  }
+  const QString clipboard_text = mime->text();
+  if (clipboard_text.trimmed().isEmpty()) {
+    return false;
+  }
+
+  Quake3ShaderDocument pasted_doc;
+  QString parse_error;
+  if (!parse_quake3_shader_text(clipboard_text, &pasted_doc, &parse_error) || pasted_doc.shaders.isEmpty()) {
+    return false;
+  }
+
+  if (!ensure_editable("Paste Shader")) {
+    return true;
+  }
+
+  constexpr qint64 kMaxShaderBytes = 4LL * 1024 * 1024;
+  QByteArray bytes;
+  QString err;
+
+  const int added_idx = added_index_by_name_.value(pak_path, -1);
+  if (added_idx >= 0 && added_idx < added_files_.size()) {
+    QFile f(added_files_[added_idx].source_path);
+    if (!f.open(QIODevice::ReadOnly)) {
+      QMessageBox::warning(this, "Paste Shader", "Unable to open the current .shader source file.");
+      return true;
+    }
+    if (f.size() > kMaxShaderBytes) {
+      QMessageBox::warning(this, "Paste Shader", ".shader file is too large to edit inline.");
+      return true;
+    }
+    bytes = f.readAll();
+  } else {
+    if (!view_archive().read_entry_bytes(pak_path, &bytes, &err, kMaxShaderBytes)) {
+      QMessageBox::warning(this, "Paste Shader", err.isEmpty() ? "Unable to read the current .shader file." : err);
+      return true;
+    }
+  }
+
+  const QString current_text = QString::fromUtf8(bytes);
+  const QString updated_text = append_quake3_shader_blocks_text(current_text, pasted_doc);
+  if (updated_text == current_text) {
+    return true;
+  }
+
+  const QString temp_root = ensure_export_root();
+  if (temp_root.isEmpty()) {
+    QMessageBox::warning(this, "Paste Shader", "Unable to create temporary workspace for shader edits.");
+    return true;
+  }
+
+  const QString op_dir = QDir(temp_root).filePath(QString("shader-edit-%1").arg(export_seq_++));
+  if (!QDir().mkpath(op_dir)) {
+    QMessageBox::warning(this, "Paste Shader", "Unable to create temporary workspace for shader edits.");
+    return true;
+  }
+
+  const QString out_name = leaf.isEmpty() ? QString("shader.shader") : leaf;
+  const QString out_path = QDir(op_dir).filePath(out_name);
+  QSaveFile out(out_path);
+  if (!out.open(QIODevice::WriteOnly) || out.write(updated_text.toUtf8()) < 0 || !out.commit()) {
+    QMessageBox::warning(this, "Paste Shader", "Unable to write updated shader content.");
+    return true;
+  }
+
+  const QVector<AddedFile> before_added = added_files_;
+  const QSet<QString> before_virtual = virtual_dirs_;
+  const QSet<QString> before_deleted_files = deleted_files_;
+  const QSet<QString> before_deleted_dirs = deleted_dir_prefixes_;
+
+  QString add_err;
+  if (!add_file_mapping(pak_path, out_path, &add_err)) {
+    QMessageBox::warning(this, "Paste Shader", add_err.isEmpty() ? "Unable to update shader file in archive." : add_err);
+    return true;
+  }
+
+  if (undo_stack_) {
+    undo_stack_->push(new PakTabStateCommand(this,
+                                             "Paste Shader Blocks",
+                                             before_added,
+                                             before_virtual,
+                                             before_deleted_files,
+                                             before_deleted_dirs,
+                                             added_files_,
+                                             virtual_dirs_,
+                                             deleted_files_,
+                                             deleted_dir_prefixes_));
+  } else {
+    set_dirty(true);
+  }
+
+  refresh_listing();
+  select_path(pak_path);
+  update_preview();
+  return true;
 }
 
 void PakTab::copy_selected(bool cut) {
@@ -6293,7 +6647,11 @@ void PakTab::update_preview() {
     if (is_quake_wad_archive_ext(ext)) {
       type = "Quake WAD archive";
     } else if (ext == "wad") {
-      type = "WAD archive container";
+      if (view_archive().format() == Archive::Format::Wad) {
+        type = view_archive().is_doom_wad() ? "Doom IWAD/PWAD archive" : "WAD archive container";
+      } else {
+        type = "WAD archive container";
+      }
     } else if (ext == "resources") {
       type = "Doom 3 BFG resources container";
     }
@@ -6301,6 +6659,28 @@ void PakTab::update_preview() {
                            type + ". Double-click to open.");
     return;
   }
+
+  if (view_archive().format() == Archive::Format::Wad && view_archive().is_doom_wad()) {
+    const QString wanted = normalize_pak_path(pak_path);
+    const QVector<ArchiveEntry>& entries = view_archive().entries();
+    int selected_index = -1;
+    for (int i = 0; i < entries.size(); ++i) {
+      if (normalize_pak_path(entries[i].name) == wanted) {
+        selected_index = i;
+        break;
+      }
+    }
+    const int marker_index = find_doom_map_marker_index_for_lump(entries, selected_index);
+    if (marker_index >= 0) {
+      QString map_err;
+      const QString summary = build_doom_map_summary(entries, marker_index, &map_err);
+      if (!summary.isEmpty()) {
+        preview_->show_text(leaf, subtitle, summary);
+        return;
+      }
+    }
+  }
+
   const bool is_audio = is_supported_audio_file(leaf);
   const bool is_video = is_video_file_name(leaf);
   const bool is_model = is_model_file_name(leaf);
@@ -6430,23 +6810,6 @@ void PakTab::update_preview() {
     return;
   }
 
-	if (is_audio) {
-	QString audio_path = source_path;
-	if (audio_path.isEmpty()) {
-		QString err;
-		if (!export_path_to_temp(pak_path, false, &audio_path, &err)) {
-			preview_->show_message(leaf, err.isEmpty() ? "Unable to export audio for preview." : err);
-			return;
-		}
-	}
-	if (audio_path.isEmpty()) {
-		preview_->show_message(leaf, "Unable to export audio for preview.");
-		return;
-	}
-	preview_->show_audio_from_file(leaf, subtitle, audio_path);
-	return;
-	}
-
   if (is_video) {
     QString video_path = source_path;
     if (video_path.isEmpty()) {
@@ -6467,6 +6830,23 @@ void PakTab::update_preview() {
     } else {
       preview_->show_video_from_file(leaf, subtitle, video_path);
     }
+    return;
+  }
+
+  if (is_audio) {
+    QString audio_path = source_path;
+    if (audio_path.isEmpty()) {
+      QString err;
+      if (!export_path_to_temp(pak_path, false, &audio_path, &err)) {
+        preview_->show_message(leaf, err.isEmpty() ? "Unable to export audio for preview." : err);
+        return;
+      }
+    }
+    if (audio_path.isEmpty()) {
+      preview_->show_message(leaf, "Unable to export audio for preview.");
+      return;
+    }
+    preview_->show_audio_from_file(leaf, subtitle, audio_path);
     return;
   }
 
@@ -6506,8 +6886,8 @@ void PakTab::update_preview() {
         score -= 200;
       }
 
-      // Prefer Quake III .skin files for MD3 models.
-      if (model_ext == "md3" && skin_ext == "skin") {
+      // Prefer Quake III-family .skin files for MD3/MDC/MDR models.
+      if ((model_ext == "md3" || model_ext == "mdc" || model_ext == "mdr") && skin_ext == "skin") {
         score += 160;
       }
 
@@ -6555,7 +6935,7 @@ void PakTab::update_preview() {
       }
 
       QStringList filters = {"*.png", "*.tga", "*.jpg", "*.jpeg", "*.pcx", "*.wal", "*.swl", "*.dds", "*.lmp", "*.mip"};
-      if (model_ext == "md3") {
+      if (model_ext == "md3" || model_ext == "mdc" || model_ext == "mdr") {
         filters.push_back("*.skin");
       }
       const QStringList files = d.entryList(filters, QDir::Files, QDir::Name);
@@ -6603,8 +6983,8 @@ void PakTab::update_preview() {
         }
         const QString leaf_name = pak_leaf_name(p);
         const QString leaf_ext = file_ext_lower(leaf_name);
-        const bool is_md3_skin = (model_ext == "md3" && leaf_ext == "skin");
-        if (!is_image_file_name(leaf_name) && !is_md3_skin) {
+        const bool is_q3_skin = ((model_ext == "md3" || model_ext == "mdc" || model_ext == "mdr") && leaf_ext == "skin");
+        if (!is_image_file_name(leaf_name) && !is_q3_skin) {
           return;
         }
         candidates.push_back(Candidate{p, leaf_name, score_skin(leaf_name)});
@@ -6710,7 +7090,7 @@ void PakTab::update_preview() {
 
       // For multi-surface formats, try to extract per-surface textures referenced by the model so the model viewer can
       // auto-load them from the exported temp directory.
-      if (ext == "md3" || ext == "mdm" || ext == "glm" || ext == "md5mesh" || ext == "iqm" || ext == "obj" || ext == "lwo") {
+      if (ext == "md3" || ext == "mdc" || ext == "md4" || ext == "mdr" || ext == "skb" || ext == "skd" || ext == "mdm" || ext == "glm" || ext == "md5mesh" || ext == "iqm" || ext == "obj" || ext == "lwo") {
         const QString normalized_model = normalize_pak_path(pak_path);
         const int slash = normalized_model.lastIndexOf('/');
         const QString model_dir_prefix = (slash >= 0) ? normalized_model.left(slash + 1) : QString();
@@ -7014,8 +7394,8 @@ void PakTab::update_preview() {
             }
           }
 
-          // If we exported a Quake III .skin file, also extract textures referenced by it.
-          if (ext == "md3" && !skin_path.isEmpty() && file_ext_lower(QFileInfo(skin_path).fileName()) == "skin") {
+          // If we exported a Quake III-family .skin file, also extract textures referenced by it.
+          if ((ext == "md3" || ext == "mdc" || ext == "mdr") && !skin_path.isEmpty() && file_ext_lower(QFileInfo(skin_path).fileName()) == "skin") {
             Quake3SkinMapping mapping;
             QString skin_err;
             if (parse_quake3_skin_file(skin_path, &mapping, &skin_err) && !mapping.surface_to_shader.isEmpty()) {
@@ -7302,12 +7682,10 @@ void PakTab::update_preview() {
       QVector<int> sprite_frame_durations_ms;
 
       if (ext == "spr") {
-        QString pal_err;
-        if (!ensure_quake1_palette(&pal_err)) {
-          preview_->show_message(leaf, pal_err.isEmpty() ? "Unable to locate Quake palette required for SPR preview." : pal_err);
-          return;
-        }
-        const SpriteDecodeResult sprite = decode_spr_sprite(bytes, &quake1_palette_);
+        // Quake SPR needs an external palette; Half-Life SPR v2 carries an embedded palette.
+        (void)ensure_quake1_palette(nullptr);
+        const QVector<QRgb>* sprite_palette = (quake1_palette_.size() == 256) ? &quake1_palette_ : nullptr;
+        const SpriteDecodeResult sprite = decode_spr_sprite(bytes, sprite_palette);
         if (!sprite.ok()) {
           preview_->show_message(leaf, sprite.error.isEmpty() ? "Unable to decode SPR sprite." : sprite.error);
           return;
@@ -7462,21 +7840,52 @@ void PakTab::update_preview() {
     return;
   }
 
+  if (is_font_file_name(leaf)) {
+    constexpr qint64 kMaxFontBytes = 64LL * 1024 * 1024;
+    QByteArray bytes;
+    QString err;
+
+    if (!source_path.isEmpty()) {
+      QFile f(source_path);
+      if (!f.open(QIODevice::ReadOnly)) {
+        preview_->show_message(leaf, "Unable to open source file for preview.");
+        return;
+      }
+      const qint64 size_on_disk = f.size();
+      if (size_on_disk > kMaxFontBytes) {
+        preview_->show_message(leaf, "Font file is too large to inspect.");
+        return;
+      }
+      bytes = f.readAll();
+    } else {
+      const qint64 max_bytes = (size > 0) ? std::min(size, kMaxFontBytes) : kMaxFontBytes;
+      if (!view_archive().read_entry_bytes(pak_path, &bytes, &err, max_bytes)) {
+        preview_->show_message(leaf, err.isEmpty() ? "Unable to read font from archive." : err);
+        return;
+      }
+    }
+
+    preview_->show_font_from_bytes(leaf, subtitle, bytes);
+    return;
+  }
+
   // Text preview (best-effort).
   if (is_text_file_name(leaf)) {
     constexpr qint64 kMaxTextBytes = 512LL * 1024;
+    constexpr qint64 kMaxShaderTextBytes = 4LL * 1024 * 1024;
+    const qint64 text_limit = (ext == "shader") ? kMaxShaderTextBytes : kMaxTextBytes;
     QByteArray bytes;
-    bool truncated = (size >= 0 && size > kMaxTextBytes);
+    bool truncated = (size >= 0 && size > text_limit);
     QString err;
     if (!source_path.isEmpty()) {
       QFile f(source_path);
       if (f.open(QIODevice::ReadOnly)) {
-        bytes = f.read(kMaxTextBytes);
+        bytes = f.read(text_limit);
       } else {
         err = "Unable to open source file for preview.";
       }
     } else {
-      if (!view_archive().read_entry_bytes(pak_path, &bytes, &err, kMaxTextBytes)) {
+      if (!view_archive().read_entry_bytes(pak_path, &bytes, &err, text_limit)) {
         // handled below
       }
     }
@@ -7491,19 +7900,287 @@ void PakTab::update_preview() {
       return;
     }
     const QString sub = truncated ? (subtitle + "  (Content truncated)") : subtitle;
+    if (ext == "shader") {
+      preview_->show_text(leaf, sub, text);
+      return;
+    }
     if (is_cfg_like_text_ext(ext)) {
       preview_->show_cfg(leaf, sub, text);
     } else if (ext == "json") {
       preview_->show_json(leaf, sub, text);
-    } else if (ext == "c" || ext == "h") {
+    } else if (ext == "c" || ext == "h" || ext == "qc") {
       preview_->show_c(leaf, sub, text);
-    } else if (ext == "txt" || ext == "lst" || ext == "lang" || ext == "gui" || ext == "efx" || ext == "guide" ||
-               ext == "lipsync" || ext == "viseme" || ext == "vdf") {
+    } else if (is_plain_text_script_ext(ext)) {
       preview_->show_txt(leaf, sub, text);
     } else if (ext == "menu") {
       preview_->show_menu(leaf, sub, text);
     } else if (ext == "shader") {
-      preview_->show_shader(leaf, sub, text);
+      Quake3ShaderDocument shader_doc;
+      QString shader_parse_error;
+      if (!parse_quake3_shader_text(text, &shader_doc, &shader_parse_error)) {
+        shader_doc.shaders.clear();
+      }
+
+      QHash<QString, QImage> shader_textures;
+      if (!shader_doc.shaders.isEmpty()) {
+        (void)ensure_quake1_palette(nullptr);
+        (void)ensure_quake2_palette(nullptr);
+
+        QSet<QString> refs;
+        for (const Quake3ShaderBlock& shader : shader_doc.shaders) {
+          refs.unite(collect_quake3_shader_texture_refs(shader));
+        }
+
+        auto insert_texture_aliases = [&](const QString& name, const QImage& image) {
+          if (image.isNull()) {
+            return;
+          }
+          auto add = [&](QString key) {
+            key = key.trimmed().toLower();
+            key.replace('\\', '/');
+            while (key.startsWith('/')) {
+              key.remove(0, 1);
+            }
+            if (!key.isEmpty()) {
+              shader_textures.insert(key, image);
+            }
+          };
+
+          add(name);
+          const QFileInfo fi(name);
+          const QString leaf_name = fi.fileName();
+          const QString base_name = fi.completeBaseName();
+          if (!leaf_name.isEmpty()) {
+            add(leaf_name);
+          }
+          if (!base_name.isEmpty()) {
+            add(base_name);
+          }
+        };
+
+        const auto decode_texture_from_bytes = [&](const QByteArray& tex_bytes, const QString& tex_name) -> ImageDecodeResult {
+          const QString tex_ext = file_ext_lower(tex_name);
+          if (tex_ext == "wal") {
+            if (quake2_palette_.size() != 256) {
+              return ImageDecodeResult{QImage(), "Missing Quake II palette for WAL."};
+            }
+            QString wal_err;
+            QImage img = decode_wal_image(tex_bytes, quake2_palette_, 0, tex_name, &wal_err);
+            return ImageDecodeResult{std::move(img), wal_err};
+          }
+          if (tex_ext == "mip") {
+            QString mip_err;
+            QImage img = decode_miptex_image(tex_bytes, quake1_palette_.size() == 256 ? &quake1_palette_ : nullptr, 0, tex_name, &mip_err);
+            return ImageDecodeResult{std::move(img), mip_err};
+          }
+          ImageDecodeOptions opts;
+          if (tex_ext == "lmp" && quake1_palette_.size() == 256) {
+            opts.palette = &quake1_palette_;
+          }
+          ImageDecodeResult decoded = decode_image_bytes(tex_bytes, tex_name, opts);
+          if (!decoded.ok() && opts.palette) {
+            decoded = decode_image_bytes(tex_bytes, tex_name, {});
+          }
+          return decoded;
+        };
+
+        const auto decode_texture_from_file = [&](const QString& tex_path) -> ImageDecodeResult {
+          const QString tex_ext = file_ext_lower(tex_path);
+          if (tex_ext == "wal") {
+            if (quake2_palette_.size() != 256) {
+              return ImageDecodeResult{QImage(), "Missing Quake II palette for WAL."};
+            }
+            QFile f(tex_path);
+            if (!f.open(QIODevice::ReadOnly)) {
+              return ImageDecodeResult{QImage(), "Unable to open WAL image."};
+            }
+            QString wal_err;
+            QImage img = decode_wal_image(f.readAll(), quake2_palette_, 0, QFileInfo(tex_path).fileName(), &wal_err);
+            return ImageDecodeResult{std::move(img), wal_err};
+          }
+          if (tex_ext == "mip") {
+            QFile f(tex_path);
+            if (!f.open(QIODevice::ReadOnly)) {
+              return ImageDecodeResult{QImage(), "Unable to open MIP image."};
+            }
+            QString mip_err;
+            QImage img = decode_miptex_image(f.readAll(),
+                                             quake1_palette_.size() == 256 ? &quake1_palette_ : nullptr,
+                                             0,
+                                             QFileInfo(tex_path).fileName(),
+                                             &mip_err);
+            return ImageDecodeResult{std::move(img), mip_err};
+          }
+          ImageDecodeOptions opts;
+          if (tex_ext == "lmp" && quake1_palette_.size() == 256) {
+            opts.palette = &quake1_palette_;
+          }
+          ImageDecodeResult decoded = decode_image_file(tex_path, opts);
+          if (!decoded.ok() && opts.palette) {
+            decoded = decode_image_file(tex_path, {});
+          }
+          return decoded;
+        };
+
+        QHash<QString, QString> by_lower;
+        by_lower.reserve(view_archive().entries().size() + (is_wad_mounted() ? 0 : added_files_.size()));
+        for (const ArchiveEntry& e : view_archive().entries()) {
+          const QString n = normalize_pak_path(e.name);
+          if (!n.isEmpty()) {
+            by_lower.insert(n.toLower(), e.name);
+          }
+        }
+        if (!is_wad_mounted()) {
+          for (const AddedFile& f : added_files_) {
+            const QString n = normalize_pak_path(f.pak_name);
+            if (!n.isEmpty()) {
+              by_lower.insert(n.toLower(), f.pak_name);
+            }
+          }
+        }
+
+        const auto find_entry_ci = [&](const QString& want) -> QString {
+          const QString key = normalize_pak_path(want).toLower();
+          return key.isEmpty() ? QString() : by_lower.value(key);
+        };
+
+        const QStringList tex_exts = {"tga", "jpg", "jpeg", "png", "dds", "wal", "swl", "pcx", "lmp", "mip"};
+        const QString shader_dir = source_path.isEmpty() ? QString() : QFileInfo(source_path).absolutePath();
+        QStringList local_roots;
+        if (!shader_dir.isEmpty()) {
+          QSet<QString> root_seen;
+          auto add_root = [&](const QString& root_in) {
+            QString root = QDir(root_in).absolutePath();
+            root.replace('\\', '/');
+            if (!root.isEmpty() && !root_seen.contains(root)) {
+              root_seen.insert(root);
+              local_roots.push_back(root);
+            }
+          };
+          add_root(shader_dir);
+          QDir d(shader_dir);
+          add_root(d.absoluteFilePath(".."));
+          add_root(d.absoluteFilePath("../.."));
+        }
+
+        for (const QString& ref_in : refs) {
+          QString ref = ref_in.trimmed();
+          ref.replace('\\', '/');
+          while (ref.startsWith('/')) {
+            ref.remove(0, 1);
+          }
+          if (ref.isEmpty()) {
+            continue;
+          }
+
+          const QFileInfo ref_info(ref);
+          const QString ref_ext = ref_info.suffix().toLower();
+          const bool has_ext = !ref_ext.isEmpty();
+          const bool has_textures_prefix = ref.startsWith("textures/", Qt::CaseInsensitive);
+
+          QVector<QString> candidates;
+          candidates.reserve(32);
+          QSet<QString> candidate_seen;
+          auto add_candidate = [&](const QString& c) {
+            const QString normalized = normalize_pak_path(c);
+            if (!normalized.isEmpty() && !candidate_seen.contains(normalized)) {
+              candidate_seen.insert(normalized);
+              candidates.push_back(normalized);
+            }
+          };
+          auto add_candidate_with_optional_prefix = [&](const QString& c) {
+            add_candidate(c);
+            if (!has_textures_prefix) {
+              add_candidate(QString("textures/%1").arg(c));
+            }
+          };
+
+          if (has_ext) {
+            add_candidate_with_optional_prefix(ref);
+
+            const QString ext = ref_ext;
+            const QString base_ref = ref.left(ref.size() - ext.size() - 1);
+            if (ext == "tga") {
+              // Quake III tries JPG when TGA is requested but missing.
+              add_candidate_with_optional_prefix(QString("%1.jpg").arg(base_ref));
+            } else if (ext == "jpeg") {
+              add_candidate_with_optional_prefix(QString("%1.jpg").arg(base_ref));
+            } else if (ext == "jpg") {
+              // Pragmatic fallback for mixed content packs.
+              add_candidate_with_optional_prefix(QString("%1.tga").arg(base_ref));
+            }
+          } else {
+            for (const QString& e : tex_exts) {
+              add_candidate_with_optional_prefix(QString("%1.%2").arg(ref, e));
+            }
+          }
+
+          bool loaded = false;
+          if (!local_roots.isEmpty()) {
+            for (const QString& root : local_roots) {
+              for (const QString& cand : candidates) {
+                if (loaded) {
+                  break;
+                }
+                QString local = QDir(root).filePath(cand);
+                local.replace('/', QDir::separator());
+                if (!QFileInfo::exists(local)) {
+                  continue;
+                }
+                const ImageDecodeResult decoded = decode_texture_from_file(local);
+                if (!decoded.ok()) {
+                  continue;
+                }
+                insert_texture_aliases(ref, decoded.image);
+                insert_texture_aliases(cand, decoded.image);
+                loaded = true;
+              }
+              if (loaded) {
+                break;
+              }
+            }
+          }
+
+          if (loaded) {
+            continue;
+          }
+
+          constexpr qint64 kMaxShaderTexBytes = 64LL * 1024 * 1024;
+          for (const QString& cand : candidates) {
+            const QString found = find_entry_ci(cand);
+            if (found.isEmpty()) {
+              continue;
+            }
+            const int tex_added_idx = added_index_by_name_.value(normalize_pak_path(found), -1);
+            if (tex_added_idx >= 0 && tex_added_idx < added_files_.size()) {
+              const ImageDecodeResult decoded = decode_texture_from_file(added_files_[tex_added_idx].source_path);
+              if (!decoded.ok()) {
+                continue;
+              }
+              insert_texture_aliases(ref, decoded.image);
+              insert_texture_aliases(found, decoded.image);
+              loaded = true;
+              break;
+            }
+
+            QByteArray tex_bytes;
+            QString tex_err;
+            if (!view_archive().read_entry_bytes(found, &tex_bytes, &tex_err, kMaxShaderTexBytes)) {
+              continue;
+            }
+            const ImageDecodeResult decoded = decode_texture_from_bytes(tex_bytes, QFileInfo(found).fileName());
+            if (!decoded.ok()) {
+              continue;
+            }
+            insert_texture_aliases(ref, decoded.image);
+            insert_texture_aliases(found, decoded.image);
+            loaded = true;
+            break;
+          }
+        }
+      }
+
+      preview_->show_shader(leaf, sub, text, shader_doc, std::move(shader_textures));
     } else {
       preview_->show_text(leaf, sub, text);
     }
@@ -7529,6 +8206,11 @@ void PakTab::update_preview() {
     return;
   }
   const bool truncated = (size >= 0 && size > kMaxBinBytes);
+  if (looks_like_text(bytes)) {
+    const QString sub = truncated ? (subtitle + "  (Content truncated)") : subtitle;
+    preview_->show_text(leaf, sub, QString::fromUtf8(bytes));
+    return;
+  }
   preview_->show_binary(leaf, subtitle, bytes, truncated);
 }
 

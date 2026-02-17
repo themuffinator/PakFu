@@ -153,6 +153,8 @@ private:
   void delete_selected(bool skip_confirmation);
   void copy_selected(bool cut);
   void paste_from_clipboard();
+  bool try_copy_shader_selection_to_clipboard();
+  bool try_paste_shader_blocks_from_clipboard();
   void rename_selected();
   bool add_folder_from_path(const QString& folder_path,
                             const QString& dest_prefix,

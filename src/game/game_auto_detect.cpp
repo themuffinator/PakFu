@@ -449,6 +449,61 @@ QVector<GameSupportInfo> supported_game_support() {
   });
 
   out.push_back(GameSupportInfo{
+    .game = GameId::Doom,
+    .folder_names = {"DOOM", "Ultimate DOOM", "The Ultimate DOOM"},
+    .marker_any = {"base/DOOM.WAD", "base/doom.wad", "base/DOOMU.WAD", "base/doomu.wad", "DOOM.WAD", "doom.wad", "DOOMU.WAD", "doomu.wad",
+                   "DOOM.exe", "doom.exe"},
+    .default_dir_candidates = {"base"},
+    .executable_candidates = {"DOOM.exe", "doom.exe", "gzdoom.exe", "GZDoom.exe", "zdoom.exe", "ZDOOM.exe", "chocolate-doom.exe",
+                              "crispy-doom.exe", "doom"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::Doom2,
+    .folder_names = {"DOOM II", "Doom II", "DOOM2", "Doom2"},
+    .marker_any = {"base/DOOM2.WAD", "base/doom2.wad", "DOOM2.WAD", "doom2.wad", "DOOM2.exe", "doom2.exe"},
+    .default_dir_candidates = {"base"},
+    .executable_candidates = {"DOOM2.exe", "doom2.exe", "gzdoom.exe", "GZDoom.exe", "zdoom.exe", "ZDOOM.exe", "chocolate-doom.exe",
+                              "crispy-doom.exe", "doom2"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::FinalDoom,
+    .folder_names = {"Final DOOM", "Final Doom"},
+    .marker_any = {"base/TNT.WAD", "base/tnt.wad", "base/PLUTONIA.WAD", "base/plutonia.wad",
+                   "TNT.WAD", "tnt.wad", "PLUTONIA.WAD", "plutonia.wad"},
+    .default_dir_candidates = {"base"},
+    .executable_candidates = {"gzdoom.exe", "GZDoom.exe", "zdoom.exe", "ZDOOM.exe", "chocolate-doom.exe", "crispy-doom.exe"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::Heretic,
+    .folder_names = {"Heretic", "Heretic: Shadow of the Serpent Riders"},
+    .marker_any = {"base/HERETIC.WAD", "base/heretic.wad", "HERETIC.WAD", "heretic.wad", "HERETIC.exe", "heretic.exe"},
+    .default_dir_candidates = {"base"},
+    .executable_candidates = {"HERETIC.exe", "heretic.exe", "gzdoom.exe", "GZDoom.exe", "zdoom.exe", "ZDOOM.exe", "chocolate-heretic.exe",
+                              "crispy-heretic.exe", "heretic"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::Hexen,
+    .folder_names = {"Hexen", "Hexen: Beyond Heretic"},
+    .marker_any = {"base/HEXEN.WAD", "base/hexen.wad", "HEXEN.WAD", "hexen.wad", "HEXEN.exe", "hexen.exe"},
+    .default_dir_candidates = {"base"},
+    .executable_candidates = {"HEXEN.exe", "hexen.exe", "gzdoom.exe", "GZDoom.exe", "zdoom.exe", "ZDOOM.exe", "chocolate-hexen.exe",
+                              "crispy-hexen.exe", "hexen"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::Strife,
+    .folder_names = {"Strife", "Strife: Veteran Edition"},
+    .marker_any = {"base/STRIFE1.WAD", "base/strife1.wad", "STRIFE1.WAD", "strife1.wad", "STRIFE.exe", "strife.exe"},
+    .default_dir_candidates = {"base"},
+    .executable_candidates = {"STRIFE.exe", "strife.exe", "gzdoom.exe", "GZDoom.exe", "zdoom.exe", "ZDOOM.exe", "chocolate-strife.exe",
+                              "crispy-strife.exe", "strife"},
+  });
+
+  out.push_back(GameSupportInfo{
     .game = GameId::Quake2,
     .folder_names = {"Quake II", "Quake II Enhanced"},
     .marker_any = {"baseq2/pak0.pak", "baseq2/PAK0.PAK"},
@@ -602,12 +657,20 @@ QVector<GameSupportInfo> supported_game_support() {
 
   out.push_back(GameSupportInfo{
     .game = GameId::Warsow,
-    .folder_names = {"Warsow", "Warfork"},
+    .folder_names = {"Warsow"},
     .marker_any = {"basewsw", "basewsw/data0_00.pk3", "basewsw/pak0.pk3", "warsow.exe", "Warsow.exe",
-                   "warfork.exe", "Warfork.exe"},
+                   "warsow.x86_64"},
     .default_dir_candidates = {"basewsw"},
-    .executable_candidates = {"warsow.exe", "Warsow.exe", "warfork.exe", "Warfork.exe", "warsow.x86_64",
-                              "warfork.x86_64", "warsow", "warfork"},
+    .executable_candidates = {"warsow.exe", "Warsow.exe", "warsow.x86_64", "warsow"},
+  });
+
+  out.push_back(GameSupportInfo{
+    .game = GameId::Warfork,
+    .folder_names = {"Warfork"},
+    .marker_any = {"basewsw", "basewsw/data0_00.pk3", "basewsw/pak0.pk3", "warfork.exe", "Warfork.exe",
+                   "warfork.x86_64"},
+    .default_dir_candidates = {"basewsw"},
+    .executable_candidates = {"warfork.exe", "Warfork.exe", "warfork.x86_64", "warfork"},
   });
 
   out.push_back(GameSupportInfo{
@@ -773,6 +836,12 @@ std::optional<GameId> detect_game_id_for_path(const QString& file_or_dir_path) {
   push_if(GameId::QuakeRerelease);
   push_if(GameId::Quake);
   push_if(GameId::HalfLife);
+  push_if(GameId::Doom);
+  push_if(GameId::Doom2);
+  push_if(GameId::FinalDoom);
+  push_if(GameId::Heretic);
+  push_if(GameId::Hexen);
+  push_if(GameId::Strife);
   push_if(GameId::Quake2Rerelease);
   push_if(GameId::Quake2RTX);
   push_if(GameId::Quake2);
@@ -792,6 +861,7 @@ std::optional<GameId> detect_game_id_for_path(const QString& file_or_dir_path) {
   push_if(GameId::StarTrekVoyagerEliteForce);
   push_if(GameId::EliteForce2);
   push_if(GameId::Warsow);
+  push_if(GameId::Warfork);
   push_if(GameId::WorldOfPadman);
   push_if(GameId::HeavyMetalFakk2);
   push_if(GameId::Quake4);

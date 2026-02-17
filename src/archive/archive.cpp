@@ -34,7 +34,21 @@ const QVector<ArchiveEntry>& Archive::entries() const {
 		case Format::Unknown:
 			break;
 	}
-	return kEmpty;
+  return kEmpty;
+}
+
+bool Archive::is_wad3() const {
+  if (!loaded_ || format_ != Format::Wad) {
+    return false;
+  }
+  return wad_.is_wad3();
+}
+
+bool Archive::is_doom_wad() const {
+  if (!loaded_ || format_ != Format::Wad) {
+    return false;
+  }
+  return wad_.is_doom_wad();
 }
 
 bool Archive::load(const QString& path, QString* error) {

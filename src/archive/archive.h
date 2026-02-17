@@ -31,6 +31,8 @@ public:
   QString readable_path() const { return readable_path_; }  // On-disk path used for reading (may be a decrypted temp file).
 
   bool is_quakelive_encrypted_pk3() const { return quakelive_encrypted_pk3_; }
+  bool is_wad3() const;
+  bool is_doom_wad() const;
 
   const QVector<ArchiveEntry>& entries() const;
 

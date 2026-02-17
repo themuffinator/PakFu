@@ -22,6 +22,7 @@ struct PaletteEntry {
 QVector<PaletteEntry> palette_entries() {
   return {
     {"quake", "Quake"},
+    {"doom", "DOOM"},
     {"quake2", "Quake II"},
   };
 }
@@ -240,6 +241,16 @@ QString GameSetEditorDialog::suggested_default_dir(GameId game, const QString& r
         return root.filePath("valve_hd");
       }
       return root.filePath("valve");
+    case GameId::Doom:
+    case GameId::Doom2:
+    case GameId::FinalDoom:
+    case GameId::Heretic:
+    case GameId::Hexen:
+    case GameId::Strife:
+      if (QFileInfo::exists(root.filePath("base"))) {
+        return root.filePath("base");
+      }
+      return root_dir;
     case GameId::Quake2:
       return root.filePath("baseq2");
     case GameId::Quake2Rerelease:
@@ -325,6 +336,7 @@ QString GameSetEditorDialog::suggested_default_dir(GameId game, const QString& r
       }
       return root_dir;
     case GameId::Warsow:
+    case GameId::Warfork:
       if (QFileInfo::exists(root.filePath("basewsw"))) {
         return root.filePath("basewsw");
       }

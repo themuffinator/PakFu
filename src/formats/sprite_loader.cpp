@@ -26,6 +26,15 @@ namespace {
 	return true;
 }
 
+[[nodiscard]] bool read_u16_le(const QByteArray& bytes, int offset, quint16* out) {
+	if (!out || offset < 0 || offset + 2 > bytes.size()) {
+		return false;
+	}
+	const auto* p = reinterpret_cast<const unsigned char*>(bytes.constData() + offset);
+	*out = static_cast<quint16>(p[0]) | (static_cast<quint16>(p[1]) << 8);
+	return true;
+}
+
 [[nodiscard]] bool read_f32_le(const QByteArray& bytes, int offset, float* out) {
 	quint32 u = 0;
 	if (!read_u32_le(bytes, offset, &u) || !out) {
@@ -59,6 +68,7 @@ namespace {
                                           int pixel_offset,
                                           int width,
                                           int height,
+                                          qint32 tex_format,
                                           const QVector<QRgb>* palette,
                                           QImage* out,
                                           QString* error) {
@@ -118,7 +128,8 @@ namespace {
 			px[0] = static_cast<uchar>(qRed(c));
 			px[1] = static_cast<uchar>(qGreen(c));
 			px[2] = static_cast<uchar>(qBlue(c));
-			px[3] = (idx == 255) ? 0 : 255;
+			// GoldSrc uses texture format 2 (INDEXALPHA) for per-pixel alpha from index value.
+			px[3] = (tex_format == 2) ? static_cast<uchar>(idx) : static_cast<uchar>((idx == 255) ? 0 : 255);
 		}
 	}
 
@@ -144,10 +155,6 @@ SpriteDecodeResult decode_spr_sprite(const QByteArray& bytes, const QVector<QRgb
 
 	if (bytes.size() < 12) {
 		out.error = "SPR file is too small.";
-		return out;
-	}
-	if (!palette || palette->size() != 256) {
-		out.error = "Quake palette is required to decode SPR sprites.";
 		return out;
 	}
 
@@ -176,8 +183,12 @@ SpriteDecodeResult decode_spr_sprite(const QByteArray& bytes, const QVector<QRgb
 	qint32 width = 0;
 	qint32 height = 0;
 	qint32 num_frames = 0;
+	qint32 tex_format = 0;
 	if (has_tex_format) {
-		if (!read_i32_le(bytes, 20, &width) || !read_i32_le(bytes, 24, &height) || !read_i32_le(bytes, 28, &num_frames)) {
+		if (!read_i32_le(bytes, 12, &tex_format) ||
+		    !read_i32_le(bytes, 20, &width) ||
+		    !read_i32_le(bytes, 24, &height) ||
+		    !read_i32_le(bytes, 28, &num_frames)) {
 			out.error = "Unable to parse SPR v2 header.";
 			return out;
 		}
@@ -196,6 +207,46 @@ SpriteDecodeResult decode_spr_sprite(const QByteArray& bytes, const QVector<QRgb
 	out.nominal_width = width;
 	out.nominal_height = height;
 	out.frames.reserve(num_frames);
+
+	QVector<QRgb> embedded_palette;
+	const QVector<QRgb>* decode_palette = palette;
+	int offset = header_size;
+	if (has_tex_format) {
+		quint16 palette_entries = 0;
+		if (read_u16_le(bytes, offset, &palette_entries) && palette_entries > 0 && palette_entries <= 1024) {
+			const qint64 palette_data_start = static_cast<qint64>(offset) + 2;
+			const qint64 palette_data_size = static_cast<qint64>(palette_entries) * 3;
+			const qint64 after_palette = palette_data_start + palette_data_size;
+
+			qint32 direct_frame_type = -1;
+			qint32 post_palette_frame_type = -1;
+			const bool direct_is_frame = read_i32_le(bytes, offset, &direct_frame_type) &&
+			                             (direct_frame_type == 0 || direct_frame_type == 1);
+			const bool post_palette_is_frame = read_i32_le(bytes, static_cast<int>(after_palette), &post_palette_frame_type) &&
+			                                   (post_palette_frame_type == 0 || post_palette_frame_type == 1);
+
+			// Half-Life / GoldSrc SPR v2 stores an embedded palette right after the header.
+			if (post_palette_is_frame && (!direct_is_frame || palette_entries == 256)) {
+				embedded_palette.resize(256);
+				for (int i = 0; i < 256; ++i) {
+					if (i < palette_entries) {
+						const int pofs = static_cast<int>(palette_data_start) + i * 3;
+						const auto* rgb = reinterpret_cast<const unsigned char*>(bytes.constData() + pofs);
+						embedded_palette[i] = qRgb(rgb[0], rgb[1], rgb[2]);
+					} else {
+						embedded_palette[i] = qRgb(0, 0, 0);
+					}
+				}
+				decode_palette = &embedded_palette;
+				offset = static_cast<int>(after_palette);
+			}
+		}
+	}
+
+	if (!decode_palette || decode_palette->size() != 256) {
+		out.error = "SPR palette is missing (expected embedded palette or external 256-color palette).";
+		return out;
+	}
 
 	const auto parse_single = [&](int offset, int duration_ms, SpriteFrame* frame_out, int* next_out, QString* error) -> bool {
 		if (error) {
@@ -243,7 +294,7 @@ SpriteDecodeResult decode_spr_sprite(const QByteArray& bytes, const QVector<QRgb
 
 		QImage image;
 		QString image_err;
-		if (!decode_spr_frame_image(bytes, offset + kSprSingleFrameHeader, fw, fh, palette, &image, &image_err)) {
+		if (!decode_spr_frame_image(bytes, offset + kSprSingleFrameHeader, fw, fh, tex_format, decode_palette, &image, &image_err)) {
 			if (error) {
 				*error = image_err.isEmpty() ? "Unable to decode SPR frame image." : image_err;
 			}
@@ -258,7 +309,6 @@ SpriteDecodeResult decode_spr_sprite(const QByteArray& bytes, const QVector<QRgb
 		return true;
 	};
 
-	int offset = header_size;
 	for (int i = 0; i < num_frames; ++i) {
 		qint32 frame_type = 0;
 		if (!read_i32_le(bytes, offset, &frame_type)) {

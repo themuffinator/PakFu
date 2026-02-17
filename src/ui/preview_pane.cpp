@@ -13,6 +13,7 @@
 #include <QFontDatabase>
 #include <QFrame>
 #include <QFont>
+#include <QFontInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -33,6 +34,7 @@
 #include <QStringList>
 #include <QToolButton>
 #include <QTimer>
+#include <QTextOption>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QStyle>
@@ -45,6 +47,7 @@
 #include "ui/video_player_widget.h"
 #include "ui/model_viewer_vulkan_widget.h"
 #include "ui/model_viewer_widget.h"
+#include "ui/shader_viewer_widget.h"
 #include "ui/simple_syntax_highlighter.h"
 
 namespace {
@@ -139,6 +142,51 @@ QString format_mtime(qint64 utc_secs) {
 	}
 	const QDateTime dt = QDateTime::fromSecsSinceEpoch(utc_secs, QTimeZone::utc()).toLocalTime();
 	return dt.toString("yyyy-MM-dd HH:mm:ss");
+}
+
+bool read_u16_be_at(const QByteArray& bytes, int offset, quint16* out) {
+	if (!out || offset < 0 || offset + 2 > bytes.size()) {
+		return false;
+	}
+	const unsigned char* p = reinterpret_cast<const unsigned char*>(bytes.constData() + offset);
+	*out = (static_cast<quint16>(p[0]) << 8) | static_cast<quint16>(p[1]);
+	return true;
+}
+
+bool read_u32_be_at(const QByteArray& bytes, int offset, quint32* out) {
+	if (!out || offset < 0 || offset + 4 > bytes.size()) {
+		return false;
+	}
+	const unsigned char* p = reinterpret_cast<const unsigned char*>(bytes.constData() + offset);
+	*out = (static_cast<quint32>(p[0]) << 24) | (static_cast<quint32>(p[1]) << 16) |
+	       (static_cast<quint32>(p[2]) << 8) | static_cast<quint32>(p[3]);
+	return true;
+}
+
+QString sfnt_tag_text(quint32 tag) {
+	QString out;
+	out.reserve(4);
+	for (int shift = 24; shift >= 0; shift -= 8) {
+		const char c = static_cast<char>((tag >> shift) & 0xFFu);
+		out += (c >= 32 && c <= 126) ? QChar(c) : QChar('.');
+	}
+	return out;
+}
+
+QString font_container_label(quint32 signature) {
+	switch (signature) {
+		case 0x00010000u:
+		case 0x74727565u:  // "true"
+			return "TrueType outlines";
+		case 0x4F54544Fu:  // "OTTO"
+			return "OpenType (CFF)";
+		case 0x74746366u:  // "ttcf"
+			return "TrueType/OpenType Collection";
+		case 0x74797031u:  // "typ1"
+			return "OpenType Type 1";
+		default:
+			return "Unknown/unsupported SFNT";
+	}
 }
 
 BspPreviewWidget* as_gl_bsp_widget(QWidget* widget) {
@@ -267,7 +315,9 @@ PreviewPane::PreviewPane(QWidget* parent) : QWidget(parent) {
 	show_placeholder();
 }
 
-PreviewPane::~PreviewPane() = default;
+PreviewPane::~PreviewPane() {
+	clear_font_preview_font();
+}
 
 void PreviewPane::set_current_file_info(const QString& pak_path, qint64 size, qint64 mtime_utc_secs) {
 	current_pak_path_ = pak_path;
@@ -287,6 +337,7 @@ void PreviewPane::resizeEvent(QResizeEvent* event) {
 	if (image_card_ && image_card_->isVisible() && !image_source_pixmap_.isNull()) {
 		set_image_pixmap(image_source_pixmap_);
 	}
+	update_shader_viewport_width();
 }
 
 bool PreviewPane::eventFilter(QObject* watched, QEvent* event) {
@@ -294,6 +345,9 @@ bool PreviewPane::eventFilter(QObject* watched, QEvent* event) {
 		exit_3d_fullscreen();
 		event->accept();
 		return true;
+	}
+	if (shader_scroll_ && watched == shader_scroll_->viewport() && event && event->type() == QEvent::Resize) {
+		update_shader_viewport_width();
 	}
 	return QWidget::eventFilter(watched, event);
 }
@@ -693,6 +747,27 @@ void PreviewPane::build_ui() {
 	content_title_label_->setFont(card_title_font);
 	content_layout->addWidget(content_title_label_, 0);
 
+	text_controls_ = new QWidget(content_card_);
+	auto* text_controls_layout = new QHBoxLayout(text_controls_);
+	text_controls_layout->setContentsMargins(6, 4, 6, 4);
+	text_controls_layout->setSpacing(8);
+
+	auto* text_label = new QLabel("Text", text_controls_);
+	text_label->setStyleSheet("color: rgba(190, 190, 190, 220);");
+	text_controls_layout->addWidget(text_label);
+
+	text_wrap_button_ = new QToolButton(text_controls_);
+	text_wrap_button_->setText("Word Wrap");
+	text_wrap_button_->setCheckable(true);
+	text_wrap_button_->setAutoRaise(true);
+	text_wrap_button_->setCursor(Qt::PointingHandCursor);
+	text_wrap_button_->setToolTip("Wrap long lines at word boundaries in text previews.");
+	text_controls_layout->addWidget(text_wrap_button_);
+	text_controls_layout->addStretch();
+
+	text_controls_->setVisible(false);
+	content_layout->addWidget(text_controls_, 0);
+
 	three_d_controls_ = new QWidget(content_card_);
 	auto* three_d_layout = new QHBoxLayout(three_d_controls_);
 	three_d_layout->setContentsMargins(6, 4, 6, 4);
@@ -810,6 +885,118 @@ void PreviewPane::build_ui() {
 	text_view_->setFont(mono);
 	text_layout->addWidget(text_view_);
 	stack_->addWidget(text_page_);
+
+	// Shader page (tiled renderer + selection).
+	shader_page_ = new QWidget(stack_);
+	auto* shader_page_layout = new QVBoxLayout(shader_page_);
+	shader_page_layout->setContentsMargins(0, 0, 0, 0);
+	shader_page_layout->setSpacing(6);
+
+	auto* shader_hint = new QLabel("Click tiles to select shader blocks. Use Ctrl/Cmd or Shift for multi-select.", shader_page_);
+	shader_hint->setWordWrap(true);
+	shader_hint->setStyleSheet("color: rgba(195, 195, 195, 210);");
+	shader_page_layout->addWidget(shader_hint, 0);
+
+	shader_scroll_ = new QScrollArea(shader_page_);
+	shader_scroll_->setWidgetResizable(false);
+	shader_scroll_->setFrameShape(QFrame::NoFrame);
+	shader_page_layout->addWidget(shader_scroll_, 1);
+
+	shader_widget_ = new ShaderViewerWidget(shader_scroll_);
+	shader_scroll_->setWidget(shader_widget_);
+	if (shader_scroll_->viewport()) {
+		shader_scroll_->viewport()->installEventFilter(this);
+	}
+
+	stack_->addWidget(shader_page_);
+
+	// Font page (specialized specimen view).
+	font_page_ = new QWidget(stack_);
+	auto* font_page_layout = new QVBoxLayout(font_page_);
+	font_page_layout->setContentsMargins(0, 0, 0, 0);
+	font_page_layout->setSpacing(0);
+
+	auto* font_scroll = new QScrollArea(font_page_);
+	font_scroll->setWidgetResizable(true);
+	font_scroll->setFrameShape(QFrame::NoFrame);
+	font_page_layout->addWidget(font_scroll, 1);
+
+	auto* font_scroll_content = new QWidget(font_scroll);
+	auto* font_scroll_layout = new QVBoxLayout(font_scroll_content);
+	font_scroll_layout->setContentsMargins(4, 4, 4, 4);
+	font_scroll_layout->setSpacing(0);
+
+	auto* font_card = new QFrame(font_scroll_content);
+	font_card->setObjectName("fontSpecimenCard");
+	font_card->setStyleSheet(
+		"#fontSpecimenCard {"
+		"  border: 1px solid rgba(120, 120, 120, 70);"
+		"  border-radius: 14px;"
+		"  background: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
+		"                              stop:0 rgba(36, 48, 68, 220),"
+		"                              stop:1 rgba(18, 24, 36, 220));"
+		"}"
+		"#fontSpecimenHeading { color: rgba(238, 243, 252, 245); }"
+		"#fontSpecimenSubheading { color: rgba(190, 201, 220, 230); }"
+		"#fontSpecimenNotice { color: rgba(255, 196, 96, 235); }"
+		"#fontSpecimenMeta { color: rgba(186, 198, 220, 225); }"
+		"#fontSpecimenLine { color: rgba(232, 238, 250, 242); }");
+	auto* font_card_layout = new QVBoxLayout(font_card);
+	font_card_layout->setContentsMargins(20, 20, 20, 20);
+	font_card_layout->setSpacing(10);
+
+	font_heading_label_ = new QLabel("Font Specimen", font_card);
+	font_heading_label_->setObjectName("fontSpecimenHeading");
+	QFont heading_font = title_label_ ? title_label_->font() : font_heading_label_->font();
+	heading_font.setPointSize(std::max(12, heading_font.pointSize() + 1));
+	heading_font.setWeight(QFont::DemiBold);
+	font_heading_label_->setFont(heading_font);
+	font_heading_label_->setWordWrap(true);
+	font_card_layout->addWidget(font_heading_label_);
+
+	font_subheading_label_ = new QLabel(font_card);
+	font_subheading_label_->setObjectName("fontSpecimenSubheading");
+	font_subheading_label_->setWordWrap(true);
+	font_card_layout->addWidget(font_subheading_label_);
+
+	font_notice_label_ = new QLabel(font_card);
+	font_notice_label_->setObjectName("fontSpecimenNotice");
+	font_notice_label_->setWordWrap(true);
+	font_notice_label_->setVisible(false);
+	font_card_layout->addWidget(font_notice_label_);
+
+	auto make_line_label = [&](const QString& text) -> QLabel* {
+		auto* l = new QLabel(text, font_card);
+		l->setObjectName("fontSpecimenLine");
+		l->setWordWrap(true);
+		l->setTextInteractionFlags(Qt::TextSelectableByMouse);
+		return l;
+	};
+
+	font_hero_label_ = make_line_label("The quick brown fox jumps over the lazy dog");
+	font_pangram_label_ = make_line_label("Sphinx of black quartz, judge my vow.");
+	font_upper_label_ = make_line_label("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+	font_lower_label_ = make_line_label("abcdefghijklmnopqrstuvwxyz");
+	font_digits_label_ = make_line_label("0123456789");
+	font_symbols_label_ = make_line_label("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~");
+
+	font_card_layout->addWidget(font_hero_label_);
+	font_card_layout->addWidget(font_pangram_label_);
+	font_card_layout->addWidget(font_upper_label_);
+	font_card_layout->addWidget(font_lower_label_);
+	font_card_layout->addWidget(font_digits_label_);
+	font_card_layout->addWidget(font_symbols_label_);
+
+	font_meta_label_ = new QLabel(font_card);
+	font_meta_label_->setObjectName("fontSpecimenMeta");
+	font_meta_label_->setWordWrap(true);
+	font_meta_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+	font_card_layout->addWidget(font_meta_label_);
+
+	font_scroll_layout->addWidget(font_card, 0);
+	font_scroll_layout->addStretch(1);
+	font_scroll->setWidget(font_scroll_content);
+	stack_->addWidget(font_page_);
 
 	// Audio page.
 	audio_page_ = new QWidget(stack_);
@@ -1010,6 +1197,7 @@ void PreviewPane::build_ui() {
 	const QString layout_mode = settings.value("preview/image/layout").toString().trimmed().toLower();
 	image_layout_mode_ = (layout_mode == "tile") ? ImageLayoutMode::Tile : ImageLayoutMode::Fit;
 	image_reveal_transparency_ = settings.value("preview/image/revealTransparent", false).toBool();
+	text_word_wrap_enabled_ = settings.value("preview/text/wordWrap", false).toBool();
 	image_texture_smoothing_ = settings.value("preview/image/textureSmoothing", false).toBool();
 	model_texture_smoothing_ = settings.value("preview/model/textureSmoothing", false).toBool();
 	bsp_lightmapping_enabled_ = settings.value("preview/bsp/lightmapping", true).toBool();
@@ -1090,6 +1278,16 @@ void PreviewPane::build_ui() {
 			QSettings s;
 			s.setValue("preview/image/backgroundMode", data.isEmpty() ? "transparent" : data);
 			apply_image_background();
+		});
+	}
+
+	if (text_wrap_button_) {
+		text_wrap_button_->setChecked(text_word_wrap_enabled_);
+		connect(text_wrap_button_, &QToolButton::toggled, this, [this](bool checked) {
+			text_word_wrap_enabled_ = checked;
+			QSettings s;
+			s.setValue("preview/text/wordWrap", text_word_wrap_enabled_);
+			apply_text_wrap_mode();
 		});
 	}
 
@@ -1285,6 +1483,8 @@ void PreviewPane::build_ui() {
 
 	apply_3d_settings();
 	apply_image_background();
+	apply_text_wrap_mode();
+	update_shader_viewport_width();
 }
 
 /*
@@ -1580,6 +1780,226 @@ void PreviewPane::show_cfg(const QString& title, const QString& subtitle, const 
 	show_content_block("Text View", text_page_);
 }
 
+void PreviewPane::show_font_from_bytes(const QString& title, const QString& subtitle, const QByteArray& bytes) {
+	stop_audio_playback();
+	stop_cinematic_playback();
+	stop_video_playback();
+	stop_model_preview();
+	current_content_kind_ = ContentKind::Font;
+	set_text_highlighter(TextSyntax::None);
+	set_header(title, subtitle);
+	clear_font_preview_font();
+
+	if (image_card_) {
+		image_card_->setVisible(false);
+	}
+
+	clear_overview_fields();
+	show_overview_block(true);
+	populate_basic_overview();
+	set_overview_value("Type", "Font");
+	set_overview_value("Bytes", format_size(bytes.size()));
+
+	const auto set_fallback_text = [&](const QString& text) {
+		if (!font_page_) {
+			if (text_view_) {
+				text_view_->setPlainText(text);
+			}
+			show_content_block("Font Details", text_page_);
+			return;
+		}
+
+		if (font_heading_label_) {
+			font_heading_label_->setText("Font Preview");
+		}
+		if (font_subheading_label_) {
+			font_subheading_label_->setText("No loadable font data was found.");
+		}
+		if (font_notice_label_) {
+			font_notice_label_->setVisible(true);
+			font_notice_label_->setText(text);
+		}
+
+		if (font_hero_label_) {
+			font_hero_label_->setText("The quick brown fox jumps over the lazy dog");
+		}
+		if (font_pangram_label_) {
+			font_pangram_label_->setText("Sphinx of black quartz, judge my vow.");
+		}
+		if (font_upper_label_) {
+			font_upper_label_->setText("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+		}
+		if (font_lower_label_) {
+			font_lower_label_->setText("abcdefghijklmnopqrstuvwxyz");
+		}
+		if (font_digits_label_) {
+			font_digits_label_->setText("0123456789");
+		}
+		if (font_symbols_label_) {
+			font_symbols_label_->setText("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~");
+		}
+		if (font_meta_label_) {
+			font_meta_label_->setText("Unable to decode font family/style metadata.");
+		}
+		show_content_block("Font Preview", font_page_);
+	};
+
+	if (bytes.isEmpty()) {
+		set_fallback_text("Font file is empty.");
+		return;
+	}
+
+	quint32 signature = 0;
+	if (read_u32_be_at(bytes, 0, &signature)) {
+		const QString sig_hex = QString("0x%1").arg(QString::number(signature, 16).rightJustified(8, QLatin1Char('0')));
+		set_overview_value("Signature", QString("%1 (%2)").arg(sig_hex, sfnt_tag_text(signature)));
+		set_overview_value("Container", font_container_label(signature));
+	}
+
+	if (signature == 0x74746366u) {  // "ttcf"
+		quint32 collection_fonts = 0;
+		if (read_u32_be_at(bytes, 8, &collection_fonts)) {
+			set_overview_value("Faces", QString::number(collection_fonts));
+		}
+	} else {
+		quint16 num_tables = 0;
+		if (read_u16_be_at(bytes, 4, &num_tables)) {
+			set_overview_value("Tables", QString::number(num_tables));
+		}
+	}
+
+	const int font_id = QFontDatabase::addApplicationFontFromData(bytes);
+	const bool loadable = (font_id >= 0);
+	set_overview_value("Loadable", loadable ? "Yes" : "No");
+	font_preview_font_id_ = loadable ? font_id : -1;
+
+	QStringList families;
+	QString primary_family;
+	QString primary_style;
+	QStringList styles;
+	if (loadable) {
+		families = QFontDatabase::applicationFontFamilies(font_id);
+		if (!families.isEmpty()) {
+			primary_family = families.first();
+			styles = QFontDatabase::styles(primary_family);
+			if (!styles.isEmpty()) {
+				primary_style = styles.first();
+			}
+		}
+	}
+
+	if (!primary_family.isEmpty()) {
+		set_overview_value("Family", primary_family);
+	}
+	if (!primary_style.isEmpty()) {
+		set_overview_value("Style", primary_style);
+	}
+	if (families.size() > 1) {
+		set_overview_value("Families", QString::number(families.size()));
+	}
+	if (styles.size() > 1) {
+		set_overview_value("Styles", QString::number(styles.size()));
+	}
+
+	QFont sample_font = QFontDatabase::systemFont(QFontDatabase::GeneralFont);
+	if (!primary_family.isEmpty()) {
+		sample_font = QFont(primary_family);
+	}
+	if (!primary_style.isEmpty()) {
+		sample_font.setStyleName(primary_style);
+	}
+	sample_font.setStyleStrategy(QFont::PreferAntialias);
+
+	if (!font_page_) {
+		QStringList details;
+		details << "Font Preview Details";
+		details << "--------------------";
+		details << QString("Container: %1").arg(font_container_label(signature));
+		details << QString("Loadable by Qt: %1").arg(loadable ? "yes" : "no");
+		if (!primary_family.isEmpty()) {
+			details << QString("Primary family: %1").arg(primary_family);
+		}
+		if (!primary_style.isEmpty()) {
+			details << QString("Primary style: %1").arg(primary_style);
+		}
+		if (text_view_) {
+			text_view_->setPlainText(details.join('\n'));
+		}
+		show_content_block("Font Details", text_page_);
+		return;
+	}
+
+	QFont hero_font = sample_font;
+	hero_font.setPointSize(40);
+	hero_font.setWeight(QFont::DemiBold);
+
+	QFont pangram_font = sample_font;
+	pangram_font.setPointSize(24);
+	pangram_font.setWeight(QFont::Normal);
+
+	QFont letter_font = sample_font;
+	letter_font.setPointSize(20);
+	letter_font.setWeight(QFont::Normal);
+
+	QFont small_font = sample_font;
+	small_font.setPointSize(16);
+	small_font.setWeight(QFont::Normal);
+
+	if (font_heading_label_) {
+		font_heading_label_->setText(primary_family.isEmpty() ? "Font Specimen" : QString("Font Specimen - %1").arg(primary_family));
+	}
+	if (font_subheading_label_) {
+		const QString resolved_style = primary_style.isEmpty() ? QString("Regular") : primary_style;
+		font_subheading_label_->setText(QString("%1  |  %2").arg(font_container_label(signature), resolved_style));
+	}
+	if (font_notice_label_) {
+		font_notice_label_->setVisible(!loadable);
+		font_notice_label_->setText(!loadable ? "Qt could not instantiate this font. Showing fallback typography." : QString());
+	}
+	if (font_hero_label_) {
+		font_hero_label_->setFont(hero_font);
+		font_hero_label_->setText("The quick brown fox jumps over the lazy dog");
+	}
+	if (font_pangram_label_) {
+		font_pangram_label_->setFont(pangram_font);
+		font_pangram_label_->setText("Sphinx of black quartz, judge my vow.");
+	}
+	if (font_upper_label_) {
+		font_upper_label_->setFont(letter_font);
+		font_upper_label_->setText("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+	}
+	if (font_lower_label_) {
+		font_lower_label_->setFont(letter_font);
+		font_lower_label_->setText("abcdefghijklmnopqrstuvwxyz");
+	}
+	if (font_digits_label_) {
+		font_digits_label_->setFont(small_font);
+		font_digits_label_->setText("0123456789");
+	}
+	if (font_symbols_label_) {
+		font_symbols_label_->setFont(small_font);
+		font_symbols_label_->setText("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~");
+	}
+
+	QStringList meta_lines;
+	const QFontInfo fi(sample_font);
+	meta_lines << QString("Resolved family: %1").arg(fi.family());
+	meta_lines << QString("Resolved style: %1").arg(fi.styleName().isEmpty() ? QString("Regular") : fi.styleName());
+	meta_lines << QString("Resolved weight: %1").arg(fi.weight());
+	meta_lines << QString("Italic: %1").arg(fi.italic() ? "yes" : "no");
+	if (!families.isEmpty()) {
+		meta_lines << QString("Families in file: %1").arg(families.join(", "));
+	}
+	if (!styles.isEmpty()) {
+		meta_lines << QString("Styles: %1").arg(styles.join(", "));
+	}
+	if (font_meta_label_) {
+		font_meta_label_->setText(meta_lines.join('\n'));
+	}
+
+	show_content_block("Font Preview", font_page_);
+}
+
 /*
 =============
 PreviewPane::show_binary
@@ -1614,6 +2034,9 @@ void PreviewPane::show_binary(const QString& title,
 		text_view_->setPlainText(hex_dump(bytes, 256));
 	}
 	show_content_block("Text View", text_page_);
+	if (text_controls_) {
+		text_controls_->setVisible(false);
+	}
 }
 
 void PreviewPane::show_image(const QString& title, const QString& subtitle, const QImage& image) {
@@ -1795,6 +2218,35 @@ void PreviewPane::set_text_highlighter(TextSyntax syntax) {
 	}
 }
 
+void PreviewPane::apply_text_wrap_mode() {
+	if (!text_view_) {
+		return;
+	}
+	if (text_word_wrap_enabled_) {
+		text_view_->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+		text_view_->setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+	} else {
+		text_view_->setLineWrapMode(QPlainTextEdit::NoWrap);
+		text_view_->setWordWrapMode(QTextOption::NoWrap);
+	}
+	if (text_wrap_button_) {
+		text_wrap_button_->blockSignals(true);
+		text_wrap_button_->setChecked(text_word_wrap_enabled_);
+		text_wrap_button_->blockSignals(false);
+	}
+}
+
+void PreviewPane::update_shader_viewport_width() {
+	if (!shader_scroll_ || !shader_widget_ || !shader_scroll_->viewport()) {
+		return;
+	}
+	const int viewport_w = shader_scroll_->viewport()->width();
+	if (viewport_w <= 0) {
+		return;
+	}
+	shader_widget_->set_viewport_width(viewport_w);
+}
+
 void PreviewPane::show_overview_block(bool show) {
 	if (overview_card_) {
 		overview_card_->setVisible(show);
@@ -1802,6 +2254,9 @@ void PreviewPane::show_overview_block(bool show) {
 }
 
 void PreviewPane::show_content_block(const QString& title, QWidget* page) {
+	if (page != font_page_) {
+		clear_font_preview_font();
+	}
 	if (three_d_fullscreen_window_ && page != three_d_fullscreen_page_) {
 		exit_3d_fullscreen();
 	}
@@ -1811,6 +2266,13 @@ void PreviewPane::show_content_block(const QString& title, QWidget* page) {
 	}
 	if (content_card_) {
 		content_card_->setVisible(true);
+	}
+	if (text_controls_) {
+		const bool show_text_controls = (page == text_page_ && current_content_kind_ == ContentKind::Text);
+		text_controls_->setVisible(show_text_controls);
+		if (show_text_controls) {
+			apply_text_wrap_mode();
+		}
 	}
 	if (three_d_controls_) {
 		three_d_controls_->setVisible(false);
@@ -1822,13 +2284,25 @@ void PreviewPane::show_content_block(const QString& title, QWidget* page) {
 }
 
 void PreviewPane::hide_content_block() {
+	clear_font_preview_font();
 	if (three_d_fullscreen_window_) {
 		exit_3d_fullscreen();
 	}
 	if (content_card_) {
 		content_card_->setVisible(false);
 	}
+	if (text_controls_) {
+		text_controls_->setVisible(false);
+	}
 	update_3d_fullscreen_button();
+}
+
+void PreviewPane::clear_font_preview_font() {
+	if (font_preview_font_id_ < 0) {
+		return;
+	}
+	QFontDatabase::removeApplicationFont(font_preview_font_id_);
+	font_preview_font_id_ = -1;
 }
 
 void PreviewPane::stop_sprite_animation() {
@@ -2554,6 +3028,17 @@ void PreviewPane::start_playback_from_beginning() {
 	}
 }
 
+bool PreviewPane::is_shader_view_active() const {
+	return current_content_kind_ == ContentKind::Shader && stack_ && shader_page_ && stack_->currentWidget() == shader_page_ && shader_widget_;
+}
+
+QString PreviewPane::selected_shader_blocks_text() const {
+	if (!is_shader_view_active() || !shader_widget_) {
+		return {};
+	}
+	return shader_widget_->selected_shader_script_text();
+}
+
 /*
 =============
 PreviewPane::stop_audio_playback
@@ -2750,13 +3235,17 @@ void PreviewPane::show_menu(const QString& title, const QString& subtitle, const
 	show_content_block("Text View", text_page_);
 }
 
-void PreviewPane::show_shader(const QString& title, const QString& subtitle, const QString& text) {
+void PreviewPane::show_shader(const QString& title,
+                              const QString& subtitle,
+                              const QString& text,
+                              const Quake3ShaderDocument& document,
+                              QHash<QString, QImage> textures) {
 	stop_audio_playback();
 	stop_cinematic_playback();
 	stop_video_playback();
 	stop_model_preview();
-	current_content_kind_ = ContentKind::Text;
-	set_text_highlighter(TextSyntax::Quake3Shader);
+	current_content_kind_ = ContentKind::Shader;
+	set_text_highlighter(TextSyntax::None);
 	set_header(title, subtitle);
 	if (image_card_) {
 		image_card_->setVisible(false);
@@ -2764,7 +3253,18 @@ void PreviewPane::show_shader(const QString& title, const QString& subtitle, con
 	clear_overview_fields();
 	show_overview_block(true);
 	populate_basic_overview();
-	set_overview_value("Type", "Shader");
+	set_overview_value("Type", "Shader Script");
+	set_overview_value("Shaders", QString::number(document.shaders.size()));
+	if (shader_widget_) {
+		shader_widget_->set_document(text, document, std::move(textures));
+		update_shader_viewport_width();
+		show_content_block("Shader Tiles", shader_page_);
+		return;
+	}
+
+	// Fallback path if the dedicated widget isn't available.
+	current_content_kind_ = ContentKind::Text;
+	set_text_highlighter(TextSyntax::Quake3Shader);
 	if (text_view_) {
 		text_view_->setPlainText(text);
 	}

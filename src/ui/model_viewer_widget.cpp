@@ -839,15 +839,33 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
 
   const auto decode_embedded_skin = [&](const LoadedModel& model) -> QImage {
     if (model.embedded_skin_width <= 0 || model.embedded_skin_height <= 0 || model.embedded_skin_indices.isEmpty()) {
-      return {};
+      if (model.embedded_skin_width <= 0 || model.embedded_skin_height <= 0 || model.embedded_skin_rgba.isEmpty()) {
+        return {};
+      }
     }
     const qint64 pixel_count =
         static_cast<qint64>(model.embedded_skin_width) * static_cast<qint64>(model.embedded_skin_height);
-    if (pixel_count <= 0 || pixel_count > model.embedded_skin_indices.size()) {
+    if (pixel_count <= 0) {
       return {};
     }
     QImage img(model.embedded_skin_width, model.embedded_skin_height, QImage::Format_ARGB32);
     if (img.isNull()) {
+      return {};
+    }
+    const qint64 rgba_bytes = pixel_count * 4;
+    if (rgba_bytes > 0 && rgba_bytes <= model.embedded_skin_rgba.size()) {
+      const auto* src = reinterpret_cast<const unsigned char*>(model.embedded_skin_rgba.constData());
+      for (int y = 0; y < model.embedded_skin_height; ++y) {
+        QRgb* row = reinterpret_cast<QRgb*>(img.scanLine(y));
+        const qint64 row_off = static_cast<qint64>(y) * static_cast<qint64>(model.embedded_skin_width) * 4;
+        for (int x = 0; x < model.embedded_skin_width; ++x) {
+          const qint64 px_off = row_off + static_cast<qint64>(x) * 4;
+          row[x] = qRgba(src[px_off + 0], src[px_off + 1], src[px_off + 2], src[px_off + 3]);
+        }
+      }
+      return img;
+    }
+    if (pixel_count > model.embedded_skin_indices.size()) {
       return {};
     }
     const bool has_palette = (quake1_palette_.size() == 256);
@@ -865,6 +883,118 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
       }
     }
     return img;
+  };
+
+  const auto decode_embedded_texture = [&](const EmbeddedTexture& tex) -> QImage {
+    const qint64 pixel_count = static_cast<qint64>(tex.width) * static_cast<qint64>(tex.height);
+    if (tex.width <= 0 || tex.height <= 0 || pixel_count <= 0) {
+      return {};
+    }
+    if (tex.rgba.size() != pixel_count * 4) {
+      return {};
+    }
+    QImage img(tex.width, tex.height, QImage::Format_ARGB32);
+    if (img.isNull()) {
+      return {};
+    }
+    const auto* src = reinterpret_cast<const unsigned char*>(tex.rgba.constData());
+    for (int y = 0; y < tex.height; ++y) {
+      QRgb* row = reinterpret_cast<QRgb*>(img.scanLine(y));
+      const qint64 row_off = static_cast<qint64>(y) * static_cast<qint64>(tex.width) * 4;
+      for (int x = 0; x < tex.width; ++x) {
+        const qint64 px_off = row_off + static_cast<qint64>(x) * 4;
+        row[x] = qRgba(src[px_off + 0], src[px_off + 1], src[px_off + 2], src[px_off + 3]);
+      }
+    }
+    return img;
+  };
+
+  const auto parse_texture_slot = [](QString shader_ref) -> int {
+    shader_ref = shader_ref.trimmed();
+    if (!shader_ref.startsWith("texture_", Qt::CaseInsensitive)) {
+      return -1;
+    }
+    bool ok = false;
+    const int idx = shader_ref.mid(8).toInt(&ok);
+    return (ok && idx >= 0) ? idx : -1;
+  };
+
+  const auto apply_embedded_surface_textures = [&]() {
+    if (!model_ || model_->embedded_textures.isEmpty() || surfaces_.isEmpty()) {
+      return;
+    }
+
+    QVector<QImage> decoded;
+    decoded.resize(model_->embedded_textures.size());
+    QHash<QString, int> by_name;
+    by_name.reserve(model_->embedded_textures.size() * 2);
+    for (int i = 0; i < model_->embedded_textures.size(); ++i) {
+      const EmbeddedTexture& tex = model_->embedded_textures[i];
+      decoded[i] = decode_embedded_texture(tex);
+      if (decoded[i].isNull()) {
+        continue;
+      }
+
+      QString key = tex.name.trimmed();
+      key.replace('\\', '/');
+      while (key.startsWith('/')) {
+        key.remove(0, 1);
+      }
+      if (key.isEmpty()) {
+        continue;
+      }
+      by_name.insert(key.toLower(), i);
+      const QString leaf = QFileInfo(key).fileName().toLower();
+      if (!leaf.isEmpty()) {
+        by_name.insert(leaf, i);
+      }
+    }
+
+    for (DrawSurface& s : surfaces_) {
+      int tex_idx = -1;
+
+      const int idx_from_hint = parse_texture_slot(s.shader_hint);
+      if (idx_from_hint >= 0 && idx_from_hint < decoded.size()) {
+        tex_idx = idx_from_hint;
+      }
+      if (tex_idx < 0) {
+        const int idx_from_leaf = parse_texture_slot(s.shader_leaf);
+        if (idx_from_leaf >= 0 && idx_from_leaf < decoded.size()) {
+          tex_idx = idx_from_leaf;
+        }
+      }
+      if (tex_idx < 0) {
+        QString key = s.shader_hint.trimmed();
+        key.replace('\\', '/');
+        while (key.startsWith('/')) {
+          key.remove(0, 1);
+        }
+        if (!key.isEmpty()) {
+          tex_idx = by_name.value(key.toLower(), -1);
+        }
+      }
+      if (tex_idx < 0) {
+        QString key = s.shader_leaf.trimmed();
+        key.replace('\\', '/');
+        while (key.startsWith('/')) {
+          key.remove(0, 1);
+        }
+        if (!key.isEmpty()) {
+          tex_idx = by_name.value(key.toLower(), -1);
+        }
+      }
+
+      if (tex_idx < 0 || tex_idx >= decoded.size() || decoded[tex_idx].isNull()) {
+        continue;
+      }
+      s.image = decoded[tex_idx];
+      if (s.shader_hint.isEmpty()) {
+        s.shader_hint = model_->embedded_textures[tex_idx].name;
+      }
+      if (s.shader_leaf.isEmpty()) {
+        s.shader_leaf = QFileInfo(model_->embedded_textures[tex_idx].name).fileName();
+      }
+    }
   };
 
   QString err;
@@ -1059,6 +1189,8 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
       s.glow_image = {};
     }
   }
+
+  apply_embedded_surface_textures();
 
   if (!model_dir.isEmpty()) {
     const QStringList exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "swl", "dds", "lmp", "mip"};

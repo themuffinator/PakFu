@@ -475,7 +475,19 @@ int main(int argc, char** argv) {
           break;
         }
         auto buf = std::make_shared<QByteArray>();
-        QObject::connect(sock, &QLocalSocket::readyRead, sock, [sock, buf]() { buf->append(sock->readAll()); });
+        QObject::connect(sock, &QLocalSocket::readyRead, sock, [sock, buf]() {
+          constexpr int kMaxIpcPayloadBytes = 1024 * 1024;
+          const QByteArray chunk = sock->readAll();
+          if (chunk.isEmpty()) {
+            return;
+          }
+          if (buf->size() + chunk.size() > kMaxIpcPayloadBytes) {
+            buf->clear();
+            sock->abort();
+            return;
+          }
+          buf->append(chunk);
+        });
         QObject::connect(sock,
                          &QLocalSocket::disconnected,
                          sock,

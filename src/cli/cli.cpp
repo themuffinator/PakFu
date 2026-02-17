@@ -439,6 +439,15 @@ int run_cli(const CliOptions& options) {
       out << "Readable: " << QFileInfo(archive.readable_path()).absoluteFilePath() << "\n";
     }
     out << "Format: " << format_string(archive.format()) << "\n";
+    if (archive.format() == Archive::Format::Wad) {
+      if (archive.is_doom_wad()) {
+        out << "WAD type: IWAD/PWAD (Doom-family)\n";
+      } else if (archive.is_wad3()) {
+        out << "WAD type: WAD3 (Quake/Half-Life)\n";
+      } else {
+        out << "WAD type: WAD2 (Quake)\n";
+      }
+    }
     if (archive.is_quakelive_encrypted_pk3()) {
       out << "Quake Live encrypted PK3: yes\n";
     }
@@ -454,12 +463,22 @@ int run_cli(const CliOptions& options) {
   }
 
   if (options.list) {
-    QVector<ArchiveEntry> sorted = entries;
-    std::sort(sorted.begin(), sorted.end(), [](const ArchiveEntry& a, const ArchiveEntry& b) {
-      return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
+    QVector<const ArchiveEntry*> sorted;
+    sorted.reserve(entries.size());
+    for (const ArchiveEntry& e : entries) {
+      sorted.push_back(&e);
+    }
+    std::sort(sorted.begin(), sorted.end(), [](const ArchiveEntry* a, const ArchiveEntry* b) {
+      if (!a || !b) {
+        return a != nullptr;
+      }
+      return a->name.compare(b->name, Qt::CaseInsensitive) < 0;
     });
-    for (const ArchiveEntry& e : sorted) {
-      out << e.size << "\t" << e.name << "\n";
+    for (const ArchiveEntry* e : sorted) {
+      if (!e) {
+        continue;
+      }
+      out << e->size << "\t" << e->name << "\n";
     }
   }
 

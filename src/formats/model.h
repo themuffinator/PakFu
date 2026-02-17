@@ -33,14 +33,25 @@ struct ModelSurface {
   int index_count = 0;
 };
 
+struct EmbeddedTexture {
+  QString name;
+  QByteArray rgba;  // RGBA8
+  int width = 0;
+  int height = 0;
+};
+
 struct LoadedModel {
-  QString format;  // "mdl", "md2", "md3", "mdm", "glm", "iqm", "md5mesh", "lwo", "obj"
+  QString format;  // "mdl", "md2", "md3", "mdc", "md4", "mdr", "skb", "skd", "mdm", "glm", "iqm", "md5mesh", "lwo", "obj"
   int frame_count = 1;
   int surface_count = 1;
   ModelMesh mesh;
   QVector<ModelSurface> surfaces;
+  // Optional per-surface embedded textures (used by formats like GoldSrc MDL).
+  QVector<EmbeddedTexture> embedded_textures;
   // Optional embedded indexed skin (used by formats like Quake MDL).
   QByteArray embedded_skin_indices;
+  // Optional embedded RGBA skin (used by formats with per-texture palettes like GoldSrc MDL).
+  QByteArray embedded_skin_rgba;
   int embedded_skin_width = 0;
   int embedded_skin_height = 0;
 };

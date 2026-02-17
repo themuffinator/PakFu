@@ -28,6 +28,7 @@ struct BspHeader {
   BspFamily family = BspFamily::Unknown;
   bool q1_bsp2 = false;
   int q3_textures_lump = -1;
+  int q3_models_lump = -1;
   int q3_vertices_lump = -1;
   int q3_meshverts_lump = -1;
   int q3_faces_lump = -1;
@@ -66,7 +67,7 @@ constexpr int kQ1AlphaVersion = 27;
 constexpr int kQ2Version = 38;
 constexpr int kQ2ExtendedVersion = 41;
 constexpr int kQ3Version = 46;
-constexpr int kQLVersion = 47;
+constexpr int kQ3DerivedVersion = 47;  // Quake Live, RtCW, Wolf:ET
 constexpr int kRavenBspVersion = 1;
 constexpr int kFusionBspVersion = 1;
 constexpr int kFakk2Version = 12;
@@ -79,6 +80,10 @@ constexpr bool is_q1_release_or_goldsrc_bsp_version(int version) {
 
 constexpr bool is_q1_legacy_compatible_bsp_version(int version) {
   return is_q1_release_or_goldsrc_bsp_version(version) || version == kQ1BetaVersion || version == kQ1AlphaVersion;
+}
+
+constexpr bool is_q3_family_ibsp_version(int version) {
+  return version == kQ3Version || version == kQ3DerivedVersion;
 }
 
 constexpr int kQ1LumpCount = 15;
@@ -157,6 +162,7 @@ bool classify_format(const QString& magic, int version, int file_size, BspHeader
   out->lump_count = 0;
   out->q1_bsp2 = false;
   out->q3_textures_lump = -1;
+  out->q3_models_lump = -1;
   out->q3_vertices_lump = -1;
   out->q3_meshverts_lump = -1;
   out->q3_faces_lump = -1;
@@ -167,6 +173,7 @@ bool classify_format(const QString& magic, int version, int file_size, BspHeader
 
   auto set_q3_layout = [&](int lump_count,
                            int textures,
+                           int models,
                            int vertices,
                            int meshverts,
                            int faces,
@@ -177,6 +184,7 @@ bool classify_format(const QString& magic, int version, int file_size, BspHeader
     out->family = BspFamily::Quake3;
     out->lump_count = lump_count;
     out->q3_textures_lump = textures;
+    out->q3_models_lump = models;
     out->q3_vertices_lump = vertices;
     out->q3_meshverts_lump = meshverts;
     out->q3_faces_lump = faces;
@@ -213,8 +221,8 @@ bool classify_format(const QString& magic, int version, int file_size, BspHeader
       out->lump_count = kQ2LumpCount;
       return true;
     }
-    if (version == kQ3Version || version == kQLVersion) {
-      set_q3_layout(kQ3LumpCount, Q3_TEXTURES, Q3_VERTICES, Q3_MESHVERTS, Q3_FACES, Q3_LIGHTMAPS, 44, 72, 104);
+    if (is_q3_family_ibsp_version(version)) {
+      set_q3_layout(kQ3LumpCount, Q3_TEXTURES, Q3_MODELS, Q3_VERTICES, Q3_MESHVERTS, Q3_FACES, Q3_LIGHTMAPS, 44, 72, 104);
       return true;
     }
   }
@@ -227,28 +235,28 @@ bool classify_format(const QString& magic, int version, int file_size, BspHeader
 
   if (magic == "RBSP" && version == kRavenBspVersion) {
     const int lump_count = (file_size >= (8 + kQ3ExtendedLumpCount * 8)) ? kQ3ExtendedLumpCount : kQ3LumpCount;
-    set_q3_layout(lump_count, Q3_TEXTURES, Q3_VERTICES, Q3_MESHVERTS, Q3_FACES, Q3_LIGHTMAPS, 44, 72, 104);
+    set_q3_layout(lump_count, Q3_TEXTURES, Q3_MODELS, Q3_VERTICES, Q3_MESHVERTS, Q3_FACES, Q3_LIGHTMAPS, 44, 72, 104);
     return true;
   }
 
   if (magic == "FBSP" && version == kFusionBspVersion) {
     const int lump_count = (file_size >= (8 + kQ3ExtendedLumpCount * 8)) ? kQ3ExtendedLumpCount : kQ3LumpCount;
-    set_q3_layout(lump_count, Q3_TEXTURES, Q3_VERTICES, Q3_MESHVERTS, Q3_FACES, Q3_LIGHTMAPS, 80, 72, 148);
+    set_q3_layout(lump_count, Q3_TEXTURES, Q3_MODELS, Q3_VERTICES, Q3_MESHVERTS, Q3_FACES, Q3_LIGHTMAPS, 80, 72, 148);
     return true;
   }
 
   if (magic == "FAKK" && version == kFakk2Version) {
-    set_q3_layout(kFakk2LumpCount, 0, 4, 5, 3, 2, 44, 76, 108);
+    set_q3_layout(kFakk2LumpCount, 0, 13, 4, 5, 3, 2, 44, 76, 108);
     return true;
   }
 
   if (magic == "FAKK" && version == kEf2DemoVersion) {
-    set_q3_layout(kEf2LumpCount, 0, 6, 7, 5, 2, 44, 76, 132);
+    set_q3_layout(kEf2LumpCount, 0, 13, 6, 7, 5, 2, 44, 76, 132);
     return true;
   }
 
   if (magic == "EF2!" && version == kEf2Version) {
-    set_q3_layout(kEf2LumpCount, 0, 6, 7, 5, 2, 44, 76, 132);
+    set_q3_layout(kEf2LumpCount, 0, 13, 6, 7, 5, 2, 44, 76, 132);
     return true;
   }
 
@@ -616,20 +624,38 @@ struct Q3Face {
   int size[2]{};
 };
 
-QString texture_name_from_q1_miptex(const QByteArray& tex_lump, const QVector<int>& offsets, int index) {
+struct ModelFaceRange {
+  int first_face = 0;
+  int num_faces = 0;
+};
+
+QString texture_name_from_q1_miptex(const QByteArray& data,
+                                    const BspLump& tex_lump,
+                                    const QVector<int>& offsets,
+                                    int index) {
   if (index < 0 || index >= offsets.size()) {
     return {};
   }
-  const int base = offsets[index];
-  if (base < 0 || base + 16 > tex_lump.size()) {
+  if (tex_lump.offset < 0 || tex_lump.length < 16) {
     return {};
   }
-  QByteArray name_bytes = tex_lump.mid(base, 16);
-  const int null_pos = name_bytes.indexOf('\0');
-  if (null_pos >= 0) {
-    name_bytes.truncate(null_pos);
+  const int base_rel = offsets[index];
+  const qint64 base_abs = static_cast<qint64>(tex_lump.offset) + static_cast<qint64>(base_rel);
+  if (base_rel < 0 ||
+      static_cast<qint64>(base_rel) + 16 > tex_lump.length ||
+      base_abs < 0 ||
+      base_abs + 16 > data.size()) {
+    return {};
   }
-  return QString::fromLatin1(name_bytes);
+
+  const char* p = data.constData() + static_cast<int>(base_abs);
+  int len = 0;
+  for (; len < 16; ++len) {
+    if (p[len] == '\0') {
+      break;
+    }
+  }
+  return QString::fromLatin1(p, len);
 }
 
 bool is_non_visible_texture_name(const QString& name) {
@@ -682,8 +708,12 @@ float average_light_q1q2(const QVector<Vec3>& verts,
                          const QVector<int>& surfedges,
                          const QVector<Q1TexInfo>& texinfo,
                          const Q1Face& face,
-                         const QByteArray& lightdata) {
+                         const QByteArray& data,
+                         const BspLump& light_lump) {
   if (face.texinfo < 0 || face.texinfo >= texinfo.size() || face.lightofs < 0) {
+    return 0.6f;
+  }
+  if (light_lump.offset < 0 || light_lump.length <= 0) {
     return 0.6f;
   }
   const Q1TexInfo& tx = texinfo[face.texinfo];
@@ -732,11 +762,15 @@ float average_light_q1q2(const QVector<Vec3>& verts,
     return 0.6f;
   }
   const int count = w * h;
-  if (face.lightofs < 0 || face.lightofs + count > lightdata.size()) {
+  if (face.lightofs < 0 || face.lightofs + count > light_lump.length) {
     return 0.6f;
   }
 
-  const unsigned char* p = reinterpret_cast<const unsigned char*>(lightdata.constData() + face.lightofs);
+  const qint64 abs_ofs = static_cast<qint64>(light_lump.offset) + static_cast<qint64>(face.lightofs);
+  if (abs_ofs < 0 || abs_ofs + count > data.size()) {
+    return 0.6f;
+  }
+  const unsigned char* p = reinterpret_cast<const unsigned char*>(data.constData() + static_cast<int>(abs_ofs));
   qint64 sum = 0;
   for (int i = 0; i < count; ++i) {
     sum += p[i];
@@ -1048,6 +1082,31 @@ Q2Face f{};
   return out;
 }
 
+QVector<ModelFaceRange> parse_q2_model_face_ranges(const QByteArray& data, const BspLump& lump) {
+  QVector<ModelFaceRange> out;
+  const int stride = 48;
+  if (lump.length < stride) {
+    return out;
+  }
+  const int count = lump.length / stride;
+  out.reserve(count);
+  for (int i = 0; i < count; ++i) {
+    const int o = lump.offset + i * stride;
+    bool ok = false;
+    ModelFaceRange range{};
+    range.first_face = read_i32_le(data, o + 40, &ok);
+    if (!ok) {
+      return out;
+    }
+    range.num_faces = read_i32_le(data, o + 44, &ok);
+    if (!ok) {
+      return out;
+    }
+    out.push_back(range);
+  }
+  return out;
+}
+
 QVector<int> parse_q1_miptex_offsets(const QByteArray& data, const BspLump& lump) {
   QVector<int> out;
   if (lump.length < 4) {
@@ -1261,6 +1320,51 @@ QVector<Q3Face> parse_q3_faces(const QByteArray& data, const BspLump& lump, int 
     out.push_back(f);
   }
   return out;
+}
+
+QVector<ModelFaceRange> parse_q3_model_face_ranges(const QByteArray& data, const BspLump& lump) {
+  QVector<ModelFaceRange> out;
+  const int stride = 40;
+  if (lump.length < stride) {
+    return out;
+  }
+  const int count = lump.length / stride;
+  out.reserve(count);
+  for (int i = 0; i < count; ++i) {
+    const int o = lump.offset + i * stride;
+    bool ok = false;
+    ModelFaceRange range{};
+    range.first_face = read_i32_le(data, o + 24, &ok);
+    if (!ok) {
+      return out;
+    }
+    range.num_faces = read_i32_le(data, o + 28, &ok);
+    if (!ok) {
+      return out;
+    }
+    out.push_back(range);
+  }
+  return out;
+}
+
+QVector<bool> build_inline_face_mask(int total_faces, const QVector<ModelFaceRange>& models) {
+  QVector<bool> mask;
+  if (total_faces <= 0) {
+    return mask;
+  }
+  mask.fill(false, total_faces);
+  for (int i = 1; i < models.size(); ++i) {
+    const ModelFaceRange& m = models[i];
+    if (m.first_face < 0 || m.num_faces <= 0) {
+      continue;
+    }
+    const qint64 start = static_cast<qint64>(m.first_face);
+    const qint64 end = std::min(static_cast<qint64>(total_faces), start + static_cast<qint64>(m.num_faces));
+    for (qint64 f = std::max<qint64>(0, start); f < end; ++f) {
+      mask[static_cast<int>(f)] = true;
+    }
+  }
+  return mask;
 }
 
 QVector<QString> parse_q3_textures(const QByteArray& data, const BspLump& lump, int stride) {
@@ -2032,8 +2136,9 @@ QVector<Tri> build_q1_mesh_impl(const QVector<Vec3>& verts,
                                 const QVector<Q1TexInfo>& texinfo,
                                 const QVector<Q1Face>& faces,
                                 const QVector<int>& miptex_offsets,
-                                const QByteArray& tex_lump,
-                                const QByteArray& lightdata,
+                                const QByteArray& data,
+                                const BspLump& tex_lump,
+                                const BspLump& light_lump,
                                 bool lightmapped) {
   QVector<Tri> tris;
   tris.reserve(faces.size() * 2);
@@ -2042,7 +2147,7 @@ QVector<Tri> build_q1_mesh_impl(const QVector<Vec3>& verts,
     if (f.texinfo < 0 || f.texinfo >= texinfo.size()) {
       continue;
     }
-    const QString tex_name = texture_name_from_q1_miptex(tex_lump, miptex_offsets, texinfo[f.texinfo].miptex);
+    const QString tex_name = texture_name_from_q1_miptex(data, tex_lump, miptex_offsets, texinfo[f.texinfo].miptex);
     if (is_non_visible_texture_name(tex_name) || is_sky_texture_name(tex_name)) {
       continue;
     }
@@ -2084,7 +2189,7 @@ QVector<Tri> build_q1_mesh_impl(const QVector<Vec3>& verts,
 
     float light = 0.7f;
     if (lightmapped) {
-      light = average_light_q1q2(verts, edges, surfedges, texinfo, f, lightdata);
+      light = average_light_q1q2(verts, edges, surfedges, texinfo, f, data, light_lump);
     }
     const int shade = static_cast<int>(qBound(40.0f, 40.0f + light * 180.0f, 240.0f));
     const QColor color(shade, shade, shade, 220);
@@ -2117,8 +2222,8 @@ QVector<Tri> build_q1_mesh(const QByteArray& data, const BspHeader& header, bool
                                   ? parse_q1_faces_bsp2(data, header.lumps[Q1_FACES])
                                   : parse_q1_faces(data, header.lumps[Q1_FACES]);
   const QVector<int> miptex_offsets = parse_q1_miptex_offsets(data, header.lumps[Q1_TEXTURES]);
-  const QByteArray tex_lump = data.mid(header.lumps[Q1_TEXTURES].offset, header.lumps[Q1_TEXTURES].length);
-  const QByteArray lightdata = data.mid(header.lumps[Q1_LIGHTING].offset, header.lumps[Q1_LIGHTING].length);
+  const BspLump tex_lump = header.lumps[Q1_TEXTURES];
+  const BspLump light_lump = header.lumps[Q1_LIGHTING];
 
   if (verts.isEmpty() || faces.isEmpty() || surfedges.isEmpty()) {
     if (error) {
@@ -2135,7 +2240,7 @@ QVector<Tri> build_q1_mesh(const QByteArray& data, const BspHeader& header, bool
       }
       return tris;
     }
-    return build_q1_mesh_impl(verts, edges, surfedges, texinfo, faces, miptex_offsets, tex_lump, lightdata, lightmapped);
+    return build_q1_mesh_impl(verts, edges, surfedges, texinfo, faces, miptex_offsets, data, tex_lump, light_lump, lightmapped);
   }
 
   const QVector<Edge16> edges = parse_q1_edges(data, header.lumps[Q1_EDGES]);
@@ -2145,7 +2250,7 @@ QVector<Tri> build_q1_mesh(const QByteArray& data, const BspHeader& header, bool
     }
     return tris;
   }
-  return build_q1_mesh_impl(verts, edges, surfedges, texinfo, faces, miptex_offsets, tex_lump, lightdata, lightmapped);
+  return build_q1_mesh_impl(verts, edges, surfedges, texinfo, faces, miptex_offsets, data, tex_lump, light_lump, lightmapped);
 }
 
 QVector<Tri> build_q2_mesh(const QByteArray& data,
@@ -2169,9 +2274,11 @@ QVector<Tri> build_q2_mesh(const QByteArray& data,
   const QVector<int> surfedges = parse_surfedges(data, header.lumps[Q2_SURFEDGES]);
   const QVector<Q2TexInfo> texinfo = parse_q2_texinfo(data, header.lumps[Q2_TEXINFO]);
   const QVector<Q2Face> faces = parse_q2_faces(data, header.lumps[Q2_FACES]);
-  const QByteArray base_lightdata = lump_in_bounds(data, header.lumps[Q2_LIGHTING])
-                                      ? data.mid(header.lumps[Q2_LIGHTING].offset, header.lumps[Q2_LIGHTING].length)
-                                      : QByteArray();
+  const QVector<ModelFaceRange> models = parse_q2_model_face_ranges(data, header.lumps[Q2_MODELS]);
+  const QVector<bool> inline_face_mask = build_inline_face_mask(faces.size(), models);
+  const BspLump base_light_lump = lump_in_bounds(data, header.lumps[Q2_LIGHTING])
+                                    ? header.lumps[Q2_LIGHTING]
+                                    : BspLump{};
   const QHash<QByteArray, BspLump> bspx = parse_bspx_lumps(data, header);
   const Q2LightSampleSource light_source = select_q2_light_source(data, header, bspx);
   const QVector<QVector<int>> face_styles = parse_q2_face_styles(data, faces, bspx);
@@ -2190,15 +2297,20 @@ QVector<Tri> build_q2_mesh(const QByteArray& data,
 
   for (int face_index = 0; face_index < faces.size(); ++face_index) {
     const Q2Face& f = faces[face_index];
+    const bool is_inline_model_face =
+      (face_index >= 0 && face_index < inline_face_mask.size() && inline_face_mask[face_index]);
     if (f.texinfo < 0 || f.texinfo >= texinfo.size()) {
       continue;
     }
     const Q2TexInfo& tx = texinfo[f.texinfo];
-    if (tx.flags & SURF_NODRAW) {
+    if (!is_inline_model_face && (tx.flags & SURF_NODRAW)) {
       continue;
     }
     const QString tex_name = QString::fromLatin1(tx.texture).trimmed();
-    if (is_non_visible_texture_name(tex_name) || is_sky_texture_name(tex_name)) {
+    if (is_sky_texture_name(tex_name)) {
+      continue;
+    }
+    if (!is_inline_model_face && is_non_visible_texture_name(tex_name)) {
       continue;
     }
 
@@ -2267,8 +2379,8 @@ QVector<Tri> build_q2_mesh(const QByteArray& data,
     q1f.lightofs = f.lightofs;
 
     float light = 0.7f;
-    if (lightmapped && !base_lightdata.isEmpty()) {
-      light = average_light_q1q2(verts, edges, surfedges, tmp, q1f, base_lightdata);
+    if (lightmapped && base_light_lump.length > 0) {
+      light = average_light_q1q2(verts, edges, surfedges, tmp, q1f, data, base_light_lump);
     }
     const int shade = static_cast<int>(qBound(40.0f, 40.0f + light * 180.0f, 240.0f));
     QColor color(shade, shade, shade, 220);
@@ -2433,6 +2545,13 @@ QVector<Tri> build_q3_mesh(const QByteArray& data,
   const QVector<Q3Vertex> verts = parse_q3_vertices(data, header.lumps[header.q3_vertices_lump], header.q3_vertex_stride);
   const QVector<int> meshverts = parse_q3_meshverts(data, header.lumps[header.q3_meshverts_lump]);
   const QVector<Q3Face> faces = parse_q3_faces(data, header.lumps[header.q3_faces_lump], header.q3_face_stride);
+  QVector<ModelFaceRange> models;
+  if (header.q3_models_lump >= 0 &&
+      header.q3_models_lump < header.lumps.size() &&
+      lump_in_bounds(data, header.lumps[header.q3_models_lump])) {
+    models = parse_q3_model_face_ranges(data, header.lumps[header.q3_models_lump]);
+  }
+  const QVector<bool> inline_face_mask = build_inline_face_mask(faces.size(), models);
   const QVector<QString> shaders = parse_q3_textures(data, header.lumps[header.q3_textures_lump], header.q3_texture_stride);
   const QVector<QColor> lightmap_colors = parse_q3_lightmap_colors(data, header.lumps[header.q3_lightmaps_lump]);
   if (out_lightmaps) {
@@ -2466,9 +2585,16 @@ QVector<Tri> build_q3_mesh(const QByteArray& data,
     return QColor(120, 120, 120, 220);
   };
 
-  for (const Q3Face& f : faces) {
+  for (int face_index = 0; face_index < faces.size(); ++face_index) {
+    const Q3Face& f = faces[face_index];
+    const bool is_inline_model_face =
+      (face_index >= 0 && face_index < inline_face_mask.size() && inline_face_mask[face_index]);
     if (f.shader >= 0 && f.shader < shaders.size()) {
-      if (is_non_visible_texture_name(shaders[f.shader]) || is_sky_texture_name(shaders[f.shader])) {
+      const QString& shader = shaders[f.shader];
+      if (is_sky_texture_name(shader)) {
+        continue;
+      }
+      if (!is_inline_model_face && is_non_visible_texture_name(shader)) {
         continue;
       }
     }
@@ -2484,7 +2610,8 @@ QVector<Tri> build_q3_mesh(const QByteArray& data,
     }
     const int lightmap_index = lightmapped ? f.lmIndex : -1;
 
-    if (f.type == 1 || f.type == 3) {
+    // MST_PLANAR (1), MST_TRIANGLE_SOUP (3), and Wolf:ET MST_FOLIAGE (5).
+    if (f.type == 1 || f.type == 3 || f.type == 5) {
       if (f.firstVert < 0 || f.numVerts <= 0 || f.firstVert + f.numVerts > verts.size()) {
         continue;
       }
@@ -2790,28 +2917,31 @@ QHash<QString, QImage> extract_bsp_embedded_textures_bytes(const QByteArray& byt
     return out;
   }
 
-  const QByteArray tex_lump = bytes.mid(tex_lump_info.offset, tex_lump_info.length);
   for (int i = 0; i < miptex_offsets.size(); ++i) {
-    const int base = miptex_offsets[i];
-    if (base < 0 || base + 40 > tex_lump.size()) {
+    const int base_rel = miptex_offsets[i];
+    const qint64 base_abs = static_cast<qint64>(tex_lump_info.offset) + static_cast<qint64>(base_rel);
+    if (base_rel < 0 ||
+        static_cast<qint64>(base_rel) + 40 > tex_lump_info.length ||
+        base_abs < 0 ||
+        base_abs + 40 > bytes.size()) {
       continue;
     }
 
-    const QString name = texture_name_from_q1_miptex(tex_lump, miptex_offsets, i).toLower();
+    const QString name = texture_name_from_q1_miptex(bytes, tex_lump_info, miptex_offsets, i).toLower();
     if (name.isEmpty()) {
       continue;
     }
 
     bool ok = false;
-    const quint32 width_u = read_u32_le(tex_lump, base + 16, &ok);
+    const quint32 width_u = read_u32_le(bytes, static_cast<int>(base_abs) + 16, &ok);
     if (!ok) {
       continue;
     }
-    const quint32 height_u = read_u32_le(tex_lump, base + 20, &ok);
+    const quint32 height_u = read_u32_le(bytes, static_cast<int>(base_abs) + 20, &ok);
     if (!ok || width_u == 0 || height_u == 0) {
       continue;
     }
-    const quint32 ofs0 = read_u32_le(tex_lump, base + 24, &ok);
+    const quint32 ofs0 = read_u32_le(bytes, static_cast<int>(base_abs) + 24, &ok);
     if (!ok || ofs0 == 0) {
       continue;
     }
@@ -2824,11 +2954,13 @@ QHash<QString, QImage> extract_bsp_embedded_textures_bytes(const QByteArray& byt
     const qint64 mip3 = static_cast<qint64>(qMax(1, width / 8)) * static_cast<qint64>(qMax(1, height / 8));
     const qint64 mip_total = mip0 + mip1 + mip2 + mip3;
     const qint64 slice_len = static_cast<qint64>(ofs0) + mip_total;
-    if (slice_len <= 0 || base + slice_len > tex_lump.size()) {
+    if (slice_len <= 0 ||
+        static_cast<qint64>(base_rel) + slice_len > tex_lump_info.length ||
+        base_abs + slice_len > bytes.size()) {
       continue;
     }
 
-    const QByteArray mip_bytes = tex_lump.mid(base, static_cast<int>(slice_len));
+    const QByteArray mip_bytes = bytes.mid(static_cast<int>(base_abs), static_cast<int>(slice_len));
     QString mip_err;
     const QImage img = decode_miptex_image(mip_bytes, quake_palette, 0, name, &mip_err);
     if (!img.isNull()) {

@@ -128,28 +128,28 @@ bool ResourcesArchive::load(const QString& path, QString* error) {
   }
 
   const qint64 toc_payload_size = toc_size - 4;
-  const QByteArray toc_payload = file.read(toc_payload_size);
-  if (toc_payload.size() != toc_payload_size) {
-    if (error) {
-      *error = "Unable to read resources table-of-contents.";
-    }
-    return false;
-  }
 
   entries_.reserve(static_cast<int>(num_files_u));
   meta_by_index_.reserve(static_cast<int>(num_files_u));
   index_by_name_.reserve(static_cast<int>(num_files_u));
 
-  int cursor = 0;
+  qint64 consumed = 0;
   for (quint32 i = 0; i < num_files_u; ++i) {
-    if (cursor + 4 > toc_payload.size()) {
+    if (consumed + 4 > toc_payload_size) {
       if (error) {
         *error = "Resources table-of-contents is truncated (filename length).";
       }
       return false;
     }
-    const quint32 name_len_u = read_u32_le_from(toc_payload.constData() + cursor);
-    cursor += 4;
+    char len_buf[4]{};
+    if (file.read(len_buf, 4) != 4) {
+      if (error) {
+        *error = "Unable to read resources filename length.";
+      }
+      return false;
+    }
+    consumed += 4;
+    const quint32 name_len_u = read_u32_le_from(len_buf);
     const qint64 name_len = static_cast<qint64>(name_len_u);
     if (name_len <= 0 || name_len > 1024 * 1024) {
       if (error) {
@@ -157,15 +157,21 @@ bool ResourcesArchive::load(const QString& path, QString* error) {
       }
       return false;
     }
-    if (cursor + name_len + 8 > toc_payload.size()) {
+    if (consumed + name_len + 8 > toc_payload_size) {
       if (error) {
         *error = "Resources table-of-contents is truncated (entry payload).";
       }
       return false;
     }
 
-    const QByteArray raw_name = toc_payload.mid(cursor, static_cast<int>(name_len));
-    cursor += static_cast<int>(name_len);
+    const QByteArray raw_name = file.read(name_len);
+    if (raw_name.size() != name_len) {
+      if (error) {
+        *error = "Unable to read resources entry name.";
+      }
+      return false;
+    }
+    consumed += name_len;
     QString name = QString::fromUtf8(raw_name);
     if (name.isEmpty()) {
       name = QString::fromLatin1(raw_name);
@@ -178,9 +184,16 @@ bool ResourcesArchive::load(const QString& path, QString* error) {
       return false;
     }
 
-    const quint32 offset_u = read_u32_be_from(toc_payload.constData() + cursor);
-    const quint32 size_u = read_u32_be_from(toc_payload.constData() + cursor + 4);
-    cursor += 8;
+    char offs_size_buf[8]{};
+    if (file.read(offs_size_buf, 8) != 8) {
+      if (error) {
+        *error = "Unable to read resources entry location.";
+      }
+      return false;
+    }
+    consumed += 8;
+    const quint32 offset_u = read_u32_be_from(offs_size_buf + 0);
+    const quint32 size_u = read_u32_be_from(offs_size_buf + 4);
 
     const qint64 offset = static_cast<qint64>(offset_u);
     const qint64 size = static_cast<qint64>(size_u);
@@ -207,6 +220,13 @@ bool ResourcesArchive::load(const QString& path, QString* error) {
     entries_.push_back(entry);
     meta_by_index_.push_back(EntryMeta{offset_u, size_u});
     index_by_name_.insert(normalize_entry_name(unique), entries_.size() - 1);
+  }
+
+  if (consumed > toc_payload_size) {
+    if (error) {
+      *error = "Resources table-of-contents overran expected size.";
+    }
+    return false;
   }
 
   loaded_ = true;

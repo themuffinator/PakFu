@@ -11,6 +11,7 @@
 
 #include "formats/bsp_preview.h"
 #include "formats/image_loader.h"
+#include "formats/quake3_shader.h"
 #include "ui/preview_3d_options.h"
 #include "ui/preview_renderer.h"
 
@@ -30,6 +31,8 @@ class QTimer;
 class CinematicPlayerWidget;
 class VideoPlayerWidget;
 class QSyntaxHighlighter;
+class QTextOption;
+class ShaderViewerWidget;
 
 class PreviewPane : public QWidget {
 	Q_OBJECT
@@ -67,7 +70,12 @@ public:
 	void show_cfg(const QString& title, const QString& subtitle, const QString& text);
 	void show_json(const QString& title, const QString& subtitle, const QString& text);
 	void show_menu(const QString& title, const QString& subtitle, const QString& text);
-	void show_shader(const QString& title, const QString& subtitle, const QString& text);
+	void show_shader(const QString& title,
+	                 const QString& subtitle,
+	                 const QString& text,
+	                 const Quake3ShaderDocument& document,
+	                 QHash<QString, QImage> textures);
+	void show_font_from_bytes(const QString& title, const QString& subtitle, const QByteArray& bytes);
 	void show_binary(const QString& title, const QString& subtitle, const QByteArray& bytes, bool truncated);
 	void show_image(const QString& title, const QString& subtitle, const QImage& image);
 	void show_sprite(const QString& title,
@@ -83,6 +91,8 @@ public:
 	void show_video_from_file(const QString& title, const QString& subtitle, const QString& file_path);
 	void show_model_from_file(const QString& title, const QString& subtitle, const QString& file_path, const QString& skin_path = {});
 	void start_playback_from_beginning();
+	[[nodiscard]] bool is_shader_view_active() const;
+	[[nodiscard]] QString selected_shader_blocks_text() const;
 
 signals:
 	void request_previous_audio();
@@ -137,6 +147,9 @@ private:
 	void sync_audio_controls();
 	void update_audio_tooltip();
 	void update_audio_status_label();
+	void clear_font_preview_font();
+	void apply_text_wrap_mode();
+	void update_shader_viewport_width();
 
 	QLabel* title_label_ = nullptr;
 	QLabel* subtitle_label_ = nullptr;
@@ -154,6 +167,7 @@ private:
 		None,
 		Message,
 		Text,
+		Font,
 		Audio,
 		Cinematic,
 		Video,
@@ -161,6 +175,7 @@ private:
 		Model,
 		Image,
 		Sprite,
+		Shader,
 	};
 	enum class ImageBackgroundMode {
 		Transparent,
@@ -206,8 +221,28 @@ private:
 
 	QWidget* text_page_ = nullptr;
 	QPlainTextEdit* text_view_ = nullptr;
+	QWidget* text_controls_ = nullptr;
+	QToolButton* text_wrap_button_ = nullptr;
 	std::unique_ptr<QSyntaxHighlighter> text_highlighter_;
 	TextSyntax current_text_syntax_ = TextSyntax::None;
+	bool text_word_wrap_enabled_ = false;
+
+	QWidget* shader_page_ = nullptr;
+	QScrollArea* shader_scroll_ = nullptr;
+	ShaderViewerWidget* shader_widget_ = nullptr;
+
+	QWidget* font_page_ = nullptr;
+	QLabel* font_heading_label_ = nullptr;
+	QLabel* font_subheading_label_ = nullptr;
+	QLabel* font_notice_label_ = nullptr;
+	QLabel* font_hero_label_ = nullptr;
+	QLabel* font_pangram_label_ = nullptr;
+	QLabel* font_upper_label_ = nullptr;
+	QLabel* font_lower_label_ = nullptr;
+	QLabel* font_digits_label_ = nullptr;
+	QLabel* font_symbols_label_ = nullptr;
+	QLabel* font_meta_label_ = nullptr;
+	int font_preview_font_id_ = -1;
 
 	QWidget* audio_page_ = nullptr;
 	QMediaPlayer* audio_player_ = nullptr;

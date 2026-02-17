@@ -19,15 +19,20 @@ This project is still training under the waterfall 💦🥋 (early development).
   - Images: `pcx`, `wal`, `swl`, `mip`, `dds`, `lmp`, `png`, `tga`, `jpg` 🖼️🎨
   - Audio: `wav`, `ogg`, `mp3`, `bik` (audio track playback via Qt backend support) 🔊🎶
   - Video: `cin`, `roq`, `ogv`, `bik` 🎞️🍿
-  - Models: `mdl`, `md2`, `md3`, `mdm`, `glm`, `iqm`, `md5mesh`, `lwo`, `obj` 🧊🧩
-  - Sprites: `spr`, `sp2`/`spr2` (animated sprite preview + metadata/frame table insights) 🧾🎯
+  - Models: `mdl` (Quake + GoldSrc/Half-Life Studio), `md2`, `md3`, `mdc`, `md4`, `mdr`, `skb`, `skd`, `mdm`, `glm`, `iqm`, `md5mesh`, `lwo`, `obj` 🧊🧩
+  - Sprites: `spr`, `sp2`/`spr2` (animated sprite preview + metadata/frame table insights, including Half-Life/GoldSrc SPR v2 embedded-palette files) 🧾🎯
   - Demos: `dm2` (Quake II packet stream summary preview) 📼🧾
-  - Maps: `bsp` (all supported idTech1/idTech2/idTech3 titles, including GoldSrc/Half-Life, Quake BSP2/2PSB, and RBSP/FBSP/FAKK/EF2 variants) 🗺️🧭
-  - Navigation/VM: `aas`, `qvm` (header/lump summary preview) 🧠📦
-  - Text/config: `cfg`, `config`, `rc`, `arena`, `bot`, `skin`, `shaderlist`, `lang`, `lst`, `gui`, `efx`, `guide`, `lipsync`, `viseme`, `vdf`, and similar plain-text formats 🧾🖋️
+  - Fonts: `ttf`, `otf` (Insights specimen preview + family/style metadata) 🔤🧾
+  - Maps: `bsp` (all supported Quake-family idTech1/idTech2/idTech3 titles, including GoldSrc/Half-Life, Quake BSP2/2PSB, RtCW/ET `IBSP` v47 with ET foliage surfaces, and RBSP/FBSP/FAKK/EF2 variants) + Doom-family WAD map/BSP-lump insights (`E#M#`/`MAP##`) 🗺️🧭
+  - Navigation/VM: `aas`, `qvm`, `progs.dat` (header/lump/function-table summary preview) 🧠📦
+  - RtCW/ET model metadata: `tag`, `mdx`, `mds` (header/table/frame/bone/tag summaries in Insights) 🐺🧾
+  - FAKK2/MOHAA/EF skeletal assets: `mdr`, `skb`, `skd`, `skc`/`ska` (header/surface/frame-table insights + model preview for `mdr`/`skb`/`skd`) 🦴🧾
+  - Integrity manifests: `crc` (Doom 3 BFG `.resources` checksum tables) ✅🧾
+  - Text/config: `cfg`, `config`, `rc`, `arena`, `bot`, `skin`, `shaderlist`, `lang`, `lst`, `tik`, `anim`, `cam`, `camera`, `char`, `voice`, `gui`, `bgui`, `efx`, `guide`, `lipsync`, `viseme`, `vdf`, `def`, `mtr`, `sndshd`, `af`, `pd`, `decl`, `ent`, `map`, `qc`, `sab`, `siege`, `veh`, `npc`, `jts`, `bset`, `weap`, `ammo`, `campaign`, and similar plain-text formats 🧾🖋️
+  - Shader scripts: `shader` opens as a tiled, script-driven Quake III preview with shader-block selection copy/paste append editing (including animated maps, tcMods, and deform directives) 🧪🧱
 - Tune 3D previews with grid/floor/none options, themed/grey/custom backgrounds, and wireframe/textured toggles
 - Quake II previews honor `_glow.png` glow maps for textures and models
-- WAD support: read/extract `WAD2`, `WAD3`, and classic Doom `IWAD`/`PWAD`; rebuild/write `WAD2`
+- WAD support: read/extract `WAD2`, `WAD3`, and classic Doom `IWAD`/`PWAD` (including Doom-family map/BSP-lump insights); rebuild/write `WAD2`
 - Stay responsive for large archives (no freezing in the middle of a roundhouse kick) 🥶➡️🥋
 - Guard official game archives with a default-on Pure PAK Protector preference 🛡️📦
 - Keep C++ code clean, portable, and documented (minimal OS-specific sorcery) 🧠🧹🧾
@@ -144,13 +149,18 @@ Auto-detect checks installs in priority order: **Steam → GOG.com → EOS**.
 Supported auto-detect games:
 - Anachronox
 - Daikatana
+- DOOM
+- DOOM II
 - Doom 3
 - Doom 3: BFG Edition
 - Enemy Territory: Quake Wars
+- Final DOOM
 - Gravity Bone
 - Half-Life
 - Heavy Metal: F.A.K.K.2
+- Heretic
 - Heretic II
+- Hexen
 - Kingpin: Life of Crime
 - Prey
 - Quake
@@ -167,7 +177,9 @@ Supported auto-detect games:
 - Star Trek: Elite Force II
 - Star Wars Jedi Knight II: Jedi Outcast
 - Star Wars Jedi Knight: Jedi Academy
+- Strife
 - Thirty Flights of Loving
+- Warfork
 - Warsow
 - Wolfenstein: Enemy Territory
 - World of Padman
@@ -193,6 +205,12 @@ Game Sets can also be managed via CLI:
 ./builddir/src/pakfu --cli --select-game-set quake2
 ./builddir/src/pakfu --cli --select-game-set quake2_rtx
 ./builddir/src/pakfu --cli --select-game-set half_life
+./builddir/src/pakfu --cli --select-game-set doom
+./builddir/src/pakfu --cli --select-game-set doom2
+./builddir/src/pakfu --cli --select-game-set final_doom
+./builddir/src/pakfu --cli --select-game-set heretic
+./builddir/src/pakfu --cli --select-game-set hexen
+./builddir/src/pakfu --cli --select-game-set strife
 ./builddir/src/pakfu --cli --select-game-set quake3_arena
 ./builddir/src/pakfu --cli --select-game-set quake_live
 ./builddir/src/pakfu --cli --select-game-set quake4
@@ -203,6 +221,7 @@ Game Sets can also be managed via CLI:
 ./builddir/src/pakfu --cli --select-game-set anachronox
 ./builddir/src/pakfu --cli --select-game-set heretic2
 ./builddir/src/pakfu --cli --select-game-set elite_force2
+./builddir/src/pakfu --cli --select-game-set warfork
 ./builddir/src/pakfu --cli --select-game-set warsow
 ./builddir/src/pakfu --cli --select-game-set world_of_padman
 ./builddir/src/pakfu --cli --select-game-set heavy_metal_fakk2

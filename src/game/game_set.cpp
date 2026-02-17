@@ -77,6 +77,18 @@ QString game_id_key(GameId id) {
       return "quake_rerelease";
     case GameId::HalfLife:
       return "half_life";
+    case GameId::Doom:
+      return "doom";
+    case GameId::Doom2:
+      return "doom2";
+    case GameId::FinalDoom:
+      return "final_doom";
+    case GameId::Heretic:
+      return "heretic";
+    case GameId::Hexen:
+      return "hexen";
+    case GameId::Strife:
+      return "strife";
     case GameId::Quake2:
       return "quake2";
     case GameId::Quake2Rerelease:
@@ -115,6 +127,8 @@ QString game_id_key(GameId id) {
       return "elite_force2";
     case GameId::Warsow:
       return "warsow";
+    case GameId::Warfork:
+      return "warfork";
     case GameId::WorldOfPadman:
       return "world_of_padman";
     case GameId::HeavyMetalFakk2:
@@ -145,6 +159,24 @@ GameId game_id_from_key(const QString& key, bool* ok) {
   }
   if (key == "half_life" || key == "half-life" || key == "halflife") {
     return GameId::HalfLife;
+  }
+  if (key == "doom") {
+    return GameId::Doom;
+  }
+  if (key == "doom2" || key == "doom_2" || key == "doomii" || key == "doom_ii") {
+    return GameId::Doom2;
+  }
+  if (key == "final_doom" || key == "finaldoom") {
+    return GameId::FinalDoom;
+  }
+  if (key == "heretic") {
+    return GameId::Heretic;
+  }
+  if (key == "hexen") {
+    return GameId::Hexen;
+  }
+  if (key == "strife") {
+    return GameId::Strife;
   }
   if (key == "quake2") {
     return GameId::Quake2;
@@ -203,6 +235,9 @@ GameId game_id_from_key(const QString& key, bool* ok) {
   if (key == "warsow") {
     return GameId::Warsow;
   }
+  if (key == "warfork") {
+    return GameId::Warfork;
+  }
   if (key == "world_of_padman" || key == "worldofpadman") {
     return GameId::WorldOfPadman;
   }
@@ -238,6 +273,18 @@ QString game_display_name(GameId id) {
       return "Quake Rerelease";
     case GameId::HalfLife:
       return "Half-Life";
+    case GameId::Doom:
+      return "DOOM";
+    case GameId::Doom2:
+      return "DOOM II";
+    case GameId::FinalDoom:
+      return "Final DOOM";
+    case GameId::Heretic:
+      return "Heretic";
+    case GameId::Hexen:
+      return "Hexen";
+    case GameId::Strife:
+      return "Strife";
     case GameId::Quake2:
       return "Quake II";
     case GameId::Quake2Rerelease:
@@ -276,6 +323,8 @@ QString game_display_name(GameId id) {
       return "Star Trek: Elite Force II";
     case GameId::Warsow:
       return "Warsow";
+    case GameId::Warfork:
+      return "Warfork";
     case GameId::WorldOfPadman:
       return "World of Padman";
     case GameId::HeavyMetalFakk2:
@@ -300,6 +349,13 @@ QString default_palette_for_game(GameId id) {
     case GameId::QuakeRerelease:
     case GameId::HalfLife:
       return "quake";
+    case GameId::Doom:
+    case GameId::Doom2:
+    case GameId::FinalDoom:
+    case GameId::Heretic:
+    case GameId::Hexen:
+    case GameId::Strife:
+      return "doom";
     case GameId::Quake2:
     case GameId::Quake2Rerelease:
     case GameId::Quake2RTX:
@@ -319,6 +375,7 @@ QString default_palette_for_game(GameId id) {
     case GameId::StarTrekVoyagerEliteForce:
     case GameId::EliteForce2:
     case GameId::Warsow:
+    case GameId::Warfork:
     case GameId::WorldOfPadman:
     case GameId::HeavyMetalFakk2:
     case GameId::Quake4:
@@ -336,6 +393,12 @@ QVector<GameId> supported_game_ids() {
     GameId::Quake,
     GameId::QuakeRerelease,
     GameId::HalfLife,
+    GameId::Doom,
+    GameId::Doom2,
+    GameId::FinalDoom,
+    GameId::Heretic,
+    GameId::Hexen,
+    GameId::Strife,
     GameId::Quake2,
     GameId::Quake2Rerelease,
     GameId::Quake2RTX,
@@ -355,6 +418,7 @@ QVector<GameId> supported_game_ids() {
     GameId::StarTrekVoyagerEliteForce,
     GameId::EliteForce2,
     GameId::Warsow,
+    GameId::Warfork,
     GameId::WorldOfPadman,
     GameId::HeavyMetalFakk2,
     GameId::Quake4,

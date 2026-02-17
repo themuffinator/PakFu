@@ -288,11 +288,26 @@ bool is_warsow_data_archive_name(const QString& lower_file) {
   return true;
 }
 
+bool is_doom_iwad_name(const QString& lower_file) {
+  return lower_file == "doom.wad" || lower_file == "doomu.wad" || lower_file == "doom2.wad" ||
+         lower_file == "tnt.wad" || lower_file == "plutonia.wad" || lower_file == "heretic.wad" ||
+         lower_file == "heretic1.wad" || lower_file == "hexen.wad" || lower_file == "hexdd.wad" ||
+         lower_file == "strife1.wad" || lower_file == "strife0.wad" || lower_file == "voices.wad";
+}
+
 bool is_official_archive_name(GameId game, const QString& lower_file) {
   switch (game) {
     case GameId::Quake:
     case GameId::QuakeRerelease:
     case GameId::HalfLife:
+      return is_numbered_archive_name(lower_file, "pak");
+    case GameId::Doom:
+    case GameId::Doom2:
+    case GameId::FinalDoom:
+    case GameId::Heretic:
+    case GameId::Hexen:
+    case GameId::Strife:
+      return lower_file.endsWith(".wad") && is_doom_iwad_name(lower_file);
     case GameId::Quake2:
     case GameId::Quake2Rerelease:
     case GameId::Quake2RTX:
@@ -315,6 +330,7 @@ bool is_official_archive_name(GameId game, const QString& lower_file) {
     case GameId::EliteForce2:
       return is_numbered_archive_name(lower_file, "pk3");
     case GameId::Warsow:
+    case GameId::Warfork:
       return is_numbered_archive_name(lower_file, "pk3") || is_warsow_data_archive_name(lower_file);
     case GameId::WorldOfPadman:
       return is_numbered_archive_name(lower_file, "pk3")

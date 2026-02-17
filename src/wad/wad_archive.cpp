@@ -177,20 +177,19 @@ bool WadArchive::load(const QString& path, QString* error) {
     return false;
   }
 
-  const QByteArray dir = f.read(dir_bytes);
-  if (dir.size() != dir_bytes) {
-    if (error) {
-      *error = "Unable to read WAD directory.";
-    }
-    return false;
-  }
-
   entries_.reserve(lump_count);
   meta_by_index_.reserve(lump_count);
   index_by_name_.reserve(lump_count);
 
   for (int i = 0; i < lump_count; ++i) {
-    const char* p = dir.constData() + (static_cast<qint64>(i) * dir_entry_size);
+    const QByteArray entry_bytes = f.read(dir_entry_size);
+    if (entry_bytes.size() != dir_entry_size) {
+      if (error) {
+        *error = "Unable to read WAD directory entry.";
+      }
+      return false;
+    }
+    const char* p = entry_bytes.constData();
 
     const quint32 file_pos = read_u32_le_from(p + 0);
     quint32 disk_size = 0;
