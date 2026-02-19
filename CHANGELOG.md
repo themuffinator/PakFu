@@ -1,6 +1,10 @@
 # Changelog
 
 All notable changes to PakFu are documented here.
+## [0.1.16.1] - 2026-02-19
+### Other
+- Add fly camera and dynamic grid rendering
+
 ## [0.1.15.1] - 2026-02-17
 ### Other
 - WAD detection, BSP model parsing, asset decoders
