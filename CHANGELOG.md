@@ -1,6 +1,10 @@
 # Changelog
 
 All notable changes to PakFu are documented here.
+## [0.1.18.1] - 2026-02-19
+### Other
+- Add file association icons & viewer windows
+
 ## [0.1.17.1] - 2026-02-19
 ### Other
 - Add UI button icons and resource integration
