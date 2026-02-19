@@ -1,104 +1,232 @@
-# PakFu 🥋📦🔥
+# PakFu
 
-Bow to your Sensei! 🙇‍♂️🙇‍♀️🧎‍➡️🧎‍➡️🧎‍➡️  
-PakFu is a modern, cross-platform game file viewer and PAK/WAD manager forged in the dojo of **C++20** ⚔️ and the ancient arts of **Qt6** 🐉 (Widgets or QML). It exists to bring balance to chaotic archives and assets: browse 🧭, preview 👀, extract 🧤, rebuild 🛠️, and automate 🧙‍♂️ via CLI.
+<p align="center">
+  <a href="VERSION"><img alt="Version" src="https://img.shields.io/badge/version-0.1.18.1-0A66C2?style=for-the-badge"></a>
+  <a href="#tech-stack"><img alt="Tech Stack" src="https://img.shields.io/badge/stack-C%2B%2B20%20%7C%20Qt6%20Widgets-00599C?style=for-the-badge"></a>
+  <a href="#build-and-run"><img alt="Build" src="https://img.shields.io/badge/build-Meson%20%2B%20Ninja-4C8EDA?style=for-the-badge"></a>
+  <a href="#overview"><img alt="Platforms" src="https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-444444?style=for-the-badge"></a>
+  <a href="#cli-quick-reference"><img alt="Interface" src="https://img.shields.io/badge/interface-GUI%20%2B%20CLI-1F6FEB?style=for-the-badge"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-GPLv3-2EA44F?style=for-the-badge"></a>
+  <a href="https://github.com/themuffinator/PakFu/actions/workflows/nightly.yml"><img alt="Nightly" src="https://img.shields.io/github/actions/workflow/status/themuffinator/PakFu/nightly.yml?label=nightly&style=for-the-badge"></a>
+  <a href="CHANGELOG.md"><img alt="Changelog" src="https://img.shields.io/badge/status-active%20development-CF8E1D?style=for-the-badge"></a>
+</p>
 
-This project is still training under the waterfall 💦🥋 (early development). Expect rapid evolution, occasional shin bruises, and increasingly disciplined PAKs.
+<p align="center">
+  <a href="https://github.com/themuffinator/PakFu/releases"><img alt="Download" src="https://img.shields.io/badge/download-GitHub%20Releases-2EA44F?style=for-the-badge"></a>
+  <a href="docs/DEPENDENCIES.md"><img alt="Dependencies" src="https://img.shields.io/badge/docs-Dependencies-444444?style=for-the-badge"></a>
+  <a href="docs/RELEASES.md"><img alt="Release Policy" src="https://img.shields.io/badge/docs-Release%20Policy-444444?style=for-the-badge"></a>
+</p>
 
-## The Dojo Scroll (What This Is) 🧾🥢
-- **GUI**: Qt6 Widgets or QML 🪟✨
-- **CLI**: first-class, scriptable, and always respected 🧑‍💻⚡
-- **Targets**: Windows 🪟, macOS 🍎, Linux 🐧 (no platform favoritism in my dojo)
-- **Build**: Meson + Ninja 🥷🛠️
+<p align="center">
+  <img alt="PakFu logo" src="assets/img/logo.png" width="420" />
+</p>
 
-## The Way of PakFu (Project Goals) 🐲📜
-- Deliver a modern, intuitive UI that feels fast, clean, and confident 🧼⚡🧠
-- Provide a first-class CLI for automation, pipelines, and batch wizardry 🪄🧰
-- Run consistently on Windows/macOS/Linux 🧘‍♂️🌍
-- Understand and preview common PAK-adjacent file types 👁️‍🗨️📁
-  - Images: `pcx`, `wal`, `swl`, `mip`, `dds`, `lmp`, `png`, `tga`, `jpg` 🖼️🎨
-  - Audio: `wav`, `ogg`, `mp3`, `bik` (audio track playback via Qt backend support) 🔊🎶
-  - Video: `cin`, `roq`, `ogv`, `bik` 🎞️🍿
-  - Models: `mdl` (Quake + GoldSrc/Half-Life Studio), `md2`, `md3`, `mdc`, `md4`, `mdr`, `skb`, `skd`, `mdm`, `glm`, `iqm`, `md5mesh`, `lwo`, `obj` 🧊🧩
-  - Sprites: `spr`, `sp2`/`spr2` (animated sprite preview + metadata/frame table insights, including Half-Life/GoldSrc SPR v2 embedded-palette files) 🧾🎯
-  - Demos: `dm2` (Quake II packet stream summary preview) 📼🧾
-  - Fonts: `ttf`, `otf` (Insights specimen preview + family/style metadata) 🔤🧾
-  - Maps: `bsp` (all supported Quake-family idTech1/idTech2/idTech3 titles, including GoldSrc/Half-Life, Quake BSP2/2PSB, RtCW/ET `IBSP` v47 with ET foliage surfaces, and RBSP/FBSP/FAKK/EF2 variants) + Doom-family WAD map/BSP-lump insights (`E#M#`/`MAP##`) 🗺️🧭
-  - Navigation/VM: `aas`, `qvm`, `progs.dat` (header/lump/function-table summary preview) 🧠📦
-  - RtCW/ET model metadata: `tag`, `mdx`, `mds` (header/table/frame/bone/tag summaries in Insights) 🐺🧾
-  - FAKK2/MOHAA/EF skeletal assets: `mdr`, `skb`, `skd`, `skc`/`ska` (header/surface/frame-table insights + model preview for `mdr`/`skb`/`skd`) 🦴🧾
-  - Integrity manifests: `crc` (Doom 3 BFG `.resources` checksum tables) ✅🧾
-  - Text/config: `cfg`, `config`, `rc`, `arena`, `bot`, `skin`, `shaderlist`, `lang`, `lst`, `tik`, `anim`, `cam`, `camera`, `char`, `voice`, `gui`, `bgui`, `efx`, `guide`, `lipsync`, `viseme`, `vdf`, `def`, `mtr`, `sndshd`, `af`, `pd`, `decl`, `ent`, `map`, `qc`, `sab`, `siege`, `veh`, `npc`, `jts`, `bset`, `weap`, `ammo`, `campaign`, and similar plain-text formats 🧾🖋️
-  - Shader scripts: `shader` opens as a tiled, script-driven Quake III preview with shader-block selection copy/paste append editing (including animated maps, tcMods, and deform directives) 🧪🧱
-- Tune 3D previews with grid/floor/none options, themed/grey/custom backgrounds, and wireframe/textured toggles
-- 3D navigation: hold Right Mouse to fly (WASD/QE, wheel adjusts speed, Shift faster, Ctrl slower); F frames, R/Home resets; Grid mode includes a 32x32x56 player-scale reference box
-- Quake II previews honor `_glow.png` glow maps for textures and models
-- WAD support: read/extract `WAD2`, `WAD3`, and classic Doom `IWAD`/`PWAD` (including Doom-family map/BSP-lump insights); rebuild/write `WAD2`
-- Stay responsive for large archives (no freezing in the middle of a roundhouse kick) 🥶➡️🥋
-- Guard official game archives with a default-on Pure PAK Protector preference 🛡️📦
-- Keep C++ code clean, portable, and documented (minimal OS-specific sorcery) 🧠🧹🧾
+Step into the PakFu dojo: your Sensei demands tidy archives, sharp tools, and workflows you can repeat without hesitation. Respect the palettes, mount containers within containers, and keep your mod workbench disciplined. Train with the GUI for comfort, or the CLI for speed.
 
-## PK3 / PK4 / PKZ Support (ZIP packs) 📦🧨
-PakFu treats `*.pk3`, `*.pk4`, and `*.pkz` as **ZIP-based packs** (same container, different extension).
+PakFu is a cross-platform archive manager and asset viewer for idTech-era and adjacent game formats. It is built with modern C++ and Qt6, and it keeps both GUI and CLI workflows first-class.
 
-Common conventions:
-- `*.pk3`: id Tech 3 packs (Quake III Arena / Quake Live, etc.)
-- `*.pk4`: id Tech 4 packs (Doom 3 / Quake 4, etc.)
-- `*.pkz`: ZIP-based packs used by some games/mods (handled like PK3/ZIP)
+<details>
+  <summary><strong>Table of Contents</strong></summary>
 
-These packs are supported anywhere PakFu supports ZIP:
+- [Overview](#overview)
+- [Download](#download)
+- [Highlights](#highlights)
+- [Supported Formats](#supported-formats)
+- [Build and Run](#build-and-run)
+- [CLI Quick Reference](#cli-quick-reference)
+- [GUI Workflow](#gui-workflow)
+- [Installations (Game Profiles)](#installations-game-profiles)
+- [Updates and Releases](#updates-and-releases)
+- [Environment Variables](#environment-variables)
+- [Documentation](#documentation)
+- [Tech Stack](#tech-stack)
+- [License](#license)
 
-- **Open/browse/preview/extract** in the GUI
-- **List/info/extract** in the CLI (`--cli`)
-- **Rebuild/write** via **File → Save / Save As…** (uses a vendored `miniz` backend)
+</details>
 
-```sh
-./builddir/src/pakfu --cli --info path/to/archive.pk3
-./builddir/src/pakfu --cli --list path/to/archive.pk4
-./builddir/src/pakfu --cli --extract -o out_dir path/to/archive.pkz
+## Overview
+- Current version: `0.1.18.1` (see `VERSION`).
+- Cross-platform targets: Windows, macOS, Linux.
+- Build system: Meson + Ninja.
+- UI framework: Qt6 Widgets.
+- Primary focus: browse, inspect, preview, extract, and rebuild archive content with a documented CLI.
+- Project state: active development with frequent feature updates.
+
+## Download
+Get PakFu from GitHub Releases:
+- Windows: `installer.msi` (recommended) or `portable.zip`
+- macOS: `installer.pkg` (recommended) or `portable.zip`
+- Linux: `installer.AppImage` (recommended) or `portable.tar.gz`
+
+PakFu can also check for updates at runtime (GUI) and via CLI (`--check-updates`).
+
+## Highlights
+- Archive and folder support in both GUI and CLI.
+- Dedicated standalone viewer windows for image, video, audio, and model files.
+- Nested container mounting (open archives inside archives).
+- 3D preview renderer selection with Vulkan/OpenGL behavior and fallback.
+- Fly camera controls for 3D preview (`Right Mouse + WASD`, `Q/E`, mouse wheel speed, `Shift` faster, `Ctrl` slower, `F` frame, `R`/`Home` reset).
+- Auto-detection and management of per-game installation profiles.
+- Built-in update checks via GitHub Releases.
+- Integrated crash reporting with session logs and Windows minidumps.
+- File-association management UI with per-format icon sets.
+
+## Supported Formats
+
+### Archive And Container Support
+| Type | Extensions | Open/List | Extract | Save/Rebuild |
+|---|---|---|---|---|
+| Folder input | directory path | Yes | Yes | N/A |
+| PAK/SIN | `pak`, `sin` | Yes | Yes | Yes |
+| ZIP family | `zip`, `pk3`, `pk4`, `pkz` | Yes | Yes | Yes |
+| Quake Live Beta encrypted PK3 | `pk3` (XOR-obfuscated) | Yes (auto-detect/decode) | Yes | Yes (encode/decode via Save As) |
+| Doom 3 BFG resources | `resources` | Yes | Yes | No |
+| WAD2 | `wad`, `wad2` | Yes | Yes | Yes |
+| WAD3 | `wad3` | Yes | Yes | No |
+| Doom IWAD/PWAD | `wad` | Yes | Yes | No |
+
+### Preview And Inspector Support
+- Images:
+  - Core: `pcx`, `wal`, `png`, `tga`, `jpg`
+  - Also supported: `jpeg`, `bmp`, `gif`, `tif`, `tiff`, `swl`, `mip`, `lmp`, `dds`
+- Audio:
+  - Core: `wav`, `ogg`
+  - Also supported: `mp3`
+- Video:
+  - Core: `cin`, `roq`
+  - Also supported: `bik`, `ogv`, `mp4`, `mkv`, `avi`, `webm`
+- Models:
+  - `mdl`, `md2`, `md3`, `mdc`, `md4`, `mdr`, `skb`, `skd`, `mdm`, `glm`, `iqm`, `md5mesh`, `obj`, `lwo`
+- idTech inspectors and metadata views:
+  - `spr`, `sp2`/`spr2`, `dm2`, `aas`, `qvm`, `progs.dat`, `tag`, `mdx`, `mds`, `skc`, `ska`, `ttf`, `otf`
+- Text and script assets:
+  - Core: `cfg` and similar plain-text config/script files
+  - Includes many common idTech-family script formats (`shader`, `menu`, `def`, `mtr`, `map`, `ent`, `qc`, and others)
+
+Notes:
+- Multimedia playback support depends on the installed Qt Multimedia backend and codecs.
+- `cin` and `roq` are also handled by built-in cinematic decoders.
+- Some indexed formats (`wal`, `mip`, selected `lmp` cases) use game palettes when required.
+
+## Build and Run
+
+### Prerequisites
+- C++20 toolchain
+- Meson + Ninja
+- Qt6 (Core, Gui, Network, Widgets, OpenGL, OpenGLWidgets, Multimedia, MultimediaWidgets)
+- Windows: `DbgHelp` (system library, used for crash reporting)
+
+See `docs/DEPENDENCIES.md` for full dependency details and packaging toolchain requirements.
+
+### Windows Helper Build
+```powershell
+pwsh -NoProfile -File scripts/meson_build.ps1
 ```
 
-## Doom 3 BFG `.resources` Support 📚
-PakFu supports Doom 3 BFG/DOOM 3 (2019) `*.resources` containers with native parsing:
+### Manual Build (All Platforms)
+```sh
+meson setup builddir --backend ninja
+meson compile -C builddir
+```
 
-- **Open/browse/preview/extract** in the GUI
-- **List/info/extract** in the CLI (`--cli`)
-- **Save/rebuild/write** is not supported yet for `.resources`
+### Run
+```sh
+./builddir/src/pakfu
+./builddir/src/pakfu --cli --help
+```
 
-### Quake Live Beta (QL BETA) encrypted PK3 (encode/decode) 🔐
-Quake Live **Beta** used an XOR-obfuscated PK3. PakFu can transparently **decode** these when reading, and can **encode** them when writing:
+Windows:
+```powershell
+.\builddir\src\pakfu.exe
+.\builddir\src\pakfu.exe --cli --help
+```
 
-- **Auto-detect on open**: if a `*.pk3` looks like a Quake Live Beta encrypted ZIP header, PakFu decodes it to a temporary ZIP for reading/listing/extraction.
-  - CLI tip: `--cli --info` prints `Quake Live encrypted PK3: yes` when detected.
-- **Decode (encrypted → normal PK3)**: open the encrypted `*.pk3`, then **File → Save As… → `PK3 (ZIP) (*.pk3)`**
-- **Encode (normal → QL Beta encrypted PK3)**: open any ZIP-based pack, then **File → Save As… → `PK3 (Quake Live encrypted) (*.pk3)`**
-- **Note**: encode/decode is the same XOR stream operation (historical obfuscation, not real security).
+## CLI Quick Reference
+Usage:
+```text
+pakfu[.exe] --cli [options] <archive-or-folder>
+```
 
-## The Forbidden Techniques (Non-Goals... for now) 🙅‍♂️⛔
-- Deep editing of complex proprietary binary formats 🧟‍♂️📦
-- Bundling game-specific proprietary tooling 🕳️🔒
-- Platform-exclusive UI tricks that break cross-platform harmony 🧨💥
+Core actions:
+- `-l, --list` : list entries.
+- `-i, --info` : show archive summary.
+- `-x, --extract` : extract entries (`-o, --output <dir>` optional).
+- `--check-updates` : query GitHub Releases.
 
-## Sacred Rules of the Dojo (Product Rules) 📜🗿
-- UI must be **Qt6 Widgets or QML**. No alternate frameworks. Ever. 🛑🪟
-- Must remain cross-platform; avoid OS-locked dependencies 🧘‍♀️🌐
-- CLI remains supported and documented 🧾🧑‍💻
-- File format support must be modular and additive 🧩➕
-- Docs must evolve with behavior (a silent Sensei is a bad Sensei) 📣📚
+Installation profile actions:
+- `--list-game-installs`
+- `--auto-detect-game-installs`
+- `--select-game-install <selector>`
 
-## The Toolbelt (Tech Stack) 🧰🧲
-- C++ (modern, prefer C++20) ⚔️
-- Qt6 (Widgets/QML) 🐉
-- Meson + Ninja 🥷🛠️
+Legacy aliases still accepted:
+- `--list-game-sets`
+- `--auto-detect-game-sets`
+- `--select-game-set <selector>`
 
-## The Update Ritual (GitHub Releases) 🔄📦
-PakFu checks GitHub Releases for new scrolls (updates) 🧾✨. Configure the repo at Meson setup time so the updater knows which mountain to climb 🏔️🐙:
+Update source overrides:
+- `--update-repo <owner/name>`
+- `--update-channel <stable|beta|dev>`
 
-- `-Dgithub_repo=owner/name` 🧭
-- `-Dupdate_channel=stable|beta|dev` 🧪
+Examples:
+```sh
+./builddir/src/pakfu --cli --info path/to/archive.pk3
+./builddir/src/pakfu --cli --list path/to/archive.wad
+./builddir/src/pakfu --cli --extract -o out_dir path/to/archive.resources
+./builddir/src/pakfu --cli --check-updates
+./builddir/src/pakfu --cli --list-game-installs
+./builddir/src/pakfu --cli --auto-detect-game-installs
+./builddir/src/pakfu --cli --select-game-install quake2
+```
 
-Nightly releases are automated (scheduled + commit-gated) and publish both installer + portable artifacts per platform.
-Use canonical asset names so updater selection stays deterministic:
+## GUI Workflow
+- Main modes:
+  - Archive View
+  - Image Viewer
+  - Video Viewer
+  - Audio Viewer
+  - Model Viewer
+- Opening behavior:
+  - Opening a supported media/model file can launch its dedicated viewer window.
+  - Opening an archive prompts: open directly, install a copy then open, or move to installation then open.
+- Navigation:
+  - In standalone viewers, mouse wheel and arrow keys cycle sibling files in the same folder.
+  - Fullscreen toggles with `F11`, middle mouse, or platform fullscreen shortcut.
+- Archive operations:
+  - Drag-and-drop import/export.
+  - Double-click nested container files to mount and browse in-place.
+  - Multiple nested layers are supported.
+- Safety:
+  - Pure PAK Protector is enabled by default for official archives (read-only protection with Save As workflow).
+
+## Installations (Game Profiles)
+PakFu stores per-game installation profiles with:
+- default directories,
+- palette preferences,
+- launch settings (executable/arguments/working directory).
+
+Behavior:
+- If profiles exist, PakFu opens directly into Archive View.
+- If none exist, the Installations dialog opens on startup.
+- Auto-detection order: Steam -> GOG.com -> EOS.
+- Auto-detection coverage includes Quake-family, Doom-family, Half-Life, SiN, RtCW/ET, Jedi Outcast/Academy, Elite Force titles, Quake 4, Doom 3, Doom 3 BFG Edition, Prey, and Enemy Territory: Quake Wars.
+
+Selector support:
+- `--select-game-install` accepts UID, game key, or display name.
+- Use `--list-game-installs` to enumerate current profiles and keys.
+
+## Updates and Releases
+PakFu can check GitHub Releases at runtime and from CLI.
+
+Build-time updater config:
+- `-Dgithub_repo=themuffinator/PakFu` (default; see `meson_options.txt`)
+- `-Dupdate_channel=stable|beta|dev` (default: `stable`; see `meson_options.txt`)
+
+Release automation:
+- Nightly pipeline: `.github/workflows/nightly.yml`
+- Channel auto-version pipeline: `.github/workflows/auto_version.yml`
+- Manual rebuild pipeline: `.github/workflows/release.yml`
+
+Release artifact naming contract:
 - `pakfu-<version>-windows-<arch>-installer.msi`
 - `pakfu-<version>-windows-<arch>-portable.zip`
 - `pakfu-<version>-macos-<arch>-installer.pkg`
@@ -106,163 +234,33 @@ Use canonical asset names so updater selection stays deterministic:
 - `pakfu-<version>-linux-<arch>-installer.AppImage`
 - `pakfu-<version>-linux-<arch>-portable.tar.gz`
 
-See `docs/RELEASES.md` for versioning and release automation details 🧾🤖.
+For full policy details, see `docs/RELEASES.md`.
 
-## Dependencies Scroll 🧾🧪
-See `docs/DEPENDENCIES.md` for the current baseline and planned format loaders 📚🔍.
+## Environment Variables
+| Variable | Purpose |
+|---|---|
+| `PAKFU_CRASH_DIR` | Override crash output directory (session logs and crash artifacts). |
+| `PAKFU_DISABLE_QT_MESSAGE_HOOK` | Disable Qt log interception for troubleshooting. |
+| `PAKFU_DEBUG_MEDIA` | Enable extra media diagnostics in logs. |
+| `PAKFU_AUTO_PLAY_ON_OPEN` | Auto-start playback when opening videos. |
+| `PAKFU_ALLOW_MULTI_INSTANCE` | Disable single-instance behavior and allow multiple app instances. |
+| `PAKFU_SMOKE_TABS` | Run tab smoke test automation on startup (debug/CI helper). |
+| `QT_MEDIA_BACKEND` | Override Qt multimedia backend selection. |
 
-## UI Icon Map 🖼️
-See `docs/UI_BUTTON_ICONS.md` for the button/action icon inventory and SVG asset mapping.
+## Documentation
+- `docs/DEPENDENCIES.md` : dependency baseline and optional libraries.
+- `docs/RELEASES.md` : versioning, release rules, and asset contract.
+- `docs/UI_BUTTON_ICONS.md` : UI action icon inventory.
+- `docs/FILE_ASSOCIATION_ICONS.md` : file association icon mapping and implementation notes.
+- `CHANGELOG.md` : release-by-release change history.
 
-## File Association Icons 🧷
-PakFu now defines a full per-extension file-association icon set for archive, image, video, audio, and model types:
-archives (`.pak`, `.sin`, `.pk3`, `.pk4`, `.pkz`, `.zip`, `.resources`, `.wad`, `.wad2`, `.wad3`), images (`.pcx`, `.wal`, `.swl`, `.mip`, `.lmp`, `.dds`, `.png`, `.jpg`, `.jpeg`, `.tga`, `.bmp`, `.gif`, `.tif`, `.tiff`), videos (`.cin`, `.roq`, `.ogv`, `.bik`, `.mp4`, `.mkv`, `.avi`, `.webm`), audio (`.wav`, `.ogg`, `.mp3`), and models (`.mdl`, `.md2`, `.md3`, `.mdc`, `.md4`, `.mdr`, `.skb`, `.skd`, `.mdm`, `.glm`, `.iqm`, `.md5mesh`, `.lwo`, `.obj`).
+## Tech Stack
+- Language: C++20
+- UI: Qt6 Widgets
+- Build: Meson + Ninja
+- Rendering preview path: Vulkan and OpenGL paths with fallback behavior
+- Packaging and release automation: platform scripts + GitHub Actions
 
-- On Windows: icons are generated with extension text + unique colors and registered per-extension in the user registry (`HKCU`).
-- On macOS/Linux: file associations remain installer-managed, but the same extension set is documented for packaging parity.
-- Manage per-format association state from **File → File Associations...** (tabbed **Archives** / **Images** / **Videos** / **Audio** / **Models**).
-
-See `docs/FILE_ASSOCIATION_ICONS.md` for the extension/color map and implementation notes.
-
-## Build Ritual (Meson + Ninja) 🥷🛠️
-
-### Windows (recommended) 🪟🥋
-The dojo provides a helper script that finds Qt's `qmake6` and builds with Ninja:
-
-```pwsh
-pwsh -NoProfile -File scripts/meson_build.ps1
-```
-
-On Windows, the script also deploys the required Qt runtime DLLs into `builddir/src/` so `builddir/src/pakfu.exe` runs without needing to add Qt to `PATH`.
-
-### Manual (all platforms) 🌍🧙‍♂️
-
-```sh
-meson setup builddir --backend ninja -Dgithub_repo=owner/name -Dupdate_channel=stable
-meson compile -C builddir
-```
-
-## Run (GUI or CLI) 🏃‍♂️💨
-
-### GUI 🪟
-- PakFu now has five GUI modes: **Archive View** (main window), **Image Viewer**, **Video Viewer**, **Audio Viewer**, and **Model Viewer** (standalone, read-only viewer windows).
-- Use **File → Open File…** for direct file viewing. Supported images/videos/audio/models open in their standalone viewer windows; other file types still open in **Archive View** Insights.
-- Opening a supported image/video/audio/model file directly with PakFu from your OS goes straight to its dedicated viewer mode.
-- In **Image Viewer**, **Video Viewer**, **Audio Viewer**, and **Model Viewer**, use mouse wheel or Left/Right arrows to cycle sibling files in the same folder.
-- Fullscreen toggles for viewer windows: Middle Mouse, `F11`, or platform fullscreen shortcuts.
-- Opening an archive from disk now first offers: **Open directly**, **Install a copy then open**, or **Move to installation then open**.
-- Drag archives or folders onto the window to open them.
-- Drag regular files onto Archive View to open them in the appropriate viewer mode.
-- Double-click regular files in Archive View to export and open them with the OS-associated app.
-- Double-click nested container files (`wad`, `wad2`, `wad3`, `pak`, `sin`, `pk3`, `pk4`, `pkz`, `zip`, `resources`) to open them in-place.
-- Nested container mounting supports multiple layers (you can keep drilling into archives inside archives).
-- Drag files/folders into an open archive tab to add them.
-- Drag items out of PakFu to copy them to your file manager (exports via temp files).
-- Integrated crash reporting writes session logs plus Windows minidumps to:
-  - `%LOCALAPPDATA%\\PakFu\\PakFu\\crashes` by default
-  - override with `PAKFU_CRASH_DIR=<path>` when needed
-  - disable Qt log interception with `PAKFU_DISABLE_QT_MESSAGE_HOOK=1` (troubleshooting only)
-  - media diagnostics: `PAKFU_DEBUG_MEDIA=1` and `PAKFU_AUTO_PLAY_ON_OPEN=1`
-
-### CLI 🧑‍💻
-- Most archive actions also work on folders (pass a directory path instead of an archive file).
-
-## Game Sets 🎮🧾
-PakFu uses **Game Sets** to store per-game defaults:
-- Default directory (for file dialogs / common workflows)
-- Palette selection (for game-specific previews)
-- Launch settings (executable + args)
-
-If **Game Sets** are already configured, PakFu opens directly into **Archive View**.
-If none are configured yet, the **Game Sets** window appears on startup.
-In **Archive View**, use the **Game** drop-down to switch sets instantly, or choose **Configure Game Sets…** to edit/auto-detect.
-When opening an archive, PakFu will try to auto-select the most likely Game Set based on the archive’s path and nearby install markers.
-Auto-detect checks installs in priority order: **Steam → GOG.com → EOS**.
-
-Supported auto-detect games:
-- Anachronox
-- Daikatana
-- DOOM
-- DOOM II
-- Doom 3
-- Doom 3: BFG Edition
-- Enemy Territory: Quake Wars
-- Final DOOM
-- Gravity Bone
-- Half-Life
-- Heavy Metal: F.A.K.K.2
-- Heretic
-- Heretic II
-- Hexen
-- Kingpin: Life of Crime
-- Prey
-- Quake
-- Quake 4
-- Quake II
-- Quake II RTX
-- Quake II Rerelease
-- Quake III Arena
-- Quake Live
-- Quake Rerelease
-- Return to Castle Wolfenstein
-- SiN Gold
-- Star Trek Voyager: Elite Force
-- Star Trek: Elite Force II
-- Star Wars Jedi Knight II: Jedi Outcast
-- Star Wars Jedi Knight: Jedi Academy
-- Strife
-- Thirty Flights of Loving
-- Warfork
-- Warsow
-- Wolfenstein: Enemy Territory
-- World of Padman
-
-```sh
-./builddir/src/pakfu
-./builddir/src/pakfu --cli --help
-./builddir/src/pakfu --cli --check-updates
-```
-
-On Windows, use:
-
-```pwsh
-.\builddir\src\pakfu.exe
-.\builddir\src\pakfu.exe --cli --help
-```
-
-Game Sets can also be managed via CLI:
-
-```sh
-./builddir/src/pakfu --cli --list-game-sets
-./builddir/src/pakfu --cli --auto-detect-game-sets
-./builddir/src/pakfu --cli --select-game-set quake2
-./builddir/src/pakfu --cli --select-game-set quake2_rtx
-./builddir/src/pakfu --cli --select-game-set half_life
-./builddir/src/pakfu --cli --select-game-set doom
-./builddir/src/pakfu --cli --select-game-set doom2
-./builddir/src/pakfu --cli --select-game-set final_doom
-./builddir/src/pakfu --cli --select-game-set heretic
-./builddir/src/pakfu --cli --select-game-set hexen
-./builddir/src/pakfu --cli --select-game-set strife
-./builddir/src/pakfu --cli --select-game-set quake3_arena
-./builddir/src/pakfu --cli --select-game-set quake_live
-./builddir/src/pakfu --cli --select-game-set quake4
-./builddir/src/pakfu --cli --select-game-set doom3
-./builddir/src/pakfu --cli --select-game-set doom3_bfg_edition
-./builddir/src/pakfu --cli --select-game-set jedi_academy
-./builddir/src/pakfu --cli --select-game-set daikatana
-./builddir/src/pakfu --cli --select-game-set anachronox
-./builddir/src/pakfu --cli --select-game-set heretic2
-./builddir/src/pakfu --cli --select-game-set elite_force2
-./builddir/src/pakfu --cli --select-game-set warfork
-./builddir/src/pakfu --cli --select-game-set warsow
-./builddir/src/pakfu --cli --select-game-set world_of_padman
-./builddir/src/pakfu --cli --select-game-set heavy_metal_fakk2
-```
-
-## License & Disclaimer ⚖️🧾
-- **License**: GPLv3 📜🐧
-- **Disclaimer**: Use at your own risk. No warranty. No mercy. 🥋⚠️😅
-
-## Final Bow 🙇‍♂️🙇‍♀️
-This repository is intentionally minimal right now. As features arrive, keep the dojo rules aligned with the design and build choices 🧘‍♂️📦✨.
+## License
+- GPLv3 (`LICENSE`)
+- No warranty
