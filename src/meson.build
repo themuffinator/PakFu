@@ -3,6 +3,8 @@ conf.set('PAKFU_VERSION', meson.project_version())
 conf.set('PAKFU_GITHUB_REPO', get_option('github_repo'))
 conf.set('PAKFU_UPDATE_CHANNEL', get_option('update_channel'))
 
+cpp_compiler = meson.get_compiler('cpp')
+
 configure_file(
   input: 'pakfu_config.h.in',
   output: 'pakfu_config.h',
@@ -84,6 +86,7 @@ sources = files(
   'ui/shader_viewer_widget.cpp',
   'ui/preview_pane.cpp',
   'ui/pak_tab.cpp',
+  'platform/crash_handler.cpp',
   'platform/file_associations.cpp',
   'pak/pak_archive.cpp',
   'wad/wad_archive.cpp',
@@ -114,6 +117,7 @@ sources += moc_sources
 pakfu_link_args = []
 pakfu_win_subsystem = 'console'
 pakfu_win_resources = []
+pakfu_platform_deps = []
 if host_machine.system() == 'windows'
   rc = find_program('rc', required: false)
   windres = find_program('windres', required: false)
@@ -131,13 +135,14 @@ if host_machine.system() == 'windows'
     qt_entrypoint_name = 'Qt6EntryPointd.lib'
   endif
   pakfu_link_args += join_paths(qt_libdir, qt_entrypoint_name)
+  pakfu_platform_deps += cpp_compiler.find_library('Dbghelp', required: true)
 endif
 
 pakfu = executable(
   'pakfu',
   sources + pakfu_win_resources,
   include_directories: pakfu_includes,
-  dependencies: [qt6_dep],
+  dependencies: [qt6_dep] + pakfu_platform_deps,
   link_with: [miniz_lib],
   link_args: pakfu_link_args,
   win_subsystem: pakfu_win_subsystem,

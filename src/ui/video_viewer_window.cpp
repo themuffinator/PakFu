@@ -20,6 +20,7 @@
 #include <QStatusBar>
 #include <QTextEdit>
 #include <QToolBar>
+#include <QTimer>
 #include <QWheelEvent>
 
 #include "ui/preview_pane.h"
@@ -48,6 +49,16 @@ bool should_ignore_navigation_event_target(QObject* watched) {
 	       qobject_cast<QLineEdit*>(watched) != nullptr ||
 	       qobject_cast<QTextEdit*>(watched) != nullptr ||
 	       qobject_cast<QPlainTextEdit*>(watched) != nullptr;
+}
+
+bool auto_play_on_open_enabled() {
+	const QString value = qEnvironmentVariable("PAKFU_AUTO_PLAY_ON_OPEN").trimmed().toLower();
+	return value == "1" || value == "true" || value == "yes" || value == "on";
+}
+
+bool debug_media_enabled() {
+	const QString value = qEnvironmentVariable("PAKFU_DEBUG_MEDIA").trimmed().toLower();
+	return value == "1" || value == "true" || value == "yes" || value == "on";
 }
 }  // namespace
 
@@ -244,10 +255,25 @@ void VideoViewerWindow::show_current_video() {
 	                         .arg(current_index_ + 1)
 	                         .arg(video_paths_.size());
 	const QString ext = file_ext_lower(info.fileName());
+	if (debug_media_enabled()) {
+		qInfo().noquote() << QString("VideoViewerWindow: show_current_video ext=%1 path=%2")
+		                     .arg(ext, info.absoluteFilePath());
+	}
 	if (ext == "cin" || ext == "roq") {
 		preview_->show_cinematic_from_file(info.fileName(), subtitle, info.absoluteFilePath());
 	} else {
 		preview_->show_video_from_file(info.fileName(), subtitle, info.absoluteFilePath());
+	}
+
+	if (auto_play_on_open_enabled()) {
+		if (debug_media_enabled()) {
+			qInfo() << "VideoViewerWindow: autoplay requested";
+		}
+		QTimer::singleShot(0, preview_, [preview = preview_]() {
+			if (preview) {
+				preview->start_playback_from_beginning();
+			}
+		});
 	}
 
 	update_status();
@@ -412,4 +438,3 @@ bool VideoViewerWindow::eventFilter(QObject* watched, QEvent* event) {
 void VideoViewerWindow::closeEvent(QCloseEvent* event) {
 	QMainWindow::closeEvent(event);
 }
-

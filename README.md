@@ -97,7 +97,14 @@ PakFu checks GitHub Releases for new scrolls (updates) 🧾✨. Configure the re
 - `-Dgithub_repo=owner/name` 🧭
 - `-Dupdate_channel=stable|beta|dev` 🧪
 
-Release assets should include platform-appropriate packages 🎁 (installers preferred 🧰✅, archives supported 📦👌).
+Nightly releases are automated (scheduled + commit-gated) and publish both installer + portable artifacts per platform.
+Use canonical asset names so updater selection stays deterministic:
+- `pakfu-<version>-windows-<arch>-installer.msi`
+- `pakfu-<version>-windows-<arch>-portable.zip`
+- `pakfu-<version>-macos-<arch>-installer.pkg`
+- `pakfu-<version>-macos-<arch>-portable.zip`
+- `pakfu-<version>-linux-<arch>-installer.AppImage`
+- `pakfu-<version>-linux-<arch>-portable.tar.gz`
 
 See `docs/RELEASES.md` for versioning and release automation details 🧾🤖.
 
@@ -151,6 +158,11 @@ meson compile -C builddir
 - Nested container mounting supports multiple layers (you can keep drilling into archives inside archives).
 - Drag files/folders into an open archive tab to add them.
 - Drag items out of PakFu to copy them to your file manager (exports via temp files).
+- Integrated crash reporting writes session logs plus Windows minidumps to:
+  - `%LOCALAPPDATA%\\PakFu\\PakFu\\crashes` by default
+  - override with `PAKFU_CRASH_DIR=<path>` when needed
+  - disable Qt log interception with `PAKFU_DISABLE_QT_MESSAGE_HOOK=1` (troubleshooting only)
+  - media diagnostics: `PAKFU_DEBUG_MEDIA=1` and `PAKFU_AUTO_PLAY_ON_OPEN=1`
 
 ### CLI 🧑‍💻
 - Most archive actions also work on folders (pass a directory path instead of an archive file).

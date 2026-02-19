@@ -40,6 +40,7 @@
 #include "cli/cli.h"
 #include "game/game_set.h"
 #include "pakfu_config.h"
+#include "platform/crash_handler.h"
 #include "update/update_service.h"
 #include "ui/game_set_dialog.h"
 #include "ui/audio_viewer_window.h"
@@ -419,6 +420,7 @@ int main(int argc, char** argv) {
   if (wants_cli(argc, argv)) {
     QCoreApplication app(argc, argv);
     set_app_metadata(app);
+    platform::install_crash_reporting();
 
     CliOptions options;
     QString output;
@@ -449,6 +451,7 @@ int main(int argc, char** argv) {
     app.setWindowIcon(app_icon);
   }
   set_app_metadata(app);
+  platform::install_crash_reporting();
   prefer_qt_ffmpeg_backend_if_available();
   const QString server_name = single_instance_server_name();
   const QStringList initial_paths = find_initial_open_paths(argc, argv);

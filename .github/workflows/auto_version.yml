@@ -1,9 +1,6 @@
 name: auto-version
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       channel:
@@ -26,10 +23,7 @@ concurrency:
 
 jobs:
   tag:
-    if: >
-      github.actor != 'github-actions[bot]' &&
-      (github.event_name == 'workflow_dispatch' ||
-       !contains(github.event.head_commit.message, 'chore(release):'))
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     outputs:
       tagged: ${{ steps.tag.outputs.tagged }}
@@ -204,6 +198,24 @@ jobs:
           else
             echo "PAKFU_PRERELEASE=false" >> "$GITHUB_ENV"
           fi
+
+      - name: Validate Packaged Assets
+        shell: bash
+        run: |
+          python scripts/validate_release_assets.py --dist dist --version "${PAKFU_VERSION}"
+
+      - name: Generate Distribution Manifest
+        shell: bash
+        run: |
+          python scripts/release_manifest.py \
+            --dist dist \
+            --version "${PAKFU_VERSION}" \
+            --output "dist/pakfu-${PAKFU_VERSION}-release-manifest.json"
+
+      - name: Snapshot Changelog
+        shell: bash
+        run: |
+          cp CHANGELOG.md "dist/CHANGELOG-${PAKFU_VERSION}.md"
 
       - name: Prepare Release Notes
         shell: bash

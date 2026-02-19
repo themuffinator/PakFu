@@ -69,6 +69,7 @@ private:
   void reset_audio_playback();
   void stop_audio();
   void enqueue_audio(const QByteArray& pcm);
+  [[nodiscard]] bool can_start_playback_now() const;
 
   QLabel* frame_label_ = nullptr;
   QLabel* status_label_ = nullptr;
@@ -91,6 +92,7 @@ private:
   QByteArray last_frame_audio_pcm_;
   bool audio_convert_u8_to_s16_ = false;
   bool audio_needs_restart_ = false;
+  bool play_start_retry_pending_ = false;
   bool playing_ = false;
   bool user_scrubbing_ = false;
   bool texture_smoothing_ = false;

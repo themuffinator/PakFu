@@ -153,6 +153,24 @@ jobs:
             echo "PAKFU_PRERELEASE=false" >> "$GITHUB_ENV"
           fi
 
+      - name: Validate Packaged Assets
+        shell: bash
+        run: |
+          python scripts/validate_release_assets.py --dist dist --version "${PAKFU_VERSION}"
+
+      - name: Generate Distribution Manifest
+        shell: bash
+        run: |
+          python scripts/release_manifest.py \
+            --dist dist \
+            --version "${PAKFU_VERSION}" \
+            --output "dist/pakfu-${PAKFU_VERSION}-release-manifest.json"
+
+      - name: Snapshot Changelog
+        shell: bash
+        run: |
+          cp CHANGELOG.md "dist/CHANGELOG-${PAKFU_VERSION}.md"
+
       - name: Prepare Release Notes
         shell: bash
         run: |

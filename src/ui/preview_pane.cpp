@@ -316,6 +316,7 @@ PreviewPane::PreviewPane(QWidget* parent) : QWidget(parent) {
 }
 
 PreviewPane::~PreviewPane() {
+	QObject::disconnect(nullptr, nullptr, this, nullptr);
 	clear_font_preview_font();
 }
 

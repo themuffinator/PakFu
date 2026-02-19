@@ -5,6 +5,8 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QScrollBar>
 #include <QSettings>
 #include <QSlider>
@@ -44,6 +46,11 @@ int fps_interval_ms(double fps) {
   return qMax(1, static_cast<int>(ms + 0.5));
 }
 
+bool debug_media_enabled() {
+  const QString value = qEnvironmentVariable("PAKFU_DEBUG_MEDIA").trimmed().toLower();
+  return value == "1" || value == "true" || value == "yes" || value == "on";
+}
+
 QByteArray u8_pcm_to_s16le(const QByteArray& in) {
   if (in.isEmpty()) {
     return {};
@@ -70,6 +77,7 @@ public:
   }
 
   void clear() {
+    QMutexLocker lock(&mutex_);
     buffer_.clear();
     read_offset_ = 0;
   }
@@ -78,7 +86,8 @@ public:
     if (bytes.isEmpty()) {
       return;
     }
-    compact_if_needed();
+    QMutexLocker lock(&mutex_);
+    compact_if_needed_locked();
     buffer_.append(bytes);
 
     const qint64 avail = buffer_.size() - read_offset_;
@@ -86,11 +95,12 @@ public:
       // Drop the oldest audio to avoid unbounded growth.
       const qint64 drop = avail - max_buffer_bytes_;
       read_offset_ += drop;
-      compact_if_needed();
+      compact_if_needed_locked();
     }
   }
 
   qint64 bytesAvailable() const override {
+    QMutexLocker lock(&mutex_);
     return (buffer_.size() - read_offset_) + QIODevice::bytesAvailable();
   }
 
@@ -99,23 +109,22 @@ protected:
     if (!data || maxlen <= 0) {
       return 0;
     }
+    QMutexLocker lock(&mutex_);
     const qint64 avail = buffer_.size() - read_offset_;
     if (avail <= 0) {
-      // Keep audio flowing (avoid underflow stutter) by outputting silence.
-      memset(data, 0, static_cast<size_t>(maxlen));
-      return maxlen;
+      return 0;
     }
     const qint64 n = qMin(maxlen, avail);
     memcpy(data, buffer_.constData() + read_offset_, static_cast<size_t>(n));
     read_offset_ += n;
-    compact_if_needed();
+    compact_if_needed_locked();
     return n;
   }
 
   qint64 writeData(const char*, qint64) override { return -1; }
 
 private:
-  void compact_if_needed() {
+  void compact_if_needed_locked() {
     if (read_offset_ <= 0) {
       return;
     }
@@ -130,6 +139,7 @@ private:
     }
   }
 
+  mutable QMutex mutex_;
   QByteArray buffer_;
   qint64 read_offset_ = 0;
   qint64 max_buffer_bytes_ = 8LL * 1024 * 1024;
@@ -189,6 +199,16 @@ bool CinematicPlayerWidget::load_file(const QString& file_path, QString* error) 
   display_frame(frame.image);
   last_frame_audio_pcm_ = frame.audio_pcm;
   set_status_text({});
+  if (debug_media_enabled()) {
+    const CinematicInfo ci = decoder_->info();
+    qInfo().noquote() << QString("CinematicPlayerWidget: load_file ok format=%1 size=%2x%3 fps=%4 frames=%5 path=%6")
+                         .arg(ci.format)
+                         .arg(ci.width)
+                         .arg(ci.height)
+                         .arg(ci.fps, 0, 'f', 2)
+                         .arg(ci.frame_count)
+                         .arg(file_path);
+  }
 
   if (position_slider_) {
     const int count = decoder_->frame_count();
@@ -203,6 +223,7 @@ bool CinematicPlayerWidget::load_file(const QString& file_path, QString* error) 
 
 void CinematicPlayerWidget::unload() {
   pause();
+  play_start_retry_pending_ = false;
   stop_audio();
   decoder_.reset();
   file_path_.clear();
@@ -229,6 +250,14 @@ void CinematicPlayerWidget::play_from_start() {
   }
   stop();
   play();
+}
+
+bool CinematicPlayerWidget::can_start_playback_now() const {
+  if (!isVisible() || !frame_label_) {
+    return false;
+  }
+  const QSize sz = frame_label_->size();
+  return sz.width() >= 2 && sz.height() >= 2;
 }
 
 void CinematicPlayerWidget::resizeEvent(QResizeEvent* event) {
@@ -444,24 +473,7 @@ void CinematicPlayerWidget::update_scaled_frame() {
     return;
   }
 
-  const QSize label_size = frame_label_->size();
-  if (label_size.width() < 2 || label_size.height() < 2) {
-    // Layout not finalized yet; try again on the next event loop turn.
-    frame_label_->setPixmap(QPixmap::fromImage(current_frame_image_));
-    QTimer::singleShot(0, this, [this]() { update_scaled_frame(); });
-    return;
-  }
-
-  const qreal dpr = devicePixelRatioF();
-  const QSize target = QSize(
-    qMax(1, static_cast<int>(label_size.width() * dpr)),
-    qMax(1, static_cast<int>(label_size.height() * dpr)));
-
-  QPixmap pix = QPixmap::fromImage(current_frame_image_);
-  const auto transform_mode = texture_smoothing_ ? Qt::SmoothTransformation : Qt::FastTransformation;
-  pix = pix.scaled(target, Qt::KeepAspectRatio, transform_mode);
-  pix.setDevicePixelRatio(dpr);
-  frame_label_->setPixmap(pix);
+  frame_label_->setPixmap(QPixmap::fromImage(current_frame_image_));
 }
 
 void CinematicPlayerWidget::play() {
@@ -471,6 +483,22 @@ void CinematicPlayerWidget::play() {
   if (playing_) {
     return;
   }
+  if (!can_start_playback_now()) {
+    if (!play_start_retry_pending_) {
+      play_start_retry_pending_ = true;
+      QTimer::singleShot(50, this, [this]() {
+        if (!play_start_retry_pending_) {
+          return;
+        }
+        play_start_retry_pending_ = false;
+        if (!playing_ && has_cinematic()) {
+          play();
+        }
+      });
+    }
+    return;
+  }
+  play_start_retry_pending_ = false;
 
   const int count = decoder_->frame_count();
   if (count > 0 && current_frame_index_ >= count - 1) {
@@ -479,6 +507,9 @@ void CinematicPlayerWidget::play() {
   }
 
   playing_ = true;
+  if (debug_media_enabled()) {
+    qInfo() << "CinematicPlayerWidget: play start at frame" << current_frame_index_;
+  }
   start_audio_if_needed();
 
   const int interval = fps_interval_ms(decoder_->info().fps);
@@ -492,6 +523,7 @@ void CinematicPlayerWidget::pause() {
   if (!playing_) {
     return;
   }
+  play_start_retry_pending_ = false;
   playing_ = false;
   if (timer_) {
     timer_->stop();
@@ -504,6 +536,7 @@ void CinematicPlayerWidget::stop() {
   if (!decoder_) {
     return;
   }
+  play_start_retry_pending_ = false;
   pause();
   show_frame(0, false);
   reset_audio_playback();
@@ -525,6 +558,9 @@ void CinematicPlayerWidget::step(int delta) {
 void CinematicPlayerWidget::on_tick() {
   if (!playing_) {
     return;
+  }
+  if (debug_media_enabled() && current_frame_index_ >= 0 && (current_frame_index_ < 5 || (current_frame_index_ % 60) == 0)) {
+    qInfo() << "CinematicPlayerWidget: tick frame" << current_frame_index_;
   }
 
   if (!show_next_frame(true)) {
@@ -606,6 +642,9 @@ bool CinematicPlayerWidget::show_next_frame(bool allow_audio) {
   }
 
   current_frame_index_ = frame.index >= 0 ? frame.index : (current_frame_index_ + 1);
+  if (debug_media_enabled() && (current_frame_index_ < 5 || (current_frame_index_ % 60) == 0)) {
+    qInfo() << "CinematicPlayerWidget: decoded frame" << current_frame_index_;
+  }
   display_frame(frame.image);
   last_frame_audio_pcm_ = frame.audio_pcm;
 
@@ -617,8 +656,9 @@ bool CinematicPlayerWidget::show_next_frame(bool allow_audio) {
     enqueue_audio(frame.audio_pcm);
   }
 
-  set_status_text({});
-  update_ui_state();
+  if (!playing_) {
+    set_status_text({});
+  }
   return true;
 }
 
@@ -651,6 +691,13 @@ void CinematicPlayerWidget::configure_audio_for_current_cinematic() {
   audio_sink_->setBufferSize(256 * 1024);
   on_volume_changed(volume_scroll_ ? volume_scroll_->value() : 80);
   audio_needs_restart_ = true;
+  if (debug_media_enabled()) {
+    qInfo() << "CinematicPlayerWidget: audio configured"
+            << "rate=" << fmt.sampleRate()
+            << "channels=" << fmt.channelCount()
+            << "bytesPerSample=" << ci.audio_bytes_per_sample
+            << "u8_to_s16=" << audio_convert_u8_to_s16_;
+  }
 }
 
 void CinematicPlayerWidget::start_audio_if_needed() {
@@ -660,13 +707,23 @@ void CinematicPlayerWidget::start_audio_if_needed() {
   if (!decoder_->info().has_audio) {
     return;
   }
+  if (debug_media_enabled()) {
+    qInfo() << "CinematicPlayerWidget: start_audio_if_needed state=" << audio_sink_->state()
+            << "need_restart=" << audio_needs_restart_;
+  }
 
   if (audio_needs_restart_) {
     audio_sink_->stop();
     audio_device_->clear();
-    audio_sink_->start(audio_device_);
-    audio_needs_restart_ = false;
     enqueue_audio(last_frame_audio_pcm_);
+    if (debug_media_enabled()) {
+      qInfo() << "CinematicPlayerWidget: audio_sink start (restart path)";
+    }
+    audio_sink_->start(audio_device_);
+    if (debug_media_enabled()) {
+      qInfo() << "CinematicPlayerWidget: audio_sink started (restart path) state=" << audio_sink_->state();
+    }
+    audio_needs_restart_ = false;
     return;
   }
 
@@ -680,8 +737,14 @@ void CinematicPlayerWidget::start_audio_if_needed() {
   }
 
   audio_device_->clear();
-  audio_sink_->start(audio_device_);
   enqueue_audio(last_frame_audio_pcm_);
+  if (debug_media_enabled()) {
+    qInfo() << "CinematicPlayerWidget: audio_sink start (fresh path)";
+  }
+  audio_sink_->start(audio_device_);
+  if (debug_media_enabled()) {
+    qInfo() << "CinematicPlayerWidget: audio_sink started (fresh path) state=" << audio_sink_->state();
+  }
 }
 
 void CinematicPlayerWidget::suspend_audio() {

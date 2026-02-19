@@ -48,6 +48,7 @@ protected:
 
 private:
 	void build_ui();
+	void unload_internal(bool notify_media_change);
 	void update_ui_state();
 	void set_status_text(const QString& text);
 	void update_status_auto();
@@ -83,6 +84,7 @@ private:
 	bool user_scrubbing_ = false;
 	bool resume_after_scrub_ = false;
 	bool prefetch_first_frame_ = false;
+	bool prefetch_stop_pending_ = false;
 	float prefetch_saved_volume_ = 0.0f;
 	bool texture_smoothing_ = false;
 };

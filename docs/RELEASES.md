@@ -1,68 +1,83 @@
 # PakFu Releases
 
-## Versioning
-PakFu follows SemVer with an updater-friendly, numeric-only identifier. Versions
-are computed automatically from git history by GitHub Actions.
+## Versioning Policy
+PakFu uses numeric-only version identifiers so Qt `QVersionNumber` comparisons
+stay stable for updater decisions.
 
 Rules:
-- `VERSION` is written by automation and must stay strictly numeric dot segments
-  (no leading `v`, no `-beta`/`-rc`, no `+git` metadata).
-- Git tags are `v<version>` and must match `VERSION` exactly.
-- Stable releases use `MAJOR.MINOR.PATCH` (example: `1.4.0`).
-- Beta/dev releases use `MAJOR.MINOR.PATCH.BUILD` (example: `1.5.0.3`), and the
-  GitHub Release is marked **prerelease** automatically.
-- Always increment the numeric portion for every published build; never reuse
-  a version number.
+- `VERSION` must always be numeric dot-segments only (no `v`, no suffixes).
+- Git tags are always `v<version>`.
+- Stable releases use `MAJOR.MINOR.PATCH`.
+- Nightly releases use `MAJOR.MINOR.PATCH.BUILD`.
 
-Why: the auto-updater compares versions using Qt's numeric `QVersionNumber`
-parsing, which ignores suffixes like `-beta`. Numeric-only identifiers keep
-update ordering reliable.
+Nightly version generation:
+- Computed by `scripts/nightly_version.py`.
+- Base (`MAJOR.MINOR.PATCH`) is derived from Conventional Commit bump rules
+  relative to the latest stable tag.
+- `BUILD` increments for each nightly on that base.
+- Nightly runs only publish when meaningful commits exist since the previous
+  nightly tag (`chore(release): ...` commits are ignored).
 
-Automatic bump rules (based on Conventional Commit style since the last stable
-tag):
-- Breaking change (`type!:` in the subject or `BREAKING CHANGE` in the body)
-  bumps **MAJOR** (or **MINOR** if `MAJOR=0`).
-- `feat:` bumps **MINOR**.
-- Everything else bumps **PATCH**.
+Stable/beta/dev manual version generation:
+- Computed by `scripts/next_version.py` for `auto_version.yml`.
 
-Stage/maturity rule:
-- While `MAJOR=0` (pre-1.0), breaking changes advance **MINOR** instead of
-  **MAJOR** to reflect ongoing development.
+## Changelog Policy
+- `CHANGELOG.md` remains the source of truth.
+- Nightly release notes include:
+1. The generated nightly changelog entry.
+2. The full `CHANGELOG.md` content.
+- Changelog/release-note rendering scripts:
+1. `scripts/update_changelog.py`
+2. `scripts/nightly_release_notes.py`
+3. `scripts/release_notes.py` (manual channel releases)
 
-Examples:
-- Stable: `1.2.0`
-- Beta/dev for the next stable: `1.3.0.1`, `1.3.0.2`
+## Distribution Contract
+Packaged artifacts must follow this canonical pattern:
+`pakfu-<version>-<platform>-<arch>-<kind>.<ext>`
 
-Preview the next version locally:
+Required assets per platform:
+- Windows: `portable.zip` and `installer.msi`
+- macOS: `portable.zip` and `installer.pkg`
+- Linux: `portable.tar.gz` and `installer.AppImage`
+
+Current updater behavior prefers installer assets and falls back to portable
+archives when needed.
+
+The release pipeline also emits:
+- `pakfu-<version>-release-manifest.json` (checksums + distribution metadata)
+- `CHANGELOG-<version>.md`
+
+Validation tooling:
+- `scripts/validate_build.py`
+- `scripts/validate_release_assets.py`
+- `scripts/release_manifest.py`
+
+## Workflows
+Nightly automation:
+- Workflow: `.github/workflows/nightly.yml`
+- Trigger: scheduled nightly + manual dispatch (`force` optional)
+- Stages:
+1. `prepare`: compute nightly version + change gate
+2. `build`: compile on Windows/macOS/Linux
+3. `validate`: run CLI smoke checks on each platform build
+4. `package`: build installer + portable assets per platform
+5. `release`: tag, validate completeness, publish prerelease with full changelog context
+
+Manual release channels:
+- Workflow: `.github/workflows/auto_version.yml`
+- Trigger: manual dispatch only
+- Purpose: stable/beta/dev tagged releases from selected channel policy
+
+Manual rebuild of an existing ref:
+- Workflow: `.github/workflows/release.yml`
+
+## Local Preview Commands
+Preview manual next version:
 ```sh
 python scripts/next_version.py --channel dev
 ```
 
-## Changelog
-Release notes come from `CHANGELOG.md`, which is updated automatically during
-the `auto-version` workflow. Keep commit messages concise and descriptive so
-the notes read well.
-
-## Release Assets
-To enable in-app updates, attach platform packages to each GitHub Release.
-Current packaging targets:
-- Windows: portable `.zip` (installer `.exe/.msi` planned)
-- macOS: portable `.zip` (installer `.dmg/.pkg` planned)
-- Linux: `.tar.gz` (AppImage planned)
-
-Asset names should include platform hints (e.g. `win`, `mac`, `linux`, `x64`) so
-the updater can select the correct file automatically.
-
-## Release Workflow
-1. Push to `main` (default: auto-creates a **dev** prerelease).
-2. The `auto-version` workflow computes the next version, updates `VERSION`,
-   updates `CHANGELOG.md`, commits, and tags it.
-3. The same `auto-version` workflow then builds packages and publishes the
-   GitHub Release for that tag, using the matching changelog entry as release
-   notes.
-4. For a stable release, run the `auto-version` workflow manually with
-   `channel=stable`.
-5. `release.yml` remains available for manual re-runs if needed.
-
-The release workflow uses the repository name as the update source and publishes
-the artifacts to the GitHub Release matching the tag.
+Preview nightly decision/version:
+```sh
+python scripts/nightly_version.py --format json
+```

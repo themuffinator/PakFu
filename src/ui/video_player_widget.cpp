@@ -10,6 +10,7 @@
 #include <QSettings>
 #include <QSlider>
 #include <QStringList>
+#include <QTimer>
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -51,8 +52,13 @@ VideoPlayerWidget::VideoPlayerWidget(QWidget* parent) : QWidget(parent) {
 }
 
 VideoPlayerWidget::~VideoPlayerWidget() {
-	disconnect();
-	unload();
+	if (player_) {
+		QObject::disconnect(player_, nullptr, this, nullptr);
+	}
+	if (video_sink_) {
+		QObject::disconnect(video_sink_, nullptr, this, nullptr);
+	}
+	unload_internal(false);
 }
 
 bool VideoPlayerWidget::has_media() const {
@@ -110,6 +116,10 @@ bool VideoPlayerWidget::load_file(const QString& file_path, QString* error) {
 }
 
 void VideoPlayerWidget::unload() {
+	unload_internal(true);
+}
+
+void VideoPlayerWidget::unload_internal(bool notify_media_change) {
 	stop_prefetch_first_frame();
 	clear_status_override();
 
@@ -131,7 +141,9 @@ void VideoPlayerWidget::unload() {
 
 	set_status_text({});
 	update_ui_state();
-	emit media_info_changed();
+	if (notify_media_change) {
+		emit media_info_changed();
+	}
 }
 
 void VideoPlayerWidget::play_from_start() {
@@ -316,8 +328,12 @@ void VideoPlayerWidget::build_ui() {
 			if (sz.isValid()) {
 				current_video_size_ = sz;
 			}
-			if (prefetch_first_frame_) {
-				stop_prefetch_first_frame();
+			if (prefetch_first_frame_ && !prefetch_stop_pending_) {
+				prefetch_stop_pending_ = true;
+				QTimer::singleShot(0, this, [this]() {
+					prefetch_stop_pending_ = false;
+					stop_prefetch_first_frame();
+				});
 			}
 			update_status_auto();
 			emit media_info_changed();
@@ -480,6 +496,7 @@ void VideoPlayerWidget::start_prefetch_first_frame() {
 	}
 
 	prefetch_first_frame_ = true;
+	prefetch_stop_pending_ = false;
 	prefetch_saved_volume_ = audio_output_->volume();
 	audio_output_->setVolume(0.0f);
 	player_->setPosition(0);
@@ -491,6 +508,7 @@ void VideoPlayerWidget::stop_prefetch_first_frame() {
 		return;
 	}
 	prefetch_first_frame_ = false;
+	prefetch_stop_pending_ = false;
 	if (player_) {
 		player_->pause();
 	}

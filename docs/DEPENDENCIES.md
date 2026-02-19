@@ -3,6 +3,7 @@
 ## Required
 - C++20 toolchain
 - Meson + Ninja
+- Windows builds: `DbgHelp` (system library; used for crash minidumps + stack symbolization)
 - Qt 6:
   - Core
   - Gui
@@ -12,6 +13,17 @@
   - OpenGLWidgets (model preview: MDL/MD2/MD3/MDC/MD4/MDR/SKB/SKD/MDM/GLM/IQM/MD5/LWO/OBJ)
   - Multimedia (audio/video playback via available backend codecs; prefers FFmpeg when available)
   - MultimediaWidgets (video output: QVideoWidget)
+
+## Release Packaging Toolchain
+- Windows:
+  - `windeployqt` (Qt deployment)
+  - WiX Toolset v3 (`heat`, `candle`, `light`) for MSI generation
+- macOS:
+  - `macdeployqt` (Qt deployment)
+  - `pkgbuild` (native `.pkg` installer generation)
+- Linux:
+  - `linuxdeployqt` (downloaded in CI for AppImage packaging)
+  - AppImage runtime tooling (`APPIMAGE_EXTRACT_AND_RUN` flow in CI)
 
 ## Planned / Optional
 - Vulkan runtime + drivers (enables the Vulkan 3D preview renderer; OpenGL remains the fallback)
