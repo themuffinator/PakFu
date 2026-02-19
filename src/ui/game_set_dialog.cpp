@@ -15,6 +15,7 @@
 
 #include "game/game_auto_detect.h"
 #include "ui/game_set_editor_dialog.h"
+#include "ui/ui_icons.h"
 
 namespace {
 QString detail_tooltip_for(const GameSet& set) {
@@ -124,6 +125,10 @@ void GameSetDialog::build_ui() {
   configure_button_ = new QPushButton("Configure…", this);
   remove_button_ = new QPushButton("Remove", this);
   auto_detect_button_ = new QPushButton("Auto-detect", this);
+  add_button_->setIcon(UiIcons::icon(UiIcons::Id::AddFiles, add_button_->style()));
+  configure_button_->setIcon(UiIcons::icon(UiIcons::Id::Configure, configure_button_->style()));
+  remove_button_->setIcon(UiIcons::icon(UiIcons::Id::DeleteItem, remove_button_->style()));
+  auto_detect_button_->setIcon(UiIcons::icon(UiIcons::Id::AutoDetect, auto_detect_button_->style()));
 
   row->addWidget(add_button_);
   row->addWidget(configure_button_);
@@ -136,6 +141,10 @@ void GameSetDialog::build_ui() {
   open_button_ = buttons->button(QDialogButtonBox::Open);
   if (open_button_) {
     open_button_->setText("Open");
+    open_button_->setIcon(UiIcons::icon(UiIcons::Id::OpenFolder, open_button_->style()));
+  }
+  if (QPushButton* cancel_button = buttons->button(QDialogButtonBox::Cancel)) {
+    cancel_button->setIcon(UiIcons::icon(UiIcons::Id::ExitApp, cancel_button->style()));
   }
   row->addWidget(buttons);
 

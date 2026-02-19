@@ -79,6 +79,7 @@
 #include "ui/breadcrumb_bar.h"
 #include "ui/preview_pane.h"
 #include "ui/preview_renderer.h"
+#include "ui/ui_icons.h"
 #include "zip/quakelive_pk3_crypto.h"
 
 namespace {
@@ -2124,20 +2125,19 @@ void PakTab::setup_actions() {
     return;
   }
 
-  add_files_action_ = toolbar_->addAction(style()->standardIcon(QStyle::SP_DialogOpenButton), "Add Files...");
+  add_files_action_ = toolbar_->addAction(UiIcons::icon(UiIcons::Id::AddFiles, style()), "Add Files...");
   add_files_action_->setToolTip("Add files to the current folder");
   connect(add_files_action_, &QAction::triggered, this, &PakTab::add_files);
 
-  add_folder_action_ = toolbar_->addAction(style()->standardIcon(QStyle::SP_DirIcon), "Add Folder...");
+  add_folder_action_ = toolbar_->addAction(UiIcons::icon(UiIcons::Id::AddFolder, style()), "Add Folder...");
   add_folder_action_->setToolTip("Add a folder (recursively) to the current folder");
   connect(add_folder_action_, &QAction::triggered, this, &PakTab::add_folder);
 
-  new_folder_action_ =
-    toolbar_->addAction(style()->standardIcon(QStyle::SP_FileDialogNewFolder), "New Folder...");
+  new_folder_action_ = toolbar_->addAction(UiIcons::icon(UiIcons::Id::NewFolder, style()), "New Folder...");
   new_folder_action_->setToolTip("Create a new folder in the current folder");
   connect(new_folder_action_, &QAction::triggered, this, &PakTab::new_folder);
 
-  delete_action_ = toolbar_->addAction(style()->standardIcon(QStyle::SP_TrashIcon), "Delete");
+  delete_action_ = toolbar_->addAction(UiIcons::icon(UiIcons::Id::DeleteItem, style()), "Delete");
   delete_action_->setToolTip("Delete selected item (Del). Shift+Del skips confirmation.");
   connect(delete_action_, &QAction::triggered, this, [this]() {
     const bool force = (QApplication::keyboardModifiers() & Qt::ShiftModifier);
@@ -2147,7 +2147,7 @@ void PakTab::setup_actions() {
   toolbar_->addSeparator();
 
   view_button_ = new QToolButton(toolbar_);
-  view_button_->setIcon(style()->standardIcon(QStyle::SP_FileDialogDetailedView));
+  view_button_->setIcon(UiIcons::icon(UiIcons::Id::ViewDetails, style()));
   view_button_->setToolTip("Change view mode");
   view_button_->setPopupMode(QToolButton::InstantPopup);
 
@@ -2157,6 +2157,7 @@ void PakTab::setup_actions() {
 
   view_auto_action_ = view_menu->addAction("Auto");
   view_auto_action_->setCheckable(true);
+  view_auto_action_->setIcon(UiIcons::icon(UiIcons::Id::ViewAuto, style()));
   view_group_->addAction(view_auto_action_);
   connect(view_auto_action_, &QAction::triggered, this, [this]() { set_view_mode(ViewMode::Auto); });
 
@@ -2164,28 +2165,31 @@ void PakTab::setup_actions() {
 
   view_details_action_ = view_menu->addAction("Details");
   view_details_action_->setCheckable(true);
-  view_details_action_->setIcon(style()->standardIcon(QStyle::SP_FileDialogDetailedView));
+  view_details_action_->setIcon(UiIcons::icon(UiIcons::Id::ViewDetails, style()));
   view_group_->addAction(view_details_action_);
   connect(view_details_action_, &QAction::triggered, this, [this]() { set_view_mode(ViewMode::Details); });
 
   view_list_action_ = view_menu->addAction("List");
   view_list_action_->setCheckable(true);
-  view_list_action_->setIcon(style()->standardIcon(QStyle::SP_FileDialogListView));
+  view_list_action_->setIcon(UiIcons::icon(UiIcons::Id::ViewList, style()));
   view_group_->addAction(view_list_action_);
   connect(view_list_action_, &QAction::triggered, this, [this]() { set_view_mode(ViewMode::List); });
 
   view_small_icons_action_ = view_menu->addAction("Small Icons");
   view_small_icons_action_->setCheckable(true);
+  view_small_icons_action_->setIcon(UiIcons::icon(UiIcons::Id::ViewSmallIcons, style()));
   view_group_->addAction(view_small_icons_action_);
   connect(view_small_icons_action_, &QAction::triggered, this, [this]() { set_view_mode(ViewMode::SmallIcons); });
 
   view_large_icons_action_ = view_menu->addAction("Large Icons");
   view_large_icons_action_->setCheckable(true);
+  view_large_icons_action_->setIcon(UiIcons::icon(UiIcons::Id::ViewLargeIcons, style()));
   view_group_->addAction(view_large_icons_action_);
   connect(view_large_icons_action_, &QAction::triggered, this, [this]() { set_view_mode(ViewMode::LargeIcons); });
 
   view_gallery_action_ = view_menu->addAction("Gallery");
   view_gallery_action_->setCheckable(true);
+  view_gallery_action_->setIcon(UiIcons::icon(UiIcons::Id::ViewGallery, style()));
   view_group_->addAction(view_gallery_action_);
   connect(view_gallery_action_, &QAction::triggered, this, [this]() { set_view_mode(ViewMode::Gallery); });
 
@@ -2201,18 +2205,22 @@ void PakTab::show_context_menu(QWidget* view, const QPoint& pos) {
   QMenu menu(this);
 
   auto* cut_action = menu.addAction("Cut");
+  cut_action->setIcon(UiIcons::icon(UiIcons::Id::Cut, style()));
   cut_action->setShortcut(QKeySequence::Cut);
   connect(cut_action, &QAction::triggered, this, [this]() { cut(); });
 
   auto* copy_action = menu.addAction("Copy");
+  copy_action->setIcon(UiIcons::icon(UiIcons::Id::Copy, style()));
   copy_action->setShortcut(QKeySequence::Copy);
   connect(copy_action, &QAction::triggered, this, [this]() { copy(); });
 
   auto* paste_action = menu.addAction("Paste");
+  paste_action->setIcon(UiIcons::icon(UiIcons::Id::Paste, style()));
   paste_action->setShortcut(QKeySequence::Paste);
   connect(paste_action, &QAction::triggered, this, [this]() { paste(); });
 
   auto* rename_action = menu.addAction("Rename");
+  rename_action->setIcon(UiIcons::icon(UiIcons::Id::Rename, style()));
   rename_action->setShortcut(QKeySequence(Qt::Key_F2));
   connect(rename_action, &QAction::triggered, this, [this]() { rename_selected(); });
 
@@ -2292,21 +2300,29 @@ void PakTab::update_view_controls() {
   }
 
   if (view_button_) {
-    QIcon icon = style()->standardIcon(QStyle::SP_FileDialogDetailedView);
-    switch (effective_view_) {
-      case ViewMode::Details:
-        icon = style()->standardIcon(QStyle::SP_FileDialogDetailedView);
-        break;
-      case ViewMode::List:
-        icon = style()->standardIcon(QStyle::SP_FileDialogListView);
-        break;
-      case ViewMode::SmallIcons:
-      case ViewMode::LargeIcons:
-      case ViewMode::Gallery:
-        icon = style()->standardIcon(QStyle::SP_FileDialogContentsView);
-        break;
-      case ViewMode::Auto:
-        break;
+    QIcon icon = UiIcons::icon(UiIcons::Id::ViewDetails, style());
+    if (view_mode_ == ViewMode::Auto) {
+      icon = UiIcons::icon(UiIcons::Id::ViewAuto, style());
+    } else {
+      switch (effective_view_) {
+        case ViewMode::Details:
+          icon = UiIcons::icon(UiIcons::Id::ViewDetails, style());
+          break;
+        case ViewMode::List:
+          icon = UiIcons::icon(UiIcons::Id::ViewList, style());
+          break;
+        case ViewMode::SmallIcons:
+          icon = UiIcons::icon(UiIcons::Id::ViewSmallIcons, style());
+          break;
+        case ViewMode::LargeIcons:
+          icon = UiIcons::icon(UiIcons::Id::ViewLargeIcons, style());
+          break;
+        case ViewMode::Gallery:
+          icon = UiIcons::icon(UiIcons::Id::ViewGallery, style());
+          break;
+        case ViewMode::Auto:
+          break;
+      }
     }
     view_button_->setIcon(icon);
   }
@@ -3467,6 +3483,12 @@ void PakTab::delete_selected(bool skip_confirmation) {
     QMessageBox box(QMessageBox::Warning, title, text, QMessageBox::Cancel, this);
     box.setInformativeText(info);
     QAbstractButton* del_btn = box.addButton("Delete", QMessageBox::DestructiveRole);
+    if (auto* del = qobject_cast<QPushButton*>(del_btn)) {
+      del->setIcon(UiIcons::icon(UiIcons::Id::DeleteItem, del->style()));
+    }
+    if (QAbstractButton* cancel_button = box.button(QMessageBox::Cancel)) {
+      cancel_button->setIcon(UiIcons::icon(UiIcons::Id::ExitApp, cancel_button->style()));
+    }
     box.setDefaultButton(QMessageBox::Cancel);
     box.exec();
     if (box.clickedButton() != del_btn) {

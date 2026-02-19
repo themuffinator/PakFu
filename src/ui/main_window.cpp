@@ -36,7 +36,6 @@
 #include <QTabBar>
 #include <QTimer>
 #include <QToolButton>
-#include <QStyle>
 #include <QUndoStack>
 #include <QUrl>
 #include <QVariant>
@@ -50,6 +49,7 @@
 #include "ui/game_set_dialog.h"
 #include "ui/pak_tab.h"
 #include "ui/preferences_tab.h"
+#include "ui/ui_icons.h"
 #include "update/update_service.h"
 
 class DropOverlay : public QWidget {
@@ -466,7 +466,9 @@ protected:
 
 QToolButton* make_tab_close_button(QWidget* parent, const std::function<void()>& on_clicked) {
   auto* btn = new QToolButton(parent);
-  btn->setText("x");
+  btn->setText(QString());
+  btn->setIcon(UiIcons::icon(UiIcons::Id::TabClose, parent ? parent->style() : nullptr));
+  btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
   btn->setAutoRaise(true);
   btn->setCursor(Qt::PointingHandCursor);
   btn->setToolTip("Close");
@@ -551,8 +553,13 @@ QWidget* build_welcome_tab(QWidget* parent,
   auto* open_menu = new QMenu(open_button);
   QAction* open_archive_action = open_menu->addAction("Open Archive...");
   QAction* open_folder_action = open_menu->addAction("Open Folder...");
+  create_button->setIcon(UiIcons::icon(UiIcons::Id::NewPak, create_button->style()));
+  open_button->setIcon(UiIcons::icon(UiIcons::Id::OpenArchive, open_button->style()));
+  open_archive_action->setIcon(UiIcons::icon(UiIcons::Id::OpenArchive, open_button->style()));
+  open_folder_action->setIcon(UiIcons::icon(UiIcons::Id::OpenFolder, open_button->style()));
   open_button->setMenu(open_menu);
   auto* close_button = new QPushButton("Close", content);
+  close_button->setIcon(UiIcons::icon(UiIcons::Id::ExitApp, close_button->style()));
   create_button->setMinimumWidth(170);
   open_button->setMinimumWidth(170);
   close_button->setMinimumWidth(170);
@@ -848,14 +855,17 @@ void MainWindow::setup_menus() {
   auto* file_menu = menuBar()->addMenu("File");
 
   new_action_ = file_menu->addAction("New PAK");
+  new_action_->setIcon(UiIcons::icon(UiIcons::Id::NewPak, style()));
   new_action_->setShortcut(QKeySequence::New);
   connect(new_action_, &QAction::triggered, this, &MainWindow::create_new_pak);
 
   open_action_ = file_menu->addAction("Open Archive...");
+  open_action_->setIcon(UiIcons::icon(UiIcons::Id::OpenArchive, style()));
   open_action_->setShortcut(QKeySequence::Open);
   connect(open_action_, &QAction::triggered, this, &MainWindow::open_pak_dialog);
 
   open_folder_action_ = file_menu->addAction("Open Folder...");
+  open_folder_action_->setIcon(UiIcons::icon(UiIcons::Id::OpenFolder, style()));
   open_folder_action_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
   connect(open_folder_action_, &QAction::triggered, this, &MainWindow::open_folder_dialog);
 
@@ -864,22 +874,26 @@ void MainWindow::setup_menus() {
   rebuild_recent_files_menu();
 
   save_action_ = file_menu->addAction("Save");
+  save_action_->setIcon(UiIcons::icon(UiIcons::Id::Save, style()));
   save_action_->setShortcut(QKeySequence::Save);
   connect(save_action_, &QAction::triggered, this, &MainWindow::save_current);
 
   save_as_action_ = file_menu->addAction("Save As...");
+  save_as_action_->setIcon(UiIcons::icon(UiIcons::Id::SaveAs, style()));
   save_as_action_->setShortcut(QKeySequence::SaveAs);
   connect(save_as_action_, &QAction::triggered, this, &MainWindow::save_current_as);
 
   file_menu->addSeparator();
 
   exit_action_ = file_menu->addAction("Exit");
+  exit_action_->setIcon(UiIcons::icon(UiIcons::Id::ExitApp, style()));
   exit_action_->setShortcut(QKeySequence::Quit);
   connect(exit_action_, &QAction::triggered, this, &MainWindow::close);
 
   auto* edit_menu = menuBar()->addMenu("Edit");
 
   undo_action_ = edit_menu->addAction("Undo");
+  undo_action_->setIcon(UiIcons::icon(UiIcons::Id::Undo, style()));
   undo_action_->setShortcut(QKeySequence::Undo);
   connect(undo_action_, &QAction::triggered, this, [this]() {
     if (PakTab* tab = current_pak_tab()) {
@@ -888,6 +902,7 @@ void MainWindow::setup_menus() {
   });
 
   redo_action_ = edit_menu->addAction("Redo");
+  redo_action_->setIcon(UiIcons::icon(UiIcons::Id::Redo, style()));
   redo_action_->setShortcut(QKeySequence::Redo);
   connect(redo_action_, &QAction::triggered, this, [this]() {
     if (PakTab* tab = current_pak_tab()) {
@@ -898,6 +913,7 @@ void MainWindow::setup_menus() {
   edit_menu->addSeparator();
 
   cut_action_ = edit_menu->addAction("Cut");
+  cut_action_->setIcon(UiIcons::icon(UiIcons::Id::Cut, style()));
   cut_action_->setShortcut(QKeySequence::Cut);
   connect(cut_action_, &QAction::triggered, this, [this]() {
     if (PakTab* tab = current_pak_tab()) {
@@ -906,6 +922,7 @@ void MainWindow::setup_menus() {
   });
 
   copy_action_ = edit_menu->addAction("Copy");
+  copy_action_->setIcon(UiIcons::icon(UiIcons::Id::Copy, style()));
   copy_action_->setShortcut(QKeySequence::Copy);
   connect(copy_action_, &QAction::triggered, this, [this]() {
     if (PakTab* tab = current_pak_tab()) {
@@ -914,6 +931,7 @@ void MainWindow::setup_menus() {
   });
 
   paste_action_ = edit_menu->addAction("Paste");
+  paste_action_->setIcon(UiIcons::icon(UiIcons::Id::Paste, style()));
   paste_action_->setShortcut(QKeySequence::Paste);
   connect(paste_action_, &QAction::triggered, this, [this]() {
     if (PakTab* tab = current_pak_tab()) {
@@ -922,6 +940,7 @@ void MainWindow::setup_menus() {
   });
 
   rename_action_ = edit_menu->addAction("Rename");
+  rename_action_->setIcon(UiIcons::icon(UiIcons::Id::Rename, style()));
   rename_action_->setShortcut(QKeySequence(Qt::Key_F2));
   connect(rename_action_, &QAction::triggered, this, [this]() {
     if (PakTab* tab = current_pak_tab()) {
@@ -931,14 +950,17 @@ void MainWindow::setup_menus() {
 
   edit_menu->addSeparator();
   preferences_action_ = edit_menu->addAction("Preferences...");
+  preferences_action_->setIcon(UiIcons::icon(UiIcons::Id::Preferences, style()));
   preferences_action_->setShortcut(QKeySequence::Preferences);
   connect(preferences_action_, &QAction::triggered, this, &MainWindow::open_preferences);
 
   auto* help_menu = menuBar()->addMenu("Help");
   auto* check_updates = help_menu->addAction("Check for Updates...");
+  check_updates->setIcon(UiIcons::icon(UiIcons::Id::CheckUpdates, style()));
   connect(check_updates, &QAction::triggered, this, &MainWindow::check_for_updates);
 
   auto* about = help_menu->addAction("About");
+  about->setIcon(UiIcons::icon(UiIcons::Id::About, style()));
   connect(about, &QAction::triggered, this, [this]() {
     const QString repo = PAKFU_GITHUB_REPO;
     const QString repo_url = QString("https://github.com/%1").arg(repo);
@@ -1257,9 +1279,9 @@ void MainWindow::rebuild_game_combo() {
 
   if (game_combo_->count() > 0) {
     game_combo_->insertSeparator(game_combo_->count());
-    game_combo_->addItem(style()->standardIcon(QStyle::SP_FileDialogDetailedView), "Configure Installations…", kConfigureGameSetsUid);
+    game_combo_->addItem(UiIcons::icon(UiIcons::Id::Configure, style()), "Configure Installations…", kConfigureGameSetsUid);
   } else {
-    game_combo_->addItem(style()->standardIcon(QStyle::SP_FileDialogDetailedView), "Configure Installations…", kConfigureGameSetsUid);
+    game_combo_->addItem(UiIcons::icon(UiIcons::Id::Configure, style()), "Configure Installations…", kConfigureGameSetsUid);
   }
 
   int idx = game_combo_->findData(game_set_.uid);
@@ -1622,6 +1644,9 @@ bool MainWindow::maybe_save_tab(PakTab* tab) {
   QPushButton* save = box.addButton("Save", QMessageBox::AcceptRole);
   QPushButton* discard = box.addButton("Discard", QMessageBox::DestructiveRole);
   QPushButton* cancel = box.addButton("Cancel", QMessageBox::RejectRole);
+  save->setIcon(UiIcons::icon(UiIcons::Id::Save, save->style()));
+  discard->setIcon(UiIcons::icon(UiIcons::Id::DeleteItem, discard->style()));
+  cancel->setIcon(UiIcons::icon(UiIcons::Id::ExitApp, cancel->style()));
   box.setDefaultButton(save);
   box.exec();
 

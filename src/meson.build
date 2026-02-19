@@ -66,6 +66,7 @@ sources = files(
   'ui/preferences_tab.cpp',
   'ui/preview_renderer.cpp',
   'ui/theme_manager.cpp',
+  'ui/ui_icons.cpp',
   'ui/breadcrumb_bar.cpp',
   'ui/cfg_syntax_highlighter.cpp',
   'ui/simple_syntax_highlighter.cpp',

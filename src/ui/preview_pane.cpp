@@ -37,7 +37,6 @@
 #include <QTextOption>
 #include <QUrl>
 #include <QVBoxLayout>
-#include <QStyle>
 
 #include "formats/image_loader.h"
 #include "ui/bsp_preview_vulkan_widget.h"
@@ -49,6 +48,7 @@
 #include "ui/model_viewer_widget.h"
 #include "ui/shader_viewer_widget.h"
 #include "ui/simple_syntax_highlighter.h"
+#include "ui/ui_icons.h"
 
 namespace {
 /*
@@ -381,8 +381,8 @@ void PreviewPane::update_3d_fullscreen_button() {
 	three_d_fullscreen_button_->setEnabled(available);
 	three_d_fullscreen_button_->setChecked(active);
 	three_d_fullscreen_button_->setText(active ? "Exit Fullscreen" : "Fullscreen");
-	three_d_fullscreen_button_->setIcon(style()->standardIcon(active ? QStyle::SP_TitleBarNormalButton
-	                                                               : QStyle::SP_TitleBarMaxButton));
+	three_d_fullscreen_button_->setIcon(UiIcons::icon(active ? UiIcons::Id::FullscreenExit
+	                                                        : UiIcons::Id::FullscreenEnter, style()));
 }
 
 void PreviewPane::toggle_3d_fullscreen() {
@@ -698,6 +698,8 @@ void PreviewPane::build_ui() {
 
 	image_reveal_transparency_button_ = new QToolButton(img_controls);
 	image_reveal_transparency_button_->setText("Reveal hidden pixels");
+	image_reveal_transparency_button_->setIcon(UiIcons::icon(UiIcons::Id::RevealTransparency, style()));
+	image_reveal_transparency_button_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 	image_reveal_transparency_button_->setCheckable(true);
 	image_reveal_transparency_button_->setAutoRaise(true);
 	image_reveal_transparency_button_->setCursor(Qt::PointingHandCursor);
@@ -758,6 +760,8 @@ void PreviewPane::build_ui() {
 
 	text_wrap_button_ = new QToolButton(text_controls_);
 	text_wrap_button_->setText("Word Wrap");
+	text_wrap_button_->setIcon(UiIcons::icon(UiIcons::Id::WordWrap, style()));
+	text_wrap_button_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 	text_wrap_button_->setCheckable(true);
 	text_wrap_button_->setAutoRaise(true);
 	text_wrap_button_->setCursor(Qt::PointingHandCursor);
@@ -806,6 +810,8 @@ void PreviewPane::build_ui() {
 
 	bsp_lightmap_button_ = new QToolButton(three_d_controls_);
 	bsp_lightmap_button_->setText("Lightmaps");
+	bsp_lightmap_button_->setIcon(UiIcons::icon(UiIcons::Id::Lightmaps, style()));
+	bsp_lightmap_button_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 	bsp_lightmap_button_->setCheckable(true);
 	bsp_lightmap_button_->setAutoRaise(true);
 	bsp_lightmap_button_->setCursor(Qt::PointingHandCursor);
@@ -816,6 +822,8 @@ void PreviewPane::build_ui() {
 
 	three_d_textured_button_ = new QToolButton(three_d_controls_);
 	three_d_textured_button_->setText("Textured");
+	three_d_textured_button_->setIcon(UiIcons::icon(UiIcons::Id::Textured, style()));
+	three_d_textured_button_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 	three_d_textured_button_->setCheckable(true);
 	three_d_textured_button_->setAutoRaise(true);
 	three_d_textured_button_->setCursor(Qt::PointingHandCursor);
@@ -824,6 +832,8 @@ void PreviewPane::build_ui() {
 
 	three_d_wireframe_button_ = new QToolButton(three_d_controls_);
 	three_d_wireframe_button_->setText("Wireframe");
+	three_d_wireframe_button_->setIcon(UiIcons::icon(UiIcons::Id::Wireframe, style()));
+	three_d_wireframe_button_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 	three_d_wireframe_button_->setCheckable(true);
 	three_d_wireframe_button_->setAutoRaise(true);
 	three_d_wireframe_button_->setCursor(Qt::PointingHandCursor);
@@ -832,6 +842,8 @@ void PreviewPane::build_ui() {
 
 	three_d_fullscreen_button_ = new QToolButton(three_d_controls_);
 	three_d_fullscreen_button_->setText("Fullscreen");
+	three_d_fullscreen_button_->setIcon(UiIcons::icon(UiIcons::Id::FullscreenEnter, style()));
+	three_d_fullscreen_button_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 	three_d_fullscreen_button_->setCheckable(true);
 	three_d_fullscreen_button_->setAutoRaise(true);
 	three_d_fullscreen_button_->setCursor(Qt::PointingHandCursor);
@@ -1009,34 +1021,34 @@ void PreviewPane::build_ui() {
 	audio_prev_button_ = new QToolButton(audio_page_);
 	audio_prev_button_->setAutoRaise(true);
 	audio_prev_button_->setCursor(Qt::PointingHandCursor);
-	audio_prev_button_->setIcon(style()->standardIcon(QStyle::SP_MediaSkipBackward));
+	audio_prev_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaPrevious, style()));
 	audio_prev_button_->setIconSize(QSize(18, 18));
 	audio_prev_button_->setToolTip("Previous audio file");
 
 	audio_play_button_ = new QToolButton(audio_page_);
 	audio_play_button_->setAutoRaise(true);
 	audio_play_button_->setCursor(Qt::PointingHandCursor);
-	audio_play_button_->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+	audio_play_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaPlay, style()));
 	audio_play_button_->setIconSize(QSize(18, 18));
 	audio_play_button_->setToolTip("Play/Pause");
 
 	audio_stop_button_ = new QToolButton(audio_page_);
 	audio_stop_button_->setAutoRaise(true);
 	audio_stop_button_->setCursor(Qt::PointingHandCursor);
-	audio_stop_button_->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
+	audio_stop_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaStop, style()));
 	audio_stop_button_->setIconSize(QSize(18, 18));
 	audio_stop_button_->setToolTip("Stop");
 
 	audio_next_button_ = new QToolButton(audio_page_);
 	audio_next_button_->setAutoRaise(true);
 	audio_next_button_->setCursor(Qt::PointingHandCursor);
-	audio_next_button_->setIcon(style()->standardIcon(QStyle::SP_MediaSkipForward));
+	audio_next_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaNext, style()));
 	audio_next_button_->setIconSize(QSize(18, 18));
 	audio_next_button_->setToolTip("Next audio file");
 	audio_info_button_ = new QToolButton(audio_page_);
 	audio_info_button_->setAutoRaise(true);
 	audio_info_button_->setCursor(Qt::PointingHandCursor);
-	audio_info_button_->setIcon(style()->standardIcon(QStyle::SP_MessageBoxInformation));
+	audio_info_button_->setIcon(UiIcons::icon(UiIcons::Id::Info, style()));
 	audio_info_button_->setIconSize(QSize(16, 16));
 	audio_info_button_->setToolTip("Audio details will appear here once loaded.");
 
@@ -1139,8 +1151,8 @@ void PreviewPane::build_ui() {
 		if (!audio_play_button_) {
 			return;
 		}
-		audio_play_button_->setIcon(
-			style()->standardIcon(state == QMediaPlayer::PlayingState ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
+		audio_play_button_->setIcon(UiIcons::icon(
+			state == QMediaPlayer::PlayingState ? UiIcons::Id::MediaPause : UiIcons::Id::MediaPlay, style()));
 	});
 	stack_->addWidget(audio_page_);
 
@@ -3112,7 +3124,7 @@ void PreviewPane::sync_audio_controls() {
 		audio_position_slider_->setValue(0);
 	}
 	if (audio_play_button_) {
-		audio_play_button_->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+		audio_play_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaPlay, style()));
 	}
 }
 

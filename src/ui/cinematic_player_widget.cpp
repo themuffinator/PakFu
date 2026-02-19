@@ -12,10 +12,11 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
-#include <QStyle>
 #include <QResizeEvent>
 #include <QShowEvent>
 #include <QEnterEvent>
+
+#include "ui/ui_icons.h"
 
 namespace {
 QString format_time(double seconds) {
@@ -284,25 +285,25 @@ void CinematicPlayerWidget::build_ui() {
   prev_button_ = new QToolButton(controls_container_);
   prev_button_->setAutoRaise(true);
   prev_button_->setCursor(Qt::PointingHandCursor);
-  prev_button_->setIcon(style()->standardIcon(QStyle::SP_MediaSkipBackward));
+  prev_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaPrevious, style()));
   prev_button_->setToolTip("Previous video file");
 
   play_button_ = new QToolButton(controls_container_);
   play_button_->setAutoRaise(true);
   play_button_->setCursor(Qt::PointingHandCursor);
-  play_button_->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+  play_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaPlay, style()));
   play_button_->setToolTip("Play/Pause");
 
   next_button_ = new QToolButton(controls_container_);
   next_button_->setAutoRaise(true);
   next_button_->setCursor(Qt::PointingHandCursor);
-  next_button_->setIcon(style()->standardIcon(QStyle::SP_MediaSkipForward));
+  next_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaNext, style()));
   next_button_->setToolTip("Next video file");
 
   stop_button_ = new QToolButton(controls_container_);
   stop_button_->setAutoRaise(true);
   stop_button_->setCursor(Qt::PointingHandCursor);
-  stop_button_->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
+  stop_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaStop, style()));
   stop_button_->setToolTip("Stop");
 
   const QSize icon_sz(18, 18);
@@ -382,7 +383,7 @@ void CinematicPlayerWidget::update_ui_state() {
   }
   if (play_button_) {
     play_button_->setEnabled(has);
-    play_button_->setIcon(style()->standardIcon(playing_ ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
+    play_button_->setIcon(UiIcons::icon(playing_ ? UiIcons::Id::MediaPause : UiIcons::Id::MediaPlay, style()));
   }
   if (position_slider_) {
     position_slider_->setEnabled(can_seek);

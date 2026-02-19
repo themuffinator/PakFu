@@ -14,6 +14,7 @@
 
 #include "platform/file_associations.h"
 #include "ui/theme_manager.h"
+#include "ui/ui_icons.h"
 
 namespace {
 AppTheme theme_for_index(int idx) {
@@ -255,6 +256,8 @@ void PreferencesTab::build_ui() {
   auto* btn_row = new QHBoxLayout();
   assoc_apply_ = new QPushButton("Associate .pak with PakFu", assoc_card);
   assoc_details_ = new QPushButton("Details...", assoc_card);
+  assoc_apply_->setIcon(UiIcons::icon(UiIcons::Id::Associate, assoc_apply_->style()));
+  assoc_details_->setIcon(UiIcons::icon(UiIcons::Id::Details, assoc_details_->style()));
   btn_row->addWidget(assoc_apply_);
   btn_row->addSpacing(10);
   btn_row->addWidget(assoc_details_);

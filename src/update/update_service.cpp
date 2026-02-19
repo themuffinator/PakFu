@@ -22,6 +22,8 @@
 #include <QTimer>
 #include <QVersionNumber>
 
+#include "ui/ui_icons.h"
+
 namespace {
 constexpr char kUserAgent[] = "PakFu-Updater";
 constexpr char kLastCheckKey[] = "updates/lastCheckUtc";
@@ -608,6 +610,8 @@ void UpdateService::prompt_update_error(const QString& message) {
   }
   QPushButton* retry = box.addButton("Retry", QMessageBox::AcceptRole);
   QPushButton* ignore = box.addButton("Ignore", QMessageBox::RejectRole);
+  retry->setIcon(UiIcons::icon(UiIcons::Id::CheckUpdates, retry->style()));
+  ignore->setIcon(UiIcons::icon(UiIcons::Id::ExitApp, ignore->style()));
   box.setDefaultButton(retry);
   box.raise();
   box.activateWindow();
@@ -654,10 +658,16 @@ void UpdateService::prompt_update(const UpdateInfo& info, QWidget* parent, bool 
   if (info.asset_url.isValid()) {
     const QString label = is_installable_asset(info.asset_name) ? "Download && Install" : "Download";
     download_button = box.addButton(label, QMessageBox::AcceptRole);
+    if (download_button) {
+      download_button->setIcon(UiIcons::icon(UiIcons::Id::Save, download_button->style()));
+    }
   }
   QPushButton* open_button = box.addButton("Open Release Page", QMessageBox::ActionRole);
+  open_button->setIcon(UiIcons::icon(UiIcons::Id::OpenArchive, open_button->style()));
   QPushButton* skip_button = box.addButton("Skip This Version", QMessageBox::RejectRole);
-  box.addButton(user_initiated ? "Close" : "Later", QMessageBox::DestructiveRole);
+  skip_button->setIcon(UiIcons::icon(UiIcons::Id::DeleteItem, skip_button->style()));
+  QPushButton* later_button = box.addButton(user_initiated ? "Close" : "Later", QMessageBox::DestructiveRole);
+  later_button->setIcon(UiIcons::icon(UiIcons::Id::ExitApp, later_button->style()));
   box.setDefaultButton(download_button ? download_button : open_button);
   box.raise();
   box.activateWindow();
@@ -834,6 +844,8 @@ bool UpdateService::launch_installer(const QString& file_path, QWidget* parent) 
 
   QPushButton* install = box.addButton("Install and Quit", QMessageBox::AcceptRole);
   QPushButton* later = box.addButton("Later", QMessageBox::RejectRole);
+  install->setIcon(UiIcons::icon(UiIcons::Id::Save, install->style()));
+  later->setIcon(UiIcons::icon(UiIcons::Id::ExitApp, later->style()));
   box.setDefaultButton(install);
   box.raise();
   box.activateWindow();

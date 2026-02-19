@@ -104,6 +104,9 @@ See `docs/RELEASES.md` for versioning and release automation details 🧾🤖.
 ## Dependencies Scroll 🧾🧪
 See `docs/DEPENDENCIES.md` for the current baseline and planned format loaders 📚🔍.
 
+## UI Icon Map 🖼️
+See `docs/UI_BUTTON_ICONS.md` for the button/action icon inventory and SVG asset mapping.
+
 ## Build Ritual (Meson + Ninja) 🥷🛠️
 
 ### Windows (recommended) 🪟🥋

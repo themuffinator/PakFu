@@ -13,6 +13,8 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 
+#include "ui/ui_icons.h"
+
 namespace {
 struct PaletteEntry {
   QString id;
@@ -72,6 +74,7 @@ void GameSetEditorDialog::build_ui() {
   root_row_layout->setSpacing(8);
   root_row_layout->addWidget(root_dir_edit_, 1);
   auto* root_browse = new QPushButton("Browse…", root_row);
+  root_browse->setIcon(UiIcons::icon(UiIcons::Id::Browse, root_browse->style()));
   root_row_layout->addWidget(root_browse, 0);
   form->addRow("Root Dir", root_row);
 
@@ -83,6 +86,7 @@ void GameSetEditorDialog::build_ui() {
   def_row_layout->setSpacing(8);
   def_row_layout->addWidget(default_dir_edit_, 1);
   auto* def_browse = new QPushButton("Browse…", def_row);
+  def_browse->setIcon(UiIcons::icon(UiIcons::Id::Browse, def_browse->style()));
   def_row_layout->addWidget(def_browse, 0);
   form->addRow("Default Dir", def_row);
 
@@ -100,6 +104,7 @@ void GameSetEditorDialog::build_ui() {
   exe_row_layout->setSpacing(8);
   exe_row_layout->addWidget(exe_edit_, 1);
   auto* exe_browse = new QPushButton("Browse…", exe_row);
+  exe_browse->setIcon(UiIcons::icon(UiIcons::Id::Browse, exe_browse->style()));
   exe_row_layout->addWidget(exe_browse, 0);
   form->addRow("Launch EXE", exe_row);
 
@@ -115,12 +120,19 @@ void GameSetEditorDialog::build_ui() {
   work_row_layout->setSpacing(8);
   work_row_layout->addWidget(working_dir_edit_, 1);
   auto* work_browse = new QPushButton("Browse…", work_row);
+  work_browse->setIcon(UiIcons::icon(UiIcons::Id::Browse, work_browse->style()));
   work_row_layout->addWidget(work_browse, 0);
   form->addRow("Working Dir", work_row);
 
   layout->addLayout(form);
 
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+  if (QPushButton* ok_button = buttons->button(QDialogButtonBox::Ok)) {
+    ok_button->setIcon(UiIcons::icon(UiIcons::Id::Configure, ok_button->style()));
+  }
+  if (QPushButton* cancel_button = buttons->button(QDialogButtonBox::Cancel)) {
+    cancel_button->setIcon(UiIcons::icon(UiIcons::Id::ExitApp, cancel_button->style()));
+  }
   layout->addWidget(buttons);
 
   connect(buttons, &QDialogButtonBox::accepted, this, [this]() {

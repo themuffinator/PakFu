@@ -5,6 +5,50 @@
     <file>../assets/img/pakfu-icon-256.png</file>
     <file>../assets/img/pakfu-icon.png</file>
     <file>../assets/img/logo.png</file>
+    <file>../assets/icons/ui/about.svg</file>
+    <file>../assets/icons/ui/add-files.svg</file>
+    <file>../assets/icons/ui/add-folder.svg</file>
+    <file>../assets/icons/ui/associate.svg</file>
+    <file>../assets/icons/ui/auto-detect.svg</file>
+    <file>../assets/icons/ui/browse.svg</file>
+    <file>../assets/icons/ui/check-updates.svg</file>
+    <file>../assets/icons/ui/configure.svg</file>
+    <file>../assets/icons/ui/copy.svg</file>
+    <file>../assets/icons/ui/cut.svg</file>
+    <file>../assets/icons/ui/delete.svg</file>
+    <file>../assets/icons/ui/details.svg</file>
+    <file>../assets/icons/ui/exit.svg</file>
+    <file>../assets/icons/ui/fullscreen-enter.svg</file>
+    <file>../assets/icons/ui/fullscreen-exit.svg</file>
+    <file>../assets/icons/ui/info.svg</file>
+    <file>../assets/icons/ui/lightmaps.svg</file>
+    <file>../assets/icons/ui/media-next.svg</file>
+    <file>../assets/icons/ui/media-pause.svg</file>
+    <file>../assets/icons/ui/media-play.svg</file>
+    <file>../assets/icons/ui/media-previous.svg</file>
+    <file>../assets/icons/ui/media-stop.svg</file>
+    <file>../assets/icons/ui/new-folder.svg</file>
+    <file>../assets/icons/ui/new-pak.svg</file>
+    <file>../assets/icons/ui/open-archive.svg</file>
+    <file>../assets/icons/ui/open-folder.svg</file>
+    <file>../assets/icons/ui/paste.svg</file>
+    <file>../assets/icons/ui/preferences.svg</file>
+    <file>../assets/icons/ui/redo.svg</file>
+    <file>../assets/icons/ui/rename.svg</file>
+    <file>../assets/icons/ui/reveal-transparency.svg</file>
+    <file>../assets/icons/ui/save-as.svg</file>
+    <file>../assets/icons/ui/save.svg</file>
+    <file>../assets/icons/ui/tab-close.svg</file>
+    <file>../assets/icons/ui/textured.svg</file>
+    <file>../assets/icons/ui/undo.svg</file>
+    <file>../assets/icons/ui/view-auto.svg</file>
+    <file>../assets/icons/ui/view-details.svg</file>
+    <file>../assets/icons/ui/view-gallery.svg</file>
+    <file>../assets/icons/ui/view-large-icons.svg</file>
+    <file>../assets/icons/ui/view-list.svg</file>
+    <file>../assets/icons/ui/view-small-icons.svg</file>
+    <file>../assets/icons/ui/wireframe.svg</file>
+    <file>../assets/icons/ui/word-wrap.svg</file>
     <file>../assets/shaders/bsp_preview.vert.qsb</file>
     <file>../assets/shaders/bsp_preview.frag.qsb</file>
     <file>../assets/shaders/grid_lines.vert.qsb</file>

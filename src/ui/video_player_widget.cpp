@@ -10,7 +10,6 @@
 #include <QSettings>
 #include <QSlider>
 #include <QStringList>
-#include <QStyle>
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -20,6 +19,8 @@
 #include <QResizeEvent>
 #include <QShowEvent>
 #include <QEnterEvent>
+
+#include "ui/ui_icons.h"
 
 namespace {
 QString format_duration(qint64 millis) {
@@ -213,25 +214,25 @@ void VideoPlayerWidget::build_ui() {
 	prev_button_ = new QToolButton(controls_container_);
 	prev_button_->setAutoRaise(true);
 	prev_button_->setCursor(Qt::PointingHandCursor);
-	prev_button_->setIcon(style()->standardIcon(QStyle::SP_MediaSkipBackward));
+	prev_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaPrevious, style()));
 	prev_button_->setToolTip("Previous video file");
 
 	play_button_ = new QToolButton(controls_container_);
 	play_button_->setAutoRaise(true);
 	play_button_->setCursor(Qt::PointingHandCursor);
-	play_button_->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+	play_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaPlay, style()));
 	play_button_->setToolTip("Play/Pause");
 
 	next_button_ = new QToolButton(controls_container_);
 	next_button_->setAutoRaise(true);
 	next_button_->setCursor(Qt::PointingHandCursor);
-	next_button_->setIcon(style()->standardIcon(QStyle::SP_MediaSkipForward));
+	next_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaNext, style()));
 	next_button_->setToolTip("Next video file");
 
 	stop_button_ = new QToolButton(controls_container_);
 	stop_button_->setAutoRaise(true);
 	stop_button_->setCursor(Qt::PointingHandCursor);
-	stop_button_->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
+	stop_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaStop, style()));
 	stop_button_->setToolTip("Stop");
 
 	const QSize icon_sz(18, 18);
@@ -366,7 +367,8 @@ void VideoPlayerWidget::build_ui() {
 		if (!play_button_) {
 			return;
 		}
-		play_button_->setIcon(style()->standardIcon(state == QMediaPlayer::PlayingState ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
+		play_button_->setIcon(UiIcons::icon(
+			state == QMediaPlayer::PlayingState ? UiIcons::Id::MediaPause : UiIcons::Id::MediaPlay, style()));
 		update_status_auto();
 	});
 	connect(player_, &QMediaPlayer::errorOccurred, this, [this](QMediaPlayer::Error, const QString& errorString) {
@@ -393,9 +395,9 @@ void VideoPlayerWidget::update_ui_state() {
 		play_button_->setEnabled(has);
 		if (player_) {
 			const bool playing = (player_->playbackState() == QMediaPlayer::PlayingState);
-			play_button_->setIcon(style()->standardIcon(playing ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
+			play_button_->setIcon(UiIcons::icon(playing ? UiIcons::Id::MediaPause : UiIcons::Id::MediaPlay, style()));
 		} else {
-			play_button_->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+			play_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaPlay, style()));
 		}
 	}
 	if (position_slider_) {
