@@ -31,6 +31,7 @@ This project is still training under the waterfall 💦🥋 (early development).
   - Text/config: `cfg`, `config`, `rc`, `arena`, `bot`, `skin`, `shaderlist`, `lang`, `lst`, `tik`, `anim`, `cam`, `camera`, `char`, `voice`, `gui`, `bgui`, `efx`, `guide`, `lipsync`, `viseme`, `vdf`, `def`, `mtr`, `sndshd`, `af`, `pd`, `decl`, `ent`, `map`, `qc`, `sab`, `siege`, `veh`, `npc`, `jts`, `bset`, `weap`, `ammo`, `campaign`, and similar plain-text formats 🧾🖋️
   - Shader scripts: `shader` opens as a tiled, script-driven Quake III preview with shader-block selection copy/paste append editing (including animated maps, tcMods, and deform directives) 🧪🧱
 - Tune 3D previews with grid/floor/none options, themed/grey/custom backgrounds, and wireframe/textured toggles
+- 3D navigation: hold Right Mouse to fly (WASD/QE, wheel adjusts speed, Shift faster, Ctrl slower); F frames, R/Home resets; Grid mode includes a 32x32x56 player-scale reference box
 - Quake II previews honor `_glow.png` glow maps for textures and models
 - WAD support: read/extract `WAD2`, `WAD3`, and classic Doom `IWAD`/`PWAD` (including Doom-family map/BSP-lump insights); rebuild/write `WAD2`
 - Stay responsive for large archives (no freezing in the middle of a roundhouse kick) 🥶➡️🥋

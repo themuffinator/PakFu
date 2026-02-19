@@ -5,11 +5,14 @@
 #include <cstddef>
 
 #include <QMatrix4x4>
+#include <QGuiApplication>
+#include <QCursor>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPalette>
 #include <QSurfaceFormat>
 #include <QWheelEvent>
+#include <QFocusEvent>
 #include <QDebug>
 #include <QtGui/QOpenGLContext>
 #include <QtOpenGL/QOpenGLFunctions_1_1>
@@ -27,6 +30,24 @@ QVector3D spherical_dir(float yaw_deg, float pitch_deg) {
 }
 
 constexpr float kOrbitSensitivityDegPerPixel = 0.45f;
+constexpr float kFlyLookSensitivityDegPerPixel = 0.30f;
+constexpr float kFlySpeedWheelFactor = 1.15f;
+constexpr float kFlySpeedMin = 1.0f;
+constexpr float kFlySpeedMax = 250000.0f;
+constexpr float kFlySpeedShiftMul = 4.0f;
+constexpr float kFlySpeedCtrlMul = 0.25f;
+
+constexpr int kFlyMoveForward = 1 << 0;
+constexpr int kFlyMoveBackward = 1 << 1;
+constexpr int kFlyMoveLeft = 1 << 2;
+constexpr int kFlyMoveRight = 1 << 3;
+constexpr int kFlyMoveUp = 1 << 4;
+constexpr int kFlyMoveDown = 1 << 5;
+
+float ground_pad(float radius) {
+  const float safe_radius = std::max(radius, 1.0f);
+  return std::clamp(safe_radius * 0.002f, 0.5f, 32.0f);
+}
 
 float orbit_min_distance(float radius) {
   return std::max(0.01f, radius * 0.001f);
@@ -599,17 +620,141 @@ QString fragment_shader_source(const QSurfaceFormat& fmt) {
     }
   )GLSL";
 }
+
+float quantized_grid_step(float target_step) {
+  const float safe = std::max(target_step, 1.0f);
+  const float exp2 = std::floor(std::log2(safe));
+  float step = std::pow(2.0f, exp2);
+  const float n = safe / std::max(step, 1e-6f);
+  if (n > 1.5f) {
+    step *= 2.0f;
+  }
+  return std::max(step, 1.0f);
+}
+
+QString grid_vertex_shader_source(const QSurfaceFormat& fmt) {
+  if (QOpenGLContext::currentContext() && QOpenGLContext::currentContext()->isOpenGLES()) {
+    return R"GLSL(
+      attribute highp vec3 aPos;
+      attribute mediump vec4 aColor;
+      uniform highp mat4 uMvp;
+      varying mediump vec4 vColor;
+      void main() {
+        gl_Position = uMvp * vec4(aPos, 1.0);
+        vColor = aColor;
+      }
+    )GLSL";
+  }
+
+  const int major = fmt.majorVersion();
+  const int minor = fmt.minorVersion();
+  const bool glsl_330 = (major > 3) || (major == 3 && minor >= 3);
+  const bool glsl_130 = major >= 3;
+
+  if (glsl_330) {
+    return R"GLSL(
+      #version 330 core
+      layout(location = 0) in vec3 aPos;
+      layout(location = 1) in vec4 aColor;
+      uniform mat4 uMvp;
+      out vec4 vColor;
+      void main() {
+        gl_Position = uMvp * vec4(aPos, 1.0);
+        vColor = aColor;
+      }
+    )GLSL";
+  }
+
+  if (glsl_130) {
+    return R"GLSL(
+      #version 130
+      in vec3 aPos;
+      in vec4 aColor;
+      uniform mat4 uMvp;
+      out vec4 vColor;
+      void main() {
+        gl_Position = uMvp * vec4(aPos, 1.0);
+        vColor = aColor;
+      }
+    )GLSL";
+  }
+
+  return R"GLSL(
+    #version 120
+    attribute vec3 aPos;
+    attribute vec4 aColor;
+    uniform mat4 uMvp;
+    varying vec4 vColor;
+    void main() {
+      gl_Position = uMvp * vec4(aPos, 1.0);
+      vColor = aColor;
+    }
+  )GLSL";
+}
+
+QString grid_fragment_shader_source(const QSurfaceFormat& fmt) {
+  if (QOpenGLContext::currentContext() && QOpenGLContext::currentContext()->isOpenGLES()) {
+    return R"GLSL(
+      precision mediump float;
+      varying mediump vec4 vColor;
+      void main() {
+        gl_FragColor = vColor;
+      }
+    )GLSL";
+  }
+
+  const int major = fmt.majorVersion();
+  const int minor = fmt.minorVersion();
+  const bool glsl_330 = (major > 3) || (major == 3 && minor >= 3);
+  const bool glsl_130 = major >= 3;
+
+  if (glsl_330) {
+    return R"GLSL(
+      #version 330 core
+      in vec4 vColor;
+      out vec4 fragColor;
+      void main() {
+        fragColor = vColor;
+      }
+    )GLSL";
+  }
+
+  if (glsl_130) {
+    return R"GLSL(
+      #version 130
+      in vec4 vColor;
+      out vec4 fragColor;
+      void main() {
+        fragColor = vColor;
+      }
+    )GLSL";
+  }
+
+  Q_UNUSED(fmt);
+  return R"GLSL(
+    #version 120
+    varying vec4 vColor;
+    void main() {
+      gl_FragColor = vColor;
+    }
+  )GLSL";
+}
 }  // namespace
 
 BspPreviewWidget::BspPreviewWidget(QWidget* parent) : QOpenGLWidget(parent) {
   setMinimumHeight(240);
   setFocusPolicy(Qt::StrongFocus);
+  fly_timer_.setInterval(16);
+  fly_timer_.setTimerType(Qt::PreciseTimer);
+  connect(&fly_timer_, &QTimer::timeout, this, &BspPreviewWidget::on_fly_tick);
   setToolTip(
     "3D Controls:\n"
     "- Orbit: Middle-drag (Alt+Left-drag)\n"
     "- Pan: Shift+Middle-drag (Alt+Shift+Left-drag)\n"
     "- Dolly: Ctrl+Middle-drag (Alt+Ctrl+Left-drag)\n"
     "- Zoom: Mouse wheel\n"
+    "- Fly: Hold Right Mouse + WASD (Q/E up/down, wheel adjusts speed, Shift faster, Ctrl slower)\n"
+    "- Reference: Player box 32x32x56 (Grid mode)\n"
     "- Frame: F\n"
     "- Reset: R / Home");
 }
@@ -791,18 +936,23 @@ void BspPreviewWidget::paintGL() {
     frame_mesh();
     camera_fit_pending_ = false;
   }
-
+ 
   const float aspect = (height() > 0) ? (static_cast<float>(width()) / static_cast<float>(height())) : 1.0f;
-  const float near_plane = std::max(radius_ * 0.01f, 0.01f);
-  const float far_plane = std::max(radius_ * 200.0f, near_plane + 10.0f);
-
-  QMatrix4x4 proj;
-  proj.perspective(fov_y_deg_, aspect, near_plane, far_plane);
-
   const QVector3D dir = spherical_dir(yaw_deg_, pitch_deg_).normalized();
   const QVector3D cam_pos = center_ + dir * distance_;
   const QVector3D view_target = center_;
-
+  QVector3D scene_center = center_;
+  if (has_mesh_) {
+    scene_center = (mesh_.mins + mesh_.maxs) * 0.5f;
+  }
+  const float dist_to_scene = (cam_pos - scene_center).length();
+ 
+  const float near_plane = std::clamp(radius_ * 0.0005f, 0.05f, 16.0f);
+  const float far_plane = std::max(near_plane + 10.0f, dist_to_scene + radius_ * 3.0f);
+ 
+  QMatrix4x4 proj;
+  proj.perspective(fov_y_deg_, aspect, near_plane, far_plane);
+ 
   QMatrix4x4 view;
   view.lookAt(cam_pos, view_target, QVector3D(0, 0, 1));
 
@@ -872,7 +1022,7 @@ void BspPreviewWidget::paintGL() {
   program_.setUniformValue("uShadowRadius", std::max(0.05f, radius_ * 1.45f));
   program_.setUniformValue("uShadowStrength", 0.55f);
   program_.setUniformValue("uShadowSoftness", 2.4f);
-  program_.setUniformValue("uGridMode", grid_mode_ == PreviewGridMode::Grid ? 1.0f : 0.0f);
+  program_.setUniformValue("uGridMode", 0.0f);
   program_.setUniformValue("uGridScale", grid_scale_);
   program_.setUniformValue("uGridColor", grid_color);
   program_.setUniformValue("uAxisColorX", axis_x);
@@ -922,6 +1072,34 @@ void BspPreviewWidget::paintGL() {
     program_.setAttributeBuffer(uv2_loc, GL_FLOAT, offsetof(GpuVertex, lu), 2, sizeof(GpuVertex));
 
     glDrawElements(GL_TRIANGLES, ground_index_count_, GL_UNSIGNED_SHORT, nullptr);
+  }
+
+  if (grid_mode_ == PreviewGridMode::Grid) {
+    update_grid_lines_if_needed(cam_pos, aspect);
+    if (grid_vertex_count_ > 0 && grid_vbo_.isCreated()) {
+      ensure_grid_program();
+      if (grid_program_.isLinked()) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDisable(GL_CULL_FACE);
+        glDepthMask(GL_FALSE);
+        grid_program_.bind();
+        grid_program_.setUniformValue("uMvp", mvp);
+        grid_vbo_.bind();
+        const int pos_loc = grid_program_.attributeLocation("aPos");
+        const int col_loc = grid_program_.attributeLocation("aColor");
+        grid_program_.enableAttributeArray(pos_loc);
+        grid_program_.enableAttributeArray(col_loc);
+        grid_program_.setAttributeBuffer(pos_loc, GL_FLOAT, offsetof(GridLineVertex, px), 3, sizeof(GridLineVertex));
+        grid_program_.setAttributeBuffer(col_loc, GL_FLOAT, offsetof(GridLineVertex, r), 4, sizeof(GridLineVertex));
+        glDrawArrays(GL_LINES, 0, grid_vertex_count_);
+        grid_vbo_.release();
+        grid_program_.release();
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+        program_.bind();
+      }
+    }
   }
 
   program_.setUniformValue("uIsGround", 0.0f);
@@ -1012,8 +1190,22 @@ void BspPreviewWidget::mousePressEvent(QMouseEvent* event) {
 
   const Qt::MouseButton button = event->button();
   const Qt::KeyboardModifiers mods = event->modifiers();
+  const bool rmb = (button == Qt::RightButton);
   const bool mmb = (button == Qt::MiddleButton);
   const bool alt_lmb = (button == Qt::LeftButton && (mods & Qt::AltModifier));
+  const bool alt_rmb = (rmb && (mods & Qt::AltModifier));
+  if (rmb && !alt_rmb) {
+    setFocus(Qt::MouseFocusReason);
+    last_mouse_pos_ = event->pos();
+    drag_mode_ = DragMode::Look;
+    drag_buttons_ = button;
+    grabMouse(QCursor(Qt::BlankCursor));
+    fly_elapsed_.restart();
+    fly_last_nsecs_ = fly_elapsed_.nsecsElapsed();
+    fly_timer_.start();
+    event->accept();
+    return;
+  }
   if (mmb || alt_lmb) {
     setFocus(Qt::MouseFocusReason);
     last_mouse_pos_ = event->pos();
@@ -1034,6 +1226,12 @@ void BspPreviewWidget::mousePressEvent(QMouseEvent* event) {
 void BspPreviewWidget::mouseMoveEvent(QMouseEvent* event) {
   if (!event || drag_mode_ == DragMode::None || drag_buttons_ == Qt::NoButton ||
       (event->buttons() & drag_buttons_) != drag_buttons_) {
+    if (drag_mode_ == DragMode::Look) {
+      fly_timer_.stop();
+      fly_move_mask_ = 0;
+      releaseMouse();
+      unsetCursor();
+    }
     drag_mode_ = DragMode::None;
     drag_buttons_ = Qt::NoButton;
     QOpenGLWidget::mouseMoveEvent(event);
@@ -1043,7 +1241,14 @@ void BspPreviewWidget::mouseMoveEvent(QMouseEvent* event) {
   const QPoint delta = event->pos() - last_mouse_pos_;
   last_mouse_pos_ = event->pos();
 
-  if (drag_mode_ == DragMode::Orbit) {
+  if (drag_mode_ == DragMode::Look) {
+    const QVector3D old_dir = spherical_dir(yaw_deg_, pitch_deg_).normalized();
+    const QVector3D cam_pos = center_ + old_dir * distance_;
+    yaw_deg_ += static_cast<float>(delta.x()) * kFlyLookSensitivityDegPerPixel;
+    pitch_deg_ = std::clamp(pitch_deg_ - static_cast<float>(delta.y()) * kFlyLookSensitivityDegPerPixel, -89.0f, 89.0f);
+    const QVector3D new_dir = spherical_dir(yaw_deg_, pitch_deg_).normalized();
+    center_ = cam_pos - new_dir * distance_;
+  } else if (drag_mode_ == DragMode::Orbit) {
     yaw_deg_ += static_cast<float>(delta.x()) * kOrbitSensitivityDegPerPixel;
     pitch_deg_ += static_cast<float>(-delta.y()) * kOrbitSensitivityDegPerPixel;
     pitch_deg_ = std::clamp(pitch_deg_, -89.0f, 89.0f);
@@ -1061,6 +1266,12 @@ void BspPreviewWidget::mouseReleaseEvent(QMouseEvent* event) {
   if (event && drag_mode_ != DragMode::None && drag_buttons_ != Qt::NoButton &&
       (Qt::MouseButtons(event->button()) & drag_buttons_) &&
       (event->buttons() & drag_buttons_) != drag_buttons_) {
+    if (drag_mode_ == DragMode::Look) {
+      fly_timer_.stop();
+      fly_move_mask_ = 0;
+      releaseMouse();
+      unsetCursor();
+    }
     drag_mode_ = DragMode::None;
     drag_buttons_ = Qt::NoButton;
     event->accept();
@@ -1072,6 +1283,16 @@ void BspPreviewWidget::mouseReleaseEvent(QMouseEvent* event) {
 void BspPreviewWidget::wheelEvent(QWheelEvent* event) {
   if (!event) {
     return;
+  }
+  if (drag_mode_ == DragMode::Look) {
+    const QPoint num_deg = event->angleDelta() / 8;
+    if (!num_deg.isNull()) {
+      const float steps = static_cast<float>(num_deg.y()) / 15.0f;
+      const float factor = std::pow(kFlySpeedWheelFactor, steps);
+      fly_speed_ = std::clamp(fly_speed_ * factor, kFlySpeedMin, kFlySpeedMax);
+      event->accept();
+      return;
+    }
   }
   const QPoint num_deg = event->angleDelta() / 8;
   if (!num_deg.isNull()) {
@@ -1097,6 +1318,7 @@ void BspPreviewWidget::reset_camera_from_mesh() {
   pitch_deg_ = 55.0f;
   camera_fit_pending_ = false;
   frame_mesh();
+  fly_speed_ = std::clamp(std::max(640.0f, radius_ * 0.25f), kFlySpeedMin, kFlySpeedMax);
 }
 
 void BspPreviewWidget::keyPressEvent(QKeyEvent* event) {
@@ -1119,6 +1341,15 @@ void BspPreviewWidget::keyPressEvent(QKeyEvent* event) {
     return;
   }
 
+  if (drag_mode_ == DragMode::Look) {
+    const int before = fly_move_mask_;
+    set_fly_key(event->key(), true);
+    if (fly_move_mask_ != before) {
+      event->accept();
+      return;
+    }
+  }
+
   QOpenGLWidget::keyPressEvent(event);
 }
 
@@ -1127,7 +1358,27 @@ void BspPreviewWidget::keyReleaseEvent(QKeyEvent* event) {
     QOpenGLWidget::keyReleaseEvent(event);
     return;
   }
+  if (drag_mode_ == DragMode::Look) {
+    const int before = fly_move_mask_;
+    set_fly_key(event->key(), false);
+    if (fly_move_mask_ != before) {
+      event->accept();
+      return;
+    }
+  }
   QOpenGLWidget::keyReleaseEvent(event);
+}
+
+void BspPreviewWidget::focusOutEvent(QFocusEvent* event) {
+  fly_timer_.stop();
+  fly_move_mask_ = 0;
+  if (drag_mode_ == DragMode::Look) {
+    releaseMouse();
+    unsetCursor();
+    drag_mode_ = DragMode::None;
+    drag_buttons_ = Qt::NoButton;
+  }
+  QOpenGLWidget::focusOutEvent(event);
 }
 
 void BspPreviewWidget::frame_mesh() {
@@ -1148,7 +1399,7 @@ void BspPreviewWidget::frame_mesh() {
   const QVector3D view_forward = (-spherical_dir(yaw_deg_, pitch_deg_)).normalized();
   const float fit_dist = fit_distance_for_aabb(half_extents, view_forward, aspect, fov_y_deg_);
   distance_ = std::clamp(fit_dist * 1.05f, orbit_min_distance(radius_), orbit_max_distance(radius_));
-  ground_z_ = mins.z() - radius_ * 0.02f;
+  ground_z_ = mins.z() - ground_pad(radius_);
   ground_extent_ = 0.0f;
 }
 
@@ -1188,6 +1439,100 @@ void BspPreviewWidget::dolly_by_pixels(const QPoint& delta) {
                    yaw_deg_,
                    pitch_deg_);
   ground_extent_ = 0.0f;
+}
+
+void BspPreviewWidget::on_fly_tick() {
+  if (drag_mode_ != DragMode::Look) {
+    fly_timer_.stop();
+    fly_move_mask_ = 0;
+    return;
+  }
+
+  if (!fly_elapsed_.isValid()) {
+    fly_elapsed_.start();
+    fly_last_nsecs_ = fly_elapsed_.nsecsElapsed();
+    return;
+  }
+
+  const qint64 now = fly_elapsed_.nsecsElapsed();
+  const qint64 delta_nsecs = now - fly_last_nsecs_;
+  fly_last_nsecs_ = now;
+
+  float dt = static_cast<float>(delta_nsecs) * 1e-9f;
+  if (dt <= 0.0f) {
+    return;
+  }
+  dt = std::min(dt, 0.05f);
+
+  if (fly_move_mask_ == 0) {
+    return;
+  }
+
+  const float forward_amt = (fly_move_mask_ & kFlyMoveForward ? 1.0f : 0.0f) - (fly_move_mask_ & kFlyMoveBackward ? 1.0f : 0.0f);
+  const float right_amt = (fly_move_mask_ & kFlyMoveRight ? 1.0f : 0.0f) - (fly_move_mask_ & kFlyMoveLeft ? 1.0f : 0.0f);
+  const float up_amt = (fly_move_mask_ & kFlyMoveUp ? 1.0f : 0.0f) - (fly_move_mask_ & kFlyMoveDown ? 1.0f : 0.0f);
+
+  const QVector3D forward = (-spherical_dir(yaw_deg_, 0.0f)).normalized();
+  const QVector3D right = safe_right_from_forward(forward);
+  const QVector3D up(0.0f, 0.0f, 1.0f);
+
+  QVector3D move = forward * forward_amt + right * right_amt + up * up_amt;
+  if (move.lengthSquared() < 1e-6f) {
+    return;
+  }
+  move.normalize();
+
+  float speed = std::clamp(fly_speed_, kFlySpeedMin, kFlySpeedMax);
+  const Qt::KeyboardModifiers mods = QGuiApplication::keyboardModifiers();
+  if (mods & Qt::ShiftModifier) {
+    speed *= kFlySpeedShiftMul;
+  }
+  if (mods & Qt::ControlModifier) {
+    speed *= kFlySpeedCtrlMul;
+  }
+
+  center_ += move * (speed * dt);
+  update();
+}
+
+void BspPreviewWidget::set_fly_key(int key, bool down) {
+  int mask = 0;
+  switch (key) {
+    case Qt::Key_W:
+    case Qt::Key_Up:
+      mask = kFlyMoveForward;
+      break;
+    case Qt::Key_S:
+    case Qt::Key_Down:
+      mask = kFlyMoveBackward;
+      break;
+    case Qt::Key_A:
+    case Qt::Key_Left:
+      mask = kFlyMoveLeft;
+      break;
+    case Qt::Key_D:
+    case Qt::Key_Right:
+      mask = kFlyMoveRight;
+      break;
+    case Qt::Key_E:
+    case Qt::Key_Space:
+    case Qt::Key_PageUp:
+      mask = kFlyMoveUp;
+      break;
+    case Qt::Key_Q:
+    case Qt::Key_C:
+    case Qt::Key_PageDown:
+      mask = kFlyMoveDown;
+      break;
+    default:
+      return;
+  }
+
+  if (down) {
+    fly_move_mask_ |= mask;
+  } else {
+    fly_move_mask_ &= ~mask;
+  }
 }
 
 void BspPreviewWidget::upload_mesh_if_possible() {
@@ -1362,6 +1707,11 @@ void BspPreviewWidget::upload_textures_if_possible() {
 void BspPreviewWidget::destroy_gl_resources() {
   index_count_ = 0;
   ground_index_count_ = 0;
+  grid_vertex_count_ = 0;
+  grid_step_ = 0.0f;
+  grid_center_i_ = 0;
+  grid_center_j_ = 0;
+  grid_half_lines_ = 0;
   for (DrawSurface& s : surfaces_) {
     if (s.texture_id != 0) {
       glDeleteTextures(1, &s.texture_id);
@@ -1392,6 +1742,9 @@ void BspPreviewWidget::destroy_gl_resources() {
   if (bg_vbo_.isCreated()) {
     bg_vbo_.destroy();
   }
+  if (grid_vbo_.isCreated()) {
+    grid_vbo_.destroy();
+  }
   if (vao_.isCreated()) {
     vao_.destroy();
   }
@@ -1399,6 +1752,7 @@ void BspPreviewWidget::destroy_gl_resources() {
     bg_vao_.destroy();
   }
   program_.removeAllShaders();
+  grid_program_.removeAllShaders();
 }
 
 void BspPreviewWidget::ensure_program() {
@@ -1424,6 +1778,29 @@ void BspPreviewWidget::ensure_program() {
 
   if (!vs_ok || !fs_ok || !program_.link()) {
     qWarning() << "BspPreviewWidget shader compile/link failed:" << program_.log();
+  }
+}
+
+void BspPreviewWidget::ensure_grid_program() {
+  if (grid_program_.isLinked()) {
+    return;
+  }
+
+  grid_program_.removeAllShaders();
+
+  QSurfaceFormat fmt = format();
+  if (QOpenGLContext::currentContext()) {
+    fmt = QOpenGLContext::currentContext()->format();
+  }
+
+  const bool vs_ok = grid_program_.addShaderFromSourceCode(QOpenGLShader::Vertex, grid_vertex_shader_source(fmt));
+  const bool fs_ok = grid_program_.addShaderFromSourceCode(QOpenGLShader::Fragment, grid_fragment_shader_source(fmt));
+
+  grid_program_.bindAttributeLocation("aPos", 0);
+  grid_program_.bindAttributeLocation("aColor", 1);
+
+  if (!vs_ok || !fs_ok || !grid_program_.link()) {
+    qWarning() << "BspPreviewWidget grid shader compile/link failed:" << grid_program_.log();
   }
 }
 
@@ -1468,6 +1845,148 @@ void BspPreviewWidget::update_ground_mesh_if_needed() {
   ground_ibo_.allocate(idx, static_cast<int>(sizeof(idx)));
 
   ground_index_count_ = 6;
+}
+
+void BspPreviewWidget::update_grid_lines_if_needed(const QVector3D& cam_pos, float aspect) {
+  if (grid_mode_ != PreviewGridMode::Grid || !gl_ready_ || !context()) {
+    return;
+  }
+
+  constexpr float kGridPixelSpacing = 45.0f;
+  constexpr int kMajorDiv = 8;
+  constexpr int kMaxHalfLines = 200;
+  constexpr float kAlphaMinor = 0.18f;
+  constexpr float kAlphaMajor = 0.35f;
+  constexpr float kAlphaAxis = 0.85f;
+
+  const float dist_to_plane = std::max(0.01f, std::abs(cam_pos.z() - ground_z_));
+
+  constexpr float kPi = 3.14159265358979323846f;
+  const float fov_rad = fov_y_deg_ * kPi / 180.0f;
+  const float units_per_px =
+      (2.0f * dist_to_plane * std::tan(fov_rad * 0.5f)) / std::max(1.0f, static_cast<float>(height()));
+
+  const float target_step = std::max(1.0f, units_per_px * kGridPixelSpacing);
+  const float step = quantized_grid_step(target_step);
+
+  const float half_h = dist_to_plane * std::tan(fov_rad * 0.5f);
+  const float half_w = half_h * std::max(aspect, 0.01f);
+  const float desired_extent = std::max(half_w, half_h) * 1.25f;
+  const int half_lines = std::clamp(static_cast<int>(std::ceil(desired_extent / step)) + 2, 8, kMaxHalfLines);
+
+  const int center_i = static_cast<int>(std::floor(cam_pos.x() / step));
+  const int center_j = static_cast<int>(std::floor(cam_pos.y() / step));
+
+  QVector3D grid_color;
+  QVector3D axis_x;
+  QVector3D axis_y;
+  update_grid_colors(&grid_color, &axis_x, &axis_y);
+
+  const bool colors_same = (grid_color == grid_color_cached_ && axis_x == axis_x_cached_ && axis_y == axis_y_cached_);
+  if (std::abs(step - grid_step_) < 0.0001f && center_i == grid_center_i_ && center_j == grid_center_j_ &&
+      half_lines == grid_half_lines_ && colors_same && grid_vertex_count_ > 0 && grid_vbo_.isCreated()) {
+    return;
+  }
+
+  grid_step_ = step;
+  grid_center_i_ = center_i;
+  grid_center_j_ = center_j;
+  grid_half_lines_ = half_lines;
+  grid_color_cached_ = grid_color;
+  axis_x_cached_ = axis_x;
+  axis_y_cached_ = axis_y;
+
+  const float z_offset = std::clamp(step * 0.0005f, 0.01f, 0.25f);
+  const float z = ground_z_ + z_offset;
+
+  const int i_min = center_i - half_lines;
+  const int i_max = center_i + half_lines;
+  const int j_min = center_j - half_lines;
+  const int j_max = center_j + half_lines;
+
+  const float x_min = static_cast<float>(i_min) * step;
+  const float x_max = static_cast<float>(i_max) * step;
+  const float y_min = static_cast<float>(j_min) * step;
+  const float y_max = static_cast<float>(j_max) * step;
+
+  QVector<GridLineVertex> verts;
+  const int line_count = (2 * half_lines + 1);
+  verts.reserve(line_count * 2 * 2 + 24);
+
+  const auto push_line = [&](float ax, float ay, float bx, float by, const QVector3D& c, float a) {
+    verts.push_back(GridLineVertex{ax, ay, z, c.x(), c.y(), c.z(), a});
+    verts.push_back(GridLineVertex{bx, by, z, c.x(), c.y(), c.z(), a});
+  };
+  const auto push_line3 = [&](float ax,
+                              float ay,
+                              float az,
+                              float bx,
+                              float by,
+                              float bz,
+                              const QVector3D& c,
+                              float a) {
+    verts.push_back(GridLineVertex{ax, ay, az, c.x(), c.y(), c.z(), a});
+    verts.push_back(GridLineVertex{bx, by, bz, c.x(), c.y(), c.z(), a});
+  };
+
+  for (int i = i_min; i <= i_max; ++i) {
+    const float x = static_cast<float>(i) * step;
+    if (i == 0) {
+      push_line(x, y_min, x, y_max, axis_x, kAlphaAxis);
+    } else if ((i % kMajorDiv) == 0) {
+      push_line(x, y_min, x, y_max, grid_color, kAlphaMajor);
+    } else {
+      push_line(x, y_min, x, y_max, grid_color, kAlphaMinor);
+    }
+  }
+
+  for (int j = j_min; j <= j_max; ++j) {
+    const float y = static_cast<float>(j) * step;
+    if (j == 0) {
+      push_line(x_min, y, x_max, y, axis_y, kAlphaAxis);
+    } else if ((j % kMajorDiv) == 0) {
+      push_line(x_min, y, x_max, y, grid_color, kAlphaMajor);
+    } else {
+      push_line(x_min, y, x_max, y, grid_color, kAlphaMinor);
+    }
+  }
+
+  if (has_mesh_) {
+    constexpr float kPlayerHalfWidth = 16.0f;
+    constexpr float kPlayerHeight = 56.0f;
+    constexpr float kPlayerAlpha = 0.90f;
+    const QVector3D mesh_center = (mesh_.mins + mesh_.maxs) * 0.5f;
+    const float bx0 = mesh_center.x() - kPlayerHalfWidth;
+    const float bx1 = mesh_center.x() + kPlayerHalfWidth;
+    const float by0 = mesh_center.y() - kPlayerHalfWidth;
+    const float by1 = mesh_center.y() + kPlayerHalfWidth;
+    const float bz0 = z;
+    const float bz1 = z + kPlayerHeight;
+
+    push_line3(bx0, by0, bz0, bx1, by0, bz0, axis_x, kPlayerAlpha);
+    push_line3(bx1, by0, bz0, bx1, by1, bz0, axis_y, kPlayerAlpha);
+    push_line3(bx1, by1, bz0, bx0, by1, bz0, axis_x, kPlayerAlpha);
+    push_line3(bx0, by1, bz0, bx0, by0, bz0, axis_y, kPlayerAlpha);
+
+    push_line3(bx0, by0, bz1, bx1, by0, bz1, axis_x, kPlayerAlpha);
+    push_line3(bx1, by0, bz1, bx1, by1, bz1, axis_y, kPlayerAlpha);
+    push_line3(bx1, by1, bz1, bx0, by1, bz1, axis_x, kPlayerAlpha);
+    push_line3(bx0, by1, bz1, bx0, by0, bz1, axis_y, kPlayerAlpha);
+
+    push_line3(bx0, by0, bz0, bx0, by0, bz1, grid_color, kPlayerAlpha);
+    push_line3(bx1, by0, bz0, bx1, by0, bz1, grid_color, kPlayerAlpha);
+    push_line3(bx1, by1, bz0, bx1, by1, bz1, grid_color, kPlayerAlpha);
+    push_line3(bx0, by1, bz0, bx0, by1, bz1, grid_color, kPlayerAlpha);
+  }
+
+  ensure_grid_program();
+  if (!grid_vbo_.isCreated()) {
+    grid_vbo_.create();
+  }
+  grid_vbo_.bind();
+  grid_vbo_.allocate(verts.constData(), static_cast<int>(verts.size() * sizeof(GridLineVertex)));
+  grid_vbo_.release();
+  grid_vertex_count_ = verts.size();
 }
 
 void BspPreviewWidget::update_background_mesh_if_needed() {

@@ -5,8 +5,10 @@
 #include <QtOpenGL/QOpenGLShaderProgram>
 #include <QtOpenGL/QOpenGLVertexArrayObject>
 #include <QtOpenGLWidgets/QOpenGLWidget>
+#include <QElapsedTimer>
 #include <QImage>
 #include <QPoint>
+#include <QTimer>
 #include <QVector>
 #include <QVector3D>
 
@@ -16,6 +18,7 @@
 #include "ui/preview_3d_options.h"
 
 class QKeyEvent;
+class QFocusEvent;
 
 class ModelViewerWidget final : public QOpenGLWidget, protected QOpenGLFunctions {
  public:
@@ -52,12 +55,18 @@ protected:
   void wheelEvent(QWheelEvent* event) override;
   void keyPressEvent(QKeyEvent* event) override;
   void keyReleaseEvent(QKeyEvent* event) override;
+  void focusOutEvent(QFocusEvent* event) override;
 
  private:
   struct GpuVertex {
     float px, py, pz;
     float nx, ny, nz;
     float u, v;
+  };
+
+  struct GridLineVertex {
+    float px, py, pz;
+    float r, g, b, a;
   };
 
   struct DrawSurface {
@@ -78,11 +87,15 @@ protected:
   void frame_mesh();
   void pan_by_pixels(const QPoint& delta);
   void dolly_by_pixels(const QPoint& delta);
+  void on_fly_tick();
+  void set_fly_key(int key, bool down);
   void upload_mesh_if_possible();
   void upload_textures_if_possible();
   void destroy_gl_resources();
   void ensure_program();
+  void ensure_grid_program();
   void update_ground_mesh_if_needed();
+  void update_grid_lines_if_needed(const QVector3D& cam_pos, float aspect);
   void update_background_mesh_if_needed();
   void update_grid_settings();
   void apply_wireframe_state(bool enabled);
@@ -94,6 +107,7 @@ protected:
     Orbit,
     Pan,
     Dolly,
+    Look,
   };
 
   std::optional<LoadedModel> model_;
@@ -102,20 +116,30 @@ protected:
   bool pending_upload_ = false;
 
   QOpenGLShaderProgram program_;
+  QOpenGLShaderProgram grid_program_;
   QOpenGLBuffer vbo_{QOpenGLBuffer::VertexBuffer};
   QOpenGLBuffer ibo_{QOpenGLBuffer::IndexBuffer};
   QOpenGLBuffer ground_vbo_{QOpenGLBuffer::VertexBuffer};
   QOpenGLBuffer ground_ibo_{QOpenGLBuffer::IndexBuffer};
   QOpenGLBuffer bg_vbo_{QOpenGLBuffer::VertexBuffer};
+  QOpenGLBuffer grid_vbo_{QOpenGLBuffer::VertexBuffer};
   QOpenGLVertexArrayObject vao_;
   QOpenGLVertexArrayObject bg_vao_;
   bool gl_ready_ = false;
   int index_count_ = 0;
   GLenum index_type_ = GL_UNSIGNED_INT;
   int ground_index_count_ = 0;
+  int grid_vertex_count_ = 0;
   float ground_extent_ = 0.0f;
   float ground_z_ = 0.0f;
   float grid_scale_ = 1.0f;
+  float grid_step_ = 0.0f;
+  int grid_center_i_ = 0;
+  int grid_center_j_ = 0;
+  int grid_half_lines_ = 0;
+  QVector3D grid_color_cached_ = QVector3D(0.0f, 0.0f, 0.0f);
+  QVector3D axis_x_cached_ = QVector3D(0.0f, 0.0f, 0.0f);
+  QVector3D axis_y_cached_ = QVector3D(0.0f, 0.0f, 0.0f);
   QVector<DrawSurface> surfaces_;
   GLuint texture_id_ = 0;
   GLuint glow_texture_id_ = 0;
@@ -131,6 +155,12 @@ protected:
   float pitch_deg_ = 20.0f;
   float distance_ = 3.0f;
   float fov_y_deg_ = 100.0f;
+
+  QTimer fly_timer_;
+  QElapsedTimer fly_elapsed_;
+  qint64 fly_last_nsecs_ = 0;
+  float fly_speed_ = 640.0f;
+  int fly_move_mask_ = 0;
 
   QPoint last_mouse_pos_;
   DragMode drag_mode_ = DragMode::None;

@@ -2,9 +2,11 @@
 
 #include <QtWidgets/qrhiwidget.h>
 #include <QColor>
+#include <QElapsedTimer>
 #include <QImage>
 #include <QMatrix4x4>
 #include <QPoint>
+#include <QTimer>
 #include <QVector>
 #include <QVector3D>
 #include <QVector4D>
@@ -18,6 +20,7 @@
 #include "ui/preview_3d_options.h"
 
 class QKeyEvent;
+class QFocusEvent;
 class QRhiBuffer;
 class QRhiGraphicsPipeline;
 class QRhiResourceUpdateBatch;
@@ -63,12 +66,18 @@ protected:
 	void wheelEvent(QWheelEvent* event) override;
 	void keyPressEvent(QKeyEvent* event) override;
 	void keyReleaseEvent(QKeyEvent* event) override;
+	void focusOutEvent(QFocusEvent* event) override;
 
 private:
 	struct GpuVertex {
 		float px, py, pz;
 		float nx, ny, nz;
 		float u, v;
+	};
+
+	struct GridLineVertex {
+		float px, py, pz;
+		float r, g, b, a;
 	};
 
 	struct DrawSurface {
@@ -109,6 +118,9 @@ private:
 	void frame_mesh();
 	void pan_by_pixels(const QPoint& delta);
 	void dolly_by_pixels(const QPoint& delta);
+	void on_fly_tick();
+	void set_fly_key(int key, bool down);
+	void update_grid_lines_if_needed(QRhiResourceUpdateBatch* updates, const QVector3D& cam_pos, float aspect);
 	void upload_mesh(QRhiResourceUpdateBatch* updates);
 	void upload_textures(QRhiResourceUpdateBatch* updates);
 	void update_ground_mesh_if_needed(QRhiResourceUpdateBatch* updates);
@@ -128,6 +140,7 @@ private:
 		Orbit,
 		Pan,
 		Dolly,
+		Look,
 	};
 
 	std::optional<LoadedModel> model_;
@@ -169,14 +182,23 @@ private:
 	DragMode drag_mode_ = DragMode::None;
 	Qt::MouseButtons drag_buttons_ = Qt::NoButton;
 
+	QTimer fly_timer_;
+	QElapsedTimer fly_elapsed_;
+	qint64 fly_last_nsecs_ = 0;
+	float fly_speed_ = 640.0f;
+	int fly_move_mask_ = 0;
+
 	QShader vert_shader_;
 	QShader frag_shader_;
+	QShader grid_vert_shader_;
+	QShader grid_frag_shader_;
 
 	QRhiBuffer* vbuf_ = nullptr;
 	QRhiBuffer* ibuf_ = nullptr;
 	QRhiBuffer* ground_vbuf_ = nullptr;
 	QRhiBuffer* ground_ibuf_ = nullptr;
 	QRhiBuffer* bg_vbuf_ = nullptr;
+	QRhiBuffer* grid_vbuf_ = nullptr;
 	QRhiBuffer* ubuf_ = nullptr;
 	quint32 ubuf_stride_ = 0;
 	int index_count_ = 0;
@@ -184,6 +206,14 @@ private:
 	float ground_extent_ = 0.0f;
 	float ground_z_ = 0.0f;
 	float grid_scale_ = 1.0f;
+	int grid_vertex_count_ = 0;
+	float grid_line_step_ = 0.0f;
+	int grid_line_center_i_ = 0;
+	int grid_line_center_j_ = 0;
+	int grid_line_half_lines_ = 0;
+	QVector3D grid_line_color_cached_ = QVector3D(0.0f, 0.0f, 0.0f);
+	QVector3D axis_x_color_cached_ = QVector3D(0.0f, 0.0f, 0.0f);
+	QVector3D axis_y_color_cached_ = QVector3D(0.0f, 0.0f, 0.0f);
 
 	QVector<GpuVertex> ground_vertices_;
 	QVector<std::uint16_t> ground_indices_;
@@ -195,6 +225,8 @@ private:
 	QRhiShaderResourceBindings* default_srb_ = nullptr;
 	QRhiShaderResourceBindings* ground_srb_ = nullptr;
 	QRhiGraphicsPipeline* pipeline_ = nullptr;
+	QRhiShaderResourceBindings* grid_srb_ = nullptr;
+	QRhiGraphicsPipeline* grid_pipeline_ = nullptr;
 
 	bool pipeline_dirty_ = true;
 };
