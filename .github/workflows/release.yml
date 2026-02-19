@@ -49,11 +49,16 @@ jobs:
       - name: Install Meson + Ninja
         run: python -m pip install --upgrade pip meson ninja
 
+      - name: Setup MSVC
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
           version: "6.10.1"
-          arch: ${{ matrix.os == 'windows-latest' && 'win64_msvc2022_64' || matrix.os == 'macos-latest' && 'clang_64' || 'gcc_64' }}
+          arch: ${{ matrix.os == 'windows-latest' && 'win64_msvc2022_64' || matrix.os == 'macos-latest' && (runner.arch == 'ARM64' && 'clang_arm64' || 'clang_64') || 'gcc_64' }}
+          modules: qtmultimedia qttools
 
       - name: Determine Update Channel
         shell: bash
@@ -65,8 +70,16 @@ jobs:
             echo "PAKFU_UPDATE_CHANNEL=stable" >> "$GITHUB_ENV"
           fi
 
-      - name: Configure
-        run: meson setup builddir --backend ninja -Dgithub_repo=${{ github.repository }} -Dupdate_channel=$PAKFU_UPDATE_CHANNEL
+      - name: Configure (Windows)
+        if: matrix.os == 'windows-latest'
+        env:
+          CC: cl
+          CXX: cl
+        run: meson setup builddir --backend ninja --buildtype=release -Dgithub_repo=${{ github.repository }} -Dupdate_channel=$PAKFU_UPDATE_CHANNEL
+
+      - name: Configure (Unix)
+        if: matrix.os != 'windows-latest'
+        run: meson setup builddir --backend ninja --buildtype=release -Dgithub_repo=${{ github.repository }} -Dupdate_channel=$PAKFU_UPDATE_CHANNEL
 
       - name: Build
         run: meson compile -C builddir
