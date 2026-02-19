@@ -57,8 +57,8 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: "6.10.1"
-          arch: ${{ matrix.os == 'windows-latest' && 'win64_msvc2022_64' || matrix.os == 'macos-latest' && (runner.arch == 'ARM64' && 'clang_arm64' || 'clang_64') || 'gcc_64' }}
-          modules: qtmultimedia qttools
+          arch: ${{ matrix.os == 'windows-latest' && 'win64_msvc2022_64' || matrix.os == 'macos-latest' && 'clang_64' || 'linux_gcc_64' }}
+          modules: qtmultimedia qtimageformats
 
       - name: Determine Update Channel
         shell: bash

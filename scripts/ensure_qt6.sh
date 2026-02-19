@@ -9,7 +9,7 @@ os="$(uname -s)"
 case "$os" in
   Linux)
     platform="linux"
-    default_arch="gcc_64"
+    default_arch="linux_gcc_64"
     ;;
   Darwin)
     platform="mac"
@@ -26,6 +26,10 @@ case "$os" in
 esac
 
 arch="${QT_ARCH:-$default_arch}"
+if [[ "$platform" == "linux" && "$arch" == "gcc_64" ]]; then
+  # aqt names this target as linux_gcc_64 for Qt 6.10+
+  arch="linux_gcc_64"
+fi
 arch_dir="$arch"
 if [[ "$platform" == "windows" ]]; then
   arch_dir="${arch_dir#win64_}"
