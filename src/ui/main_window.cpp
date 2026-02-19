@@ -6,13 +6,16 @@
 #include <QAction>
 #include <QComboBox>
 #include <QDateTime>
+#include <QCheckBox>
 #include <QCloseEvent>
+#include <QDialogButtonBox>
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QDialog>
 #include <QDir>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHash>
@@ -28,6 +31,7 @@
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QRandomGenerator>
 #include <QResizeEvent>
 #include <QSet>
@@ -46,10 +50,15 @@
 #include "game/game_auto_detect.h"
 #include "game/game_set.h"
 #include "pakfu_config.h"
+#include "ui/file_associations_dialog.h"
 #include "ui/game_set_dialog.h"
+#include "ui/audio_viewer_window.h"
+#include "ui/image_viewer_window.h"
+#include "ui/model_viewer_window.h"
 #include "ui/pak_tab.h"
 #include "ui/preferences_tab.h"
 #include "ui/ui_icons.h"
+#include "ui/video_viewer_window.h"
 #include "update/update_service.h"
 
 class DropOverlay : public QWidget {
@@ -78,7 +87,7 @@ protected:
   }
 
 private:
-  QString message_ = "Drop to open archive";
+  QString message_ = "Drop to open files and archives";
 };
 
 namespace {
@@ -89,6 +98,15 @@ constexpr char kRecentFilesByInstallMigratedKey[] = "ui/recentFilesByInstallMigr
 constexpr char kInstallWorkspaceKeyPrefix[] = "ui/installWorkspace";
 constexpr char kInstallWorkspaceVersionKey[] = "ui/installWorkspaceVersion";
 constexpr char kConfigureGameSetsUid[] = "__configure_game_sets__";
+constexpr char kArchiveOpenAlwaysAskKey[] = "archive/openChooserAlwaysAsk";
+constexpr char kArchiveOpenDefaultActionKey[] = "archive/openChooserDefaultAction";
+constexpr char kArchiveOpenDefaultInstallUidKey[] = "archive/openChooserDefaultInstallUid";
+
+enum class ArchiveOpenIntent {
+  OpenDirect = 0,
+  InstallCopy,
+  MoveToInstall,
+};
 
 bool is_supported_archive_extension(const QString& path) {
   const QString lower = path.toLower();
@@ -99,9 +117,41 @@ bool is_supported_archive_extension(const QString& path) {
          lower.endsWith(".wad2") || lower.endsWith(".wad3");
 }
 
+QString archive_open_intent_key(ArchiveOpenIntent intent) {
+  switch (intent) {
+    case ArchiveOpenIntent::InstallCopy:
+      return "install_copy";
+    case ArchiveOpenIntent::MoveToInstall:
+      return "move_to_install";
+    case ArchiveOpenIntent::OpenDirect:
+    default:
+      return "open_direct";
+  }
+}
+
+ArchiveOpenIntent archive_open_intent_from_key(const QString& key) {
+  const QString normalized = key.trimmed().toLower();
+  if (normalized == "install_copy") {
+    return ArchiveOpenIntent::InstallCopy;
+  }
+  if (normalized == "move_to_install") {
+    return ArchiveOpenIntent::MoveToInstall;
+  }
+  return ArchiveOpenIntent::OpenDirect;
+}
+
+QString install_target_dir_for_game_set(const GameSet& set) {
+  if (!set.default_dir.isEmpty()) {
+    return set.default_dir;
+  }
+  return set.root_dir;
+}
+
 struct OpenableDropPaths {
-  QStringList archives;
-  QStringList folders;
+  QStringList paths;
+  int archive_count = 0;
+  int folder_count = 0;
+  int file_count = 0;
 };
 
 OpenableDropPaths collect_openable_paths(const QList<QUrl>& urls) {
@@ -119,31 +169,50 @@ OpenableDropPaths collect_openable_paths(const QList<QUrl>& urls) {
       continue;
     }
     if (info.isDir()) {
-      out.folders.append(info.absoluteFilePath());
+      out.paths.append(info.absoluteFilePath());
+      ++out.folder_count;
       continue;
     }
-    if (info.isFile() && is_supported_archive_extension(path)) {
-      out.archives.append(info.absoluteFilePath());
+    if (info.isFile()) {
+      out.paths.append(info.absoluteFilePath());
+      if (is_supported_archive_extension(path)) {
+        ++out.archive_count;
+      } else {
+        ++out.file_count;
+      }
     }
   }
   return out;
 }
 
 bool has_openable_paths(const OpenableDropPaths& drop) {
-  return !(drop.archives.isEmpty() && drop.folders.isEmpty());
+  return !drop.paths.isEmpty();
 }
 
 QString drop_overlay_message(const OpenableDropPaths& drop) {
-  const bool has_archives = !drop.archives.isEmpty();
-  const bool has_folders = !drop.folders.isEmpty();
+  const bool has_archives = drop.archive_count > 0;
+  const bool has_folders = drop.folder_count > 0;
+  const bool has_files = drop.file_count > 0;
+  if (has_archives && has_folders && has_files) {
+    return "Drop to open files, archives, and folders";
+  }
   if (has_archives && has_folders) {
     return "Drop to open archives and folders";
   }
+  if (has_archives && has_files) {
+    return "Drop to open files and archives";
+  }
+  if (has_folders && has_files) {
+    return "Drop to open files and folders";
+  }
   if (has_archives) {
-    return (drop.archives.size() > 1) ? "Drop to open archives" : "Drop to open archive";
+    return (drop.archive_count > 1) ? "Drop to open archives" : "Drop to open archive";
+  }
+  if (has_files) {
+    return (drop.file_count > 1) ? "Drop to open files" : "Drop to open file";
   }
   if (has_folders) {
-    return (drop.folders.size() > 1) ? "Drop to open folders" : "Drop to open folder";
+    return (drop.folder_count > 1) ? "Drop to open folders" : "Drop to open folder";
   }
   return "Drop to open";
 }
@@ -161,6 +230,22 @@ bool recent_paths_equal(const QString& a, const QString& b) {
 #else
   return a == b;
 #endif
+}
+
+QString unique_destination_path(const QString& dest_path) {
+  const QFileInfo info(dest_path);
+  const QString dir = info.absolutePath();
+  const QString base = info.completeBaseName();
+  const QString suffix = info.suffix();
+  const QString dot_suffix = suffix.isEmpty() ? QString() : QString(".%1").arg(suffix);
+
+  for (int i = 2; i < 10000; ++i) {
+    const QString candidate = QDir(dir).filePath(QString("%1 (%2)%3").arg(base).arg(i).arg(dot_suffix));
+    if (!QFileInfo::exists(candidate)) {
+      return candidate;
+    }
+  }
+  return QDir(dir).filePath(QString("%1-copy%2").arg(base).arg(dot_suffix));
 }
 
 QString recent_files_key_for_game_set_uid(const QString& uid) {
@@ -508,8 +593,177 @@ QString random_welcome_message() {
   return messages[idx];
 }
 
+struct ArchiveOpenChoiceResult {
+  bool accepted = false;
+  ArchiveOpenIntent intent = ArchiveOpenIntent::OpenDirect;
+  QString install_uid;
+  bool always_ask = true;
+};
+
+ArchiveOpenChoiceResult prompt_archive_open_choice(QWidget* parent,
+                                                   const QString& archive_path,
+                                                   const QVector<GameSet>& installs,
+                                                   const QString& current_install_uid,
+                                                   ArchiveOpenIntent default_intent,
+                                                   const QString& default_install_uid,
+                                                   bool always_ask_default) {
+  ArchiveOpenChoiceResult result;
+  result.always_ask = always_ask_default;
+
+  struct InstallEntry {
+    QString uid;
+    QString label;
+  };
+  QVector<InstallEntry> entries;
+  entries.reserve(installs.size());
+  for (const GameSet& set : installs) {
+    const QString target_dir = install_target_dir_for_game_set(set);
+    if (target_dir.isEmpty()) {
+      continue;
+    }
+    const QString label = QString("%1  [%2]").arg(installation_primary_label(set), QDir::toNativeSeparators(target_dir));
+    entries.push_back({set.uid, label});
+  }
+
+  QDialog dialog(parent);
+  dialog.setWindowTitle("Open Archive");
+  dialog.setMinimumWidth(700);
+
+  auto* layout = new QVBoxLayout(&dialog);
+  layout->setContentsMargins(18, 16, 18, 16);
+  layout->setSpacing(10);
+
+  auto* title = new QLabel("Choose how to open this archive:", &dialog);
+  QFont title_font = title->font();
+  title_font.setBold(true);
+  title->setFont(title_font);
+  layout->addWidget(title);
+
+  auto* path_label = new QLabel(QDir::toNativeSeparators(archive_path), &dialog);
+  path_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  path_label->setWordWrap(true);
+  layout->addWidget(path_label);
+
+  auto* direct_radio = new QRadioButton("Open directly (read from current location)", &dialog);
+  auto* copy_radio = new QRadioButton("Install a copy to an installation, then open", &dialog);
+  auto* move_radio = new QRadioButton("Move to an installation, then open", &dialog);
+  layout->addWidget(direct_radio);
+  layout->addWidget(copy_radio);
+  layout->addWidget(move_radio);
+
+  auto* install_row = new QWidget(&dialog);
+  auto* install_layout = new QHBoxLayout(install_row);
+  install_layout->setContentsMargins(22, 0, 0, 0);
+  install_layout->setSpacing(8);
+  auto* install_label = new QLabel("Target installation", install_row);
+  auto* install_combo = new QComboBox(install_row);
+  install_combo->setMinimumWidth(420);
+  install_layout->addWidget(install_label);
+  install_layout->addWidget(install_combo, 1);
+  layout->addWidget(install_row);
+
+  for (const InstallEntry& entry : entries) {
+    install_combo->addItem(entry.label, entry.uid);
+  }
+
+  int preferred_index = -1;
+  for (int i = 0; i < install_combo->count(); ++i) {
+    const QString uid = install_combo->itemData(i).toString();
+    if (!default_install_uid.isEmpty() && uid == default_install_uid) {
+      preferred_index = i;
+      break;
+    }
+    if (preferred_index < 0 && !current_install_uid.isEmpty() && uid == current_install_uid) {
+      preferred_index = i;
+    }
+  }
+  if (preferred_index < 0 && install_combo->count() > 0) {
+    preferred_index = 0;
+  }
+  if (preferred_index >= 0) {
+    install_combo->setCurrentIndex(preferred_index);
+  }
+
+  switch (default_intent) {
+    case ArchiveOpenIntent::InstallCopy:
+      copy_radio->setChecked(true);
+      break;
+    case ArchiveOpenIntent::MoveToInstall:
+      move_radio->setChecked(true);
+      break;
+    case ArchiveOpenIntent::OpenDirect:
+    default:
+      direct_radio->setChecked(true);
+      break;
+  }
+
+  auto* ask_checkbox = new QCheckBox("Always ask before opening archives", &dialog);
+  ask_checkbox->setChecked(always_ask_default);
+  layout->addWidget(ask_checkbox);
+
+  auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+  if (QPushButton* ok_button = buttons->button(QDialogButtonBox::Ok)) {
+    ok_button->setText("Continue");
+    ok_button->setIcon(UiIcons::icon(UiIcons::Id::OpenArchive, ok_button->style()));
+  }
+  if (QPushButton* cancel_button = buttons->button(QDialogButtonBox::Cancel)) {
+    cancel_button->setIcon(UiIcons::icon(UiIcons::Id::ExitApp, cancel_button->style()));
+  }
+  layout->addWidget(buttons);
+
+  const bool has_install_targets = (install_combo->count() > 0);
+  if (!has_install_targets) {
+    copy_radio->setEnabled(false);
+    move_radio->setEnabled(false);
+    direct_radio->setChecked(true);
+    auto* note = new QLabel("No installation targets are configured. Open directly is currently the only option.", &dialog);
+    note->setWordWrap(true);
+    note->setStyleSheet("color: rgba(200, 200, 200, 220);");
+    layout->insertWidget(layout->count() - 2, note);
+  }
+
+  auto update_install_controls = [&]() {
+    const bool needs_install = copy_radio->isChecked() || move_radio->isChecked();
+    install_combo->setEnabled(needs_install && has_install_targets);
+    install_label->setEnabled(needs_install && has_install_targets);
+  };
+  QObject::connect(copy_radio, &QRadioButton::toggled, &dialog, update_install_controls);
+  QObject::connect(move_radio, &QRadioButton::toggled, &dialog, update_install_controls);
+  QObject::connect(direct_radio, &QRadioButton::toggled, &dialog, update_install_controls);
+  update_install_controls();
+
+  QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&]() {
+    if ((copy_radio->isChecked() || move_radio->isChecked()) && install_combo->currentIndex() < 0) {
+      QMessageBox::warning(&dialog, "Open Archive", "Choose a target installation or select Open directly.");
+      return;
+    }
+    dialog.accept();
+  });
+  QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+  if (dialog.exec() != QDialog::Accepted) {
+    result.accepted = false;
+    return result;
+  }
+
+  result.accepted = true;
+  result.always_ask = ask_checkbox->isChecked();
+  if (copy_radio->isChecked()) {
+    result.intent = ArchiveOpenIntent::InstallCopy;
+  } else if (move_radio->isChecked()) {
+    result.intent = ArchiveOpenIntent::MoveToInstall;
+  } else {
+    result.intent = ArchiveOpenIntent::OpenDirect;
+  }
+  if (install_combo->currentIndex() >= 0) {
+    result.install_uid = install_combo->itemData(install_combo->currentIndex()).toString();
+  }
+  return result;
+}
+
 QWidget* build_welcome_tab(QWidget* parent,
                           const std::function<void()>& on_new,
+                          const std::function<void()>& on_open_file,
                           const std::function<void()>& on_open_archive,
                           const std::function<void()>& on_open_folder,
                           const std::function<void()>& on_exit) {
@@ -540,7 +794,7 @@ QWidget* build_welcome_tab(QWidget* parent,
   title->setFont(title_font);
   layout->addWidget(title);
 
-  auto* subtitle = new QLabel("Create a new PAK, open an archive or folder, or exit.", content);
+  auto* subtitle = new QLabel("Create a new PAK, open a file/archive/folder, or exit.", content);
   subtitle->setAlignment(Qt::AlignCenter);
   subtitle->setWordWrap(true);
   layout->addWidget(subtitle);
@@ -551,10 +805,12 @@ QWidget* build_welcome_tab(QWidget* parent,
   auto* create_button = new QPushButton("Create PAK", content);
   auto* open_button = new QPushButton("Open…", content);
   auto* open_menu = new QMenu(open_button);
+  QAction* open_file_action = open_menu->addAction("Open File...");
   QAction* open_archive_action = open_menu->addAction("Open Archive...");
   QAction* open_folder_action = open_menu->addAction("Open Folder...");
   create_button->setIcon(UiIcons::icon(UiIcons::Id::NewPak, create_button->style()));
   open_button->setIcon(UiIcons::icon(UiIcons::Id::OpenArchive, open_button->style()));
+  open_file_action->setIcon(UiIcons::icon(UiIcons::Id::OpenArchive, open_button->style()));
   open_archive_action->setIcon(UiIcons::icon(UiIcons::Id::OpenArchive, open_button->style()));
   open_folder_action->setIcon(UiIcons::icon(UiIcons::Id::OpenFolder, open_button->style()));
   open_button->setMenu(open_menu);
@@ -576,6 +832,7 @@ QWidget* build_welcome_tab(QWidget* parent,
   layout->addStretch();
 
   QObject::connect(create_button, &QPushButton::clicked, root, on_new);
+  QObject::connect(open_file_action, &QAction::triggered, root, on_open_file);
   QObject::connect(open_archive_action, &QAction::triggered, root, on_open_archive);
   QObject::connect(open_folder_action, &QAction::triggered, root, on_open_folder);
   QObject::connect(close_button, &QPushButton::clicked, root, on_exit);
@@ -807,6 +1064,7 @@ void MainWindow::setup_central() {
   welcome_tab_ = build_welcome_tab(
     tabs_,
     [this]() { create_new_pak(); },
+    [this]() { open_file_dialog(); },
     [this]() { open_pak_dialog(); },
     [this]() { open_folder_dialog(); },
     [this]() { close(); });
@@ -859,15 +1117,26 @@ void MainWindow::setup_menus() {
   new_action_->setShortcut(QKeySequence::New);
   connect(new_action_, &QAction::triggered, this, &MainWindow::create_new_pak);
 
-  open_action_ = file_menu->addAction("Open Archive...");
-  open_action_->setIcon(UiIcons::icon(UiIcons::Id::OpenArchive, style()));
-  open_action_->setShortcut(QKeySequence::Open);
-  connect(open_action_, &QAction::triggered, this, &MainWindow::open_pak_dialog);
+  open_file_action_ = file_menu->addAction("Open File...");
+  open_file_action_->setIcon(UiIcons::icon(UiIcons::Id::OpenArchive, style()));
+  open_file_action_->setShortcut(QKeySequence::Open);
+  connect(open_file_action_, &QAction::triggered, this, &MainWindow::open_file_dialog);
+
+  open_archive_action_ = file_menu->addAction("Open Archive...");
+  open_archive_action_->setIcon(UiIcons::icon(UiIcons::Id::OpenArchive, style()));
+  open_archive_action_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
+  connect(open_archive_action_, &QAction::triggered, this, &MainWindow::open_pak_dialog);
 
   open_folder_action_ = file_menu->addAction("Open Folder...");
   open_folder_action_->setIcon(UiIcons::icon(UiIcons::Id::OpenFolder, style()));
-  open_folder_action_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
+  open_folder_action_->setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_O));
   connect(open_folder_action_, &QAction::triggered, this, &MainWindow::open_folder_dialog);
+
+  file_associations_action_ = file_menu->addAction("File Associations...");
+  file_associations_action_->setIcon(UiIcons::icon(UiIcons::Id::Associate, style()));
+  connect(file_associations_action_, &QAction::triggered, this, &MainWindow::open_file_associations_dialog);
+
+  file_menu->addSeparator();
 
   recent_files_menu_ = file_menu->addMenu("Recent Files");
   connect(recent_files_menu_, &QMenu::aboutToShow, this, &MainWindow::rebuild_recent_files_menu);
@@ -967,7 +1236,7 @@ void MainWindow::setup_menus() {
     const QString website_url = "https://www.darkmatter-quake.com";
     const QString html = QString(
       "<b>PakFu %1</b><br/>"
-      "A modern PAK file manager.<br/><br/>"
+      "A modern game archive manager and file viewer.<br/><br/>"
       "<b>Disclaimer</b><br/>"
       "Use of this software is at your own risk. No warranty is provided.<br/><br/>"
       "<b>License</b><br/>"
@@ -1031,6 +1300,30 @@ void MainWindow::create_new_pak() {
   tabs_->setCurrentIndex(index);
 }
 
+void MainWindow::open_file_dialog() {
+  QFileDialog dialog(this);
+  dialog.setWindowTitle("Open File");
+  dialog.setFileMode(QFileDialog::ExistingFile);
+  dialog.setNameFilters({
+    "Supported files (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3 *.pcx *.wal *.swl *.mip *.lmp *.dds *.png *.bmp *.gif *.tga *.jpg *.jpeg *.tif *.tiff *.wav *.ogg *.mp3 *.bik *.cin *.roq *.ogv *.mp4 *.mkv *.avi *.webm *.bsp *.mdl *.md2 *.md3 *.mdc *.md4 *.mdr *.skb *.skd *.mdm *.glm *.iqm *.md5mesh *.lwo *.obj *.spr *.sp2 *.cfg *.txt *.json *.shader *.ttf *.otf)",
+    "Archives (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3)",
+    "All files (*.*)",
+  });
+  dialog.setDirectory(default_directory_for_dialogs());
+#if defined(Q_OS_WIN)
+  // Work around sporadic native dialog crashes reported in early development.
+  dialog.setOption(QFileDialog::DontUseNativeDialog, true);
+#endif
+  if (dialog.exec() != QDialog::Accepted) {
+    return;
+  }
+  const QStringList selected = dialog.selectedFiles();
+  if (selected.isEmpty()) {
+    return;
+  }
+  open_pak(selected.first());
+}
+
 void MainWindow::open_pak_dialog() {
   QFileDialog dialog(this);
   dialog.setWindowTitle("Open Archive");
@@ -1077,6 +1370,318 @@ void MainWindow::open_folder_dialog() {
     return;
   }
   open_pak(selected.first());
+}
+
+void MainWindow::open_file_associations_dialog() {
+  FileAssociationsDialog dialog(this);
+  dialog.exec();
+}
+
+QString MainWindow::resolve_archive_open_path(const QString& path, bool* cancelled) {
+  if (cancelled) {
+    *cancelled = false;
+  }
+
+  const QString normalized = normalize_recent_path(path);
+  QFileInfo info(normalized.isEmpty() ? path : normalized);
+  if (!info.exists()) {
+    return normalized.isEmpty() ? path : normalized;
+  }
+
+  const QString abs = info.absoluteFilePath();
+  if (!info.isFile() || !is_supported_archive_extension(abs)) {
+    return abs;
+  }
+
+  QSettings settings;
+  const bool always_ask_setting = settings.value(kArchiveOpenAlwaysAskKey, true).toBool();
+  const ArchiveOpenIntent default_intent = archive_open_intent_from_key(
+    settings.value(kArchiveOpenDefaultActionKey, archive_open_intent_key(ArchiveOpenIntent::OpenDirect)).toString());
+  const QString default_install_uid = settings.value(kArchiveOpenDefaultInstallUidKey, game_set_.uid).toString();
+
+  if (!always_ask_setting) {
+    if (default_intent == ArchiveOpenIntent::OpenDirect) {
+      return abs;
+    }
+
+    QString resolved_path;
+    QString err;
+    if (run_archive_open_action(abs,
+                                default_install_uid,
+                                default_intent == ArchiveOpenIntent::MoveToInstall,
+                                &resolved_path,
+                                &err)) {
+      return resolved_path;
+    }
+    if (!err.isEmpty()) {
+      QMessageBox::warning(this, "Open Archive", err);
+    }
+  }
+
+  const ArchiveOpenChoiceResult choice = prompt_archive_open_choice(
+    this, abs, game_sets_.sets, game_set_.uid, default_intent, default_install_uid, always_ask_setting);
+  if (!choice.accepted) {
+    if (cancelled) {
+      *cancelled = true;
+    }
+    return {};
+  }
+
+  settings.setValue(kArchiveOpenAlwaysAskKey, choice.always_ask);
+  settings.setValue(kArchiveOpenDefaultActionKey, archive_open_intent_key(choice.intent));
+  settings.setValue(kArchiveOpenDefaultInstallUidKey, choice.install_uid);
+
+  if (choice.intent == ArchiveOpenIntent::OpenDirect) {
+    return abs;
+  }
+
+  QString resolved_path;
+  QString err;
+  if (!run_archive_open_action(abs,
+                               choice.install_uid,
+                               choice.intent == ArchiveOpenIntent::MoveToInstall,
+                               &resolved_path,
+                               &err)) {
+    if (!err.isEmpty()) {
+      QMessageBox::warning(this, "Open Archive", err);
+    }
+    if (cancelled) {
+      *cancelled = true;
+    }
+    return {};
+  }
+  return resolved_path;
+}
+
+bool MainWindow::run_archive_open_action(const QString& source_path,
+                                         const QString& install_uid,
+                                         bool move_file,
+                                         QString* resulting_path,
+                                         QString* error) {
+  if (resulting_path) {
+    resulting_path->clear();
+  }
+  if (error) {
+    error->clear();
+  }
+
+  const QString src_abs = QFileInfo(source_path).absoluteFilePath();
+  QFileInfo src_info(src_abs);
+  if (!src_info.exists() || !src_info.isFile()) {
+    if (error) {
+      *error = QString("Archive not found:\n%1").arg(QDir::toNativeSeparators(src_abs));
+    }
+    return false;
+  }
+
+  const GameSet* target_set = nullptr;
+  if (!install_uid.isEmpty()) {
+    target_set = find_game_set(game_sets_, install_uid);
+  }
+  if (!target_set) {
+    target_set = &game_set_;
+  }
+
+  const QString target_dir_raw = install_target_dir_for_game_set(*target_set);
+  if (target_dir_raw.isEmpty()) {
+    if (error) {
+      *error = "The selected installation does not have a valid target directory.";
+    }
+    return false;
+  }
+
+  const QString target_dir = QDir(target_dir_raw).absolutePath();
+  if (!QDir().mkpath(target_dir)) {
+    if (error) {
+      *error = QString("Unable to create destination directory:\n%1").arg(QDir::toNativeSeparators(target_dir));
+    }
+    return false;
+  }
+
+  QString dest_abs = QFileInfo(QDir(target_dir).filePath(src_info.fileName())).absoluteFilePath();
+  const bool same_path = recent_paths_equal(src_abs, dest_abs);
+
+  if (move_file && same_path) {
+    if (resulting_path) {
+      *resulting_path = src_abs;
+    }
+    return true;
+  }
+  if (!move_file && same_path) {
+    dest_abs = unique_destination_path(dest_abs);
+  }
+
+  if (QFileInfo::exists(dest_abs)) {
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Question);
+    box.setWindowTitle(move_file ? "Move Archive" : "Install Archive Copy");
+    box.setText(QString("A file named \"%1\" already exists in the destination.").arg(QFileInfo(dest_abs).fileName()));
+    box.setInformativeText("Choose overwrite, keep both, or cancel.");
+
+    QPushButton* overwrite_button = box.addButton("Overwrite", QMessageBox::AcceptRole);
+    QPushButton* keep_both_button = box.addButton("Keep Both", QMessageBox::ActionRole);
+    QPushButton* cancel_button = box.addButton("Cancel", QMessageBox::RejectRole);
+    overwrite_button->setIcon(UiIcons::icon(UiIcons::Id::SaveAs, overwrite_button->style()));
+    keep_both_button->setIcon(UiIcons::icon(UiIcons::Id::Copy, keep_both_button->style()));
+    cancel_button->setIcon(UiIcons::icon(UiIcons::Id::ExitApp, cancel_button->style()));
+    box.exec();
+
+    if (box.clickedButton() == cancel_button) {
+      if (error) {
+        *error = "Open action cancelled.";
+      }
+      return false;
+    }
+    if (box.clickedButton() == keep_both_button) {
+      dest_abs = unique_destination_path(dest_abs);
+    } else {
+      if (!QFile::remove(dest_abs)) {
+        if (error) {
+          *error = QString("Unable to overwrite destination file:\n%1").arg(QDir::toNativeSeparators(dest_abs));
+        }
+        return false;
+      }
+    }
+  }
+
+  if (move_file) {
+    if (!QFile::rename(src_abs, dest_abs)) {
+      if (!QFile::copy(src_abs, dest_abs)) {
+        if (error) {
+          *error = QString("Unable to move archive to destination:\n%1").arg(QDir::toNativeSeparators(dest_abs));
+        }
+        return false;
+      }
+      if (!QFile::remove(src_abs)) {
+        (void)QFile::remove(dest_abs);
+        if (error) {
+          *error = QString("Archive copy succeeded but source removal failed:\n%1").arg(QDir::toNativeSeparators(src_abs));
+        }
+        return false;
+      }
+    }
+  } else {
+    if (!QFile::copy(src_abs, dest_abs)) {
+      if (error) {
+        *error = QString("Unable to copy archive to destination:\n%1").arg(QDir::toNativeSeparators(dest_abs));
+      }
+      return false;
+    }
+  }
+
+  if (resulting_path) {
+    *resulting_path = dest_abs;
+  }
+  return true;
+}
+
+bool MainWindow::open_image_viewer(const QString& file_path, bool add_recent) {
+  const QString abs_file = QFileInfo(file_path).absoluteFilePath();
+  ImageViewerWindow* viewer = ImageViewerWindow::show_for_image(abs_file, true);
+  if (!viewer) {
+    QMessageBox::warning(this, "Open Image", QString("Unable to open image viewer for:\n%1").arg(file_path));
+    return false;
+  }
+  image_viewer_window_ = viewer;
+  if (add_recent) {
+    add_recent_file(abs_file);
+  }
+  return true;
+}
+
+bool MainWindow::open_video_viewer(const QString& file_path, bool add_recent) {
+  const QString abs_file = QFileInfo(file_path).absoluteFilePath();
+  VideoViewerWindow* viewer = VideoViewerWindow::show_for_video(abs_file, true);
+  if (!viewer) {
+    QMessageBox::warning(this, "Open Video", QString("Unable to open video viewer for:\n%1").arg(file_path));
+    return false;
+  }
+  video_viewer_window_ = viewer;
+  if (add_recent) {
+    add_recent_file(abs_file);
+  }
+  return true;
+}
+
+bool MainWindow::open_audio_viewer(const QString& file_path, bool add_recent) {
+  const QString abs_file = QFileInfo(file_path).absoluteFilePath();
+  AudioViewerWindow* viewer = AudioViewerWindow::show_for_audio(abs_file, true);
+  if (!viewer) {
+    QMessageBox::warning(this, "Open Audio", QString("Unable to open audio viewer for:\n%1").arg(file_path));
+    return false;
+  }
+  audio_viewer_window_ = viewer;
+  if (add_recent) {
+    add_recent_file(abs_file);
+  }
+  return true;
+}
+
+bool MainWindow::open_model_viewer(const QString& file_path, bool add_recent) {
+  const QString abs_file = QFileInfo(file_path).absoluteFilePath();
+  ModelViewerWindow* viewer = ModelViewerWindow::show_for_model(abs_file, true);
+  if (!viewer) {
+    QMessageBox::warning(this, "Open Model", QString("Unable to open model viewer for:\n%1").arg(file_path));
+    return false;
+  }
+  model_viewer_window_ = viewer;
+  if (add_recent) {
+    add_recent_file(abs_file);
+  }
+  return true;
+}
+
+bool MainWindow::open_file_in_viewer(const QString& file_path, bool allow_auto_select, bool add_recent) {
+  const QString normalized = normalize_recent_path(file_path);
+  QFileInfo info(normalized.isEmpty() ? file_path : normalized);
+  if (!info.exists() || !info.isFile()) {
+    if (add_recent) {
+      remove_recent_file(normalized.isEmpty() ? file_path : normalized);
+    }
+    QMessageBox::warning(this, "Open File", QString("File not found:\n%1").arg(file_path));
+    return false;
+  }
+
+  const QString abs_file = info.absoluteFilePath();
+  if (ImageViewerWindow::is_supported_image_path(abs_file)) {
+    return open_image_viewer(abs_file, add_recent);
+  }
+  if (VideoViewerWindow::is_supported_video_path(abs_file)) {
+    return open_video_viewer(abs_file, add_recent);
+  }
+  if (AudioViewerWindow::is_supported_audio_path(abs_file)) {
+    return open_audio_viewer(abs_file, add_recent);
+  }
+  if (ModelViewerWindow::is_supported_model_path(abs_file)) {
+    return open_model_viewer(abs_file, add_recent);
+  }
+
+  const QString parent_dir = info.absolutePath();
+  if (parent_dir.isEmpty()) {
+    QMessageBox::warning(this, "Open File", "Unable to determine the parent directory for this file.");
+    return false;
+  }
+
+  PakTab* tab = open_pak_internal(parent_dir, allow_auto_select, false);
+  if (!tab) {
+    return false;
+  }
+
+  QString relative = QDir::fromNativeSeparators(QDir(parent_dir).relativeFilePath(abs_file));
+  relative = QDir::cleanPath(relative);
+  if (relative == "." || relative.startsWith("../")) {
+    relative = info.fileName();
+  }
+  if (!relative.isEmpty()) {
+    const int slash = relative.lastIndexOf('/');
+    const QString dir_prefix = (slash >= 0) ? (relative.left(slash + 1)) : QString();
+    tab->restore_workspace(dir_prefix, relative);
+  }
+
+  if (add_recent) {
+    add_recent_file(abs_file);
+  }
+  return true;
 }
 
 PakTab* MainWindow::open_pak_internal(const QString& path, bool allow_auto_select, bool add_recent) {
@@ -1227,7 +1832,19 @@ void MainWindow::update_action_states() {
 }
 
 void MainWindow::open_pak(const QString& path) {
-  (void)open_pak_internal(path, !restoring_workspace_, !restoring_workspace_);
+  bool cancelled = false;
+  const QString resolved = resolve_archive_open_path(path, &cancelled);
+  if (cancelled || resolved.isEmpty()) {
+    return;
+  }
+
+  const QFileInfo info(resolved);
+  if (info.exists() && info.isFile() && !is_supported_archive_extension(info.absoluteFilePath())) {
+    (void)open_file_in_viewer(info.absoluteFilePath(), !restoring_workspace_, !restoring_workspace_);
+    return;
+  }
+
+  (void)open_pak_internal(resolved, !restoring_workspace_, !restoring_workspace_);
 }
 
 void MainWindow::load_game_sets() {
@@ -1498,12 +2115,12 @@ void MainWindow::open_preferences() {
 
 void MainWindow::update_window_title() {
   if (!tabs_) {
-    setWindowTitle(game_set_.name.isEmpty() ? "PakFu" : QString("PakFu (%1)").arg(game_set_.name));
+    setWindowTitle(game_set_.name.isEmpty() ? "PakFu Archive View" : QString("PakFu Archive View (%1)").arg(game_set_.name));
     return;
   }
   const int idx = tabs_->currentIndex();
   const QString tab_title = idx >= 0 ? tabs_->tabText(idx) : QString();
-  const QString base = game_set_.name.isEmpty() ? "PakFu" : QString("PakFu (%1)").arg(game_set_.name);
+  const QString base = game_set_.name.isEmpty() ? "PakFu Archive View" : QString("PakFu Archive View (%1)").arg(game_set_.name);
   setWindowTitle(tab_title.isEmpty() ? base : QString("%1 - %2").arg(base, tab_title));
 }
 
@@ -1610,10 +2227,8 @@ void MainWindow::dropEvent(QDropEvent* event) {
   }
   if (event && event->mimeData() && event->mimeData()->hasUrls()) {
     const OpenableDropPaths drop = collect_openable_paths(event->mimeData()->urls());
-    QStringList paths = drop.archives;
-    paths.append(drop.folders);
-    if (!paths.isEmpty()) {
-      open_archives(paths);
+    if (!drop.paths.isEmpty()) {
+      open_archives(drop.paths);
       event->acceptProposedAction();
       return;
     }

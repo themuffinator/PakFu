@@ -10,6 +10,7 @@
 #include <QActionGroup>
 #include <QAbstractScrollArea>
 #include <QClipboard>
+#include <QDesktopServices>
 #include <QDateTime>
 #include <QDialog>
 #include <QDir>
@@ -19,6 +20,7 @@
 #include <QDropEvent>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileIconProvider>
 #include <QFileInfo>
 #include <QHash>
 #include <QHeaderView>
@@ -76,6 +78,7 @@
 #include "formats/sprite_loader.h"
 #include "third_party/miniz/miniz.h"
 #include "pak/pak_archive.h"
+#include "platform/file_associations.h"
 #include "ui/breadcrumb_bar.h"
 #include "ui/preview_pane.h"
 #include "ui/preview_renderer.h"
@@ -1083,6 +1086,82 @@ bool is_mountable_archive_file_name(const QString& name) {
   return is_mountable_archive_ext(file_ext_lower(name));
 }
 
+QSize sanitize_icon_size(const QSize& icon_size, const QSize& fallback = QSize(32, 32)) {
+  return icon_size.isValid() ? icon_size : fallback;
+}
+
+bool icon_pixmaps_match(const QIcon& a, const QIcon& b, const QSize& icon_size) {
+  const QSize size = sanitize_icon_size(icon_size);
+  const QPixmap pa = a.pixmap(size);
+  const QPixmap pb = b.pixmap(size);
+  if (pa.isNull() || pb.isNull()) {
+    return false;
+  }
+  return pa.toImage() == pb.toImage();
+}
+
+QIcon platform_file_association_icon(const QString& ext, const QSize& icon_size) {
+  const QString normalized_ext = ext.trimmed().toLower();
+  if (normalized_ext.isEmpty()) {
+    return {};
+  }
+
+  const QSize size = sanitize_icon_size(icon_size);
+  const QString key = QString("%1@%2x%3").arg(normalized_ext).arg(size.width()).arg(size.height());
+
+  static QFileIconProvider provider;
+  static QHash<QString, QIcon> cache;
+  static QSet<QString> misses;
+
+  if (cache.contains(key)) {
+    return cache.value(key);
+  }
+  if (misses.contains(key)) {
+    return {};
+  }
+
+  const QIcon generic = provider.icon(QFileIconProvider::File);
+  const QIcon candidate = provider.icon(QFileInfo(QString("pakfu_assoc.%1").arg(normalized_ext)));
+
+  if (candidate.isNull() || icon_pixmaps_match(candidate, generic, size)) {
+    misses.insert(key);
+    return {};
+  }
+
+  cache.insert(key, candidate);
+  return candidate;
+}
+
+bool try_file_association_icon(const QString& file_name, const QSize& icon_size, QIcon* out) {
+  if (out) {
+    *out = {};
+  }
+
+  const QString ext = file_ext_lower(file_name);
+  if (ext.isEmpty()) {
+    return false;
+  }
+
+  const QSize size = sanitize_icon_size(icon_size);
+  const QIcon managed = FileAssociations::icon_for_extension(ext, size);
+  if (!managed.isNull()) {
+    if (out) {
+      *out = managed;
+    }
+    return true;
+  }
+
+  const QIcon platform = platform_file_association_icon(ext, size);
+  if (!platform.isNull()) {
+    if (out) {
+      *out = platform;
+    }
+    return true;
+  }
+
+  return false;
+}
+
 /*
 =============
 is_supported_audio_file
@@ -2028,56 +2107,14 @@ void PakTab::build_ui() {
     if (!item) {
       return;
     }
-    const bool is_dir = item->data(0, Qt::UserRole).toBool();
-    if (is_dir) {
-      enter_directory(item->text(0));
-      return;
-    }
-
-    const QString pak_path = item->data(0, kRolePakPath).toString();
-    const QString leaf = pak_leaf_name(pak_path.isEmpty() ? item->text(0) : pak_path);
-    if (is_mountable_archive_file_name(leaf)) {
-      QString err;
-      if (!mount_wad_from_selected_file(pak_path, &err) && !err.isEmpty()) {
-        if (preview_) {
-          preview_->show_message(leaf.isEmpty() ? "Archive" : leaf, err);
-        }
-      }
-      return;
-    }
-
-    update_preview();
-    if (preview_) {
-      preview_->start_playback_from_beginning();
-    }
+    activate_entry(item->text(0), item->data(0, Qt::UserRole).toBool(), item->data(0, kRolePakPath).toString());
   });
 
   connect(icon_view_, &QListWidget::itemActivated, this, [this](QListWidgetItem* item) {
     if (!item) {
       return;
     }
-    const bool is_dir = item->data(Qt::UserRole).toBool();
-    if (is_dir) {
-      enter_directory(item->text());
-      return;
-    }
-
-    const QString pak_path = item->data(kRolePakPath).toString();
-    const QString leaf = pak_leaf_name(pak_path.isEmpty() ? item->text() : pak_path);
-    if (is_mountable_archive_file_name(leaf)) {
-      QString err;
-      if (!mount_wad_from_selected_file(pak_path, &err) && !err.isEmpty()) {
-        if (preview_) {
-          preview_->show_message(leaf.isEmpty() ? "Archive" : leaf, err);
-        }
-      }
-      return;
-    }
-
-    update_preview();
-    if (preview_) {
-      preview_->start_playback_from_beginning();
-    }
+    activate_entry(item->text(), item->data(Qt::UserRole).toBool(), item->data(kRolePakPath).toString());
   });
 
   // Delete shortcuts: Del prompts, Shift+Del skips confirmation.
@@ -3369,6 +3406,78 @@ bool PakTab::export_path_to_temp(const QString& pak_path_in, bool is_dir, QStrin
     *out_fs_path = dest_file;
   }
   return true;
+}
+
+bool PakTab::open_entry_with_associated_app(const QString& pak_path_in, const QString& display_name) {
+  const QString pak_path = normalize_pak_path(pak_path_in);
+  const QString title = display_name.isEmpty() ? QString("File") : display_name;
+  if (pak_path.isEmpty()) {
+    if (preview_) {
+      preview_->show_message(title, "Invalid file path.");
+    }
+    return false;
+  }
+
+  QString exported_path;
+  QString err;
+  if (!export_path_to_temp(pak_path, false, &exported_path, &err)) {
+    const QString msg = err.isEmpty() ? "Unable to export file for external opening." : err;
+    if (preview_) {
+      preview_->show_message(title, msg);
+    } else {
+      QMessageBox::warning(this, "Open File", msg);
+    }
+    return false;
+  }
+
+  if (exported_path.isEmpty() || !QFileInfo::exists(exported_path)) {
+    const QString msg = "Unable to locate exported file.";
+    if (preview_) {
+      preview_->show_message(title, msg);
+    } else {
+      QMessageBox::warning(this, "Open File", msg);
+    }
+    return false;
+  }
+
+  if (!QDesktopServices::openUrl(QUrl::fromLocalFile(exported_path))) {
+    const QString msg = "No associated application is available for this file type.";
+    if (preview_) {
+      preview_->show_message(title, msg);
+    } else {
+      QMessageBox::warning(this, "Open File", msg);
+    }
+    return false;
+  }
+
+  return true;
+}
+
+void PakTab::activate_entry(const QString& item_name, bool is_dir, const QString& pak_path_in) {
+  QString path = normalize_pak_path(pak_path_in);
+  if (path.isEmpty() && !item_name.isEmpty()) {
+    path = normalize_pak_path(current_prefix() + item_name);
+  }
+
+  if (is_dir) {
+    enter_directory(item_name);
+    return;
+  }
+
+  const QString leaf = pak_leaf_name(path.isEmpty() ? item_name : path);
+  if (is_mountable_archive_file_name(leaf)) {
+    QString err;
+    if (!mount_wad_from_selected_file(path, &err) && !err.isEmpty()) {
+      if (preview_) {
+        preview_->show_message(leaf.isEmpty() ? "Archive" : leaf, err);
+      } else {
+        QMessageBox::warning(this, "Open Container", err);
+      }
+    }
+    return;
+  }
+
+  (void)open_entry_with_associated_app(path, leaf);
 }
 
 void PakTab::delete_selected(bool skip_confirmation) {
@@ -5814,6 +5923,7 @@ void PakTab::refresh_listing() {
   const QIcon dir_icon = style()->standardIcon(QStyle::SP_DirIcon);
   const QIcon file_icon = style()->standardIcon(QStyle::SP_FileIcon);
   const QIcon audio_icon = style()->standardIcon(QStyle::SP_MediaVolume);
+  const QSize details_icon_size = (details_view_ && details_view_->iconSize().isValid()) ? details_view_->iconSize() : QSize(24, 24);
   const QIcon bik_icon = make_badged_icon(file_icon, QSize(32, 32), "BIK", palette());
   const QIcon cfg_icon = make_badged_icon(file_icon, QSize(32, 32), "{}", palette());
   const QIcon wad_base = make_archive_icon(file_icon, QSize(32, 32), palette());
@@ -5852,7 +5962,10 @@ void PakTab::refresh_listing() {
       } else {
         const QString leaf = child.name;
         const QString ext = file_ext_lower(leaf);
-        if (ext == "bik") {
+        QIcon assoc_icon;
+        if (try_file_association_icon(leaf, details_icon_size, &assoc_icon)) {
+          item->setIcon(0, assoc_icon);
+        } else if (ext == "bik") {
           item->setIcon(0, bik_icon);
         } else if (is_supported_audio_file(leaf)) {
           item->setIcon(0, audio_icon);
@@ -5862,12 +5975,13 @@ void PakTab::refresh_listing() {
           item->setIcon(0, model_icon);
         } else if (is_sprite_file_name(leaf)) {
           item->setIcon(0, sprite_icon);
-          const QSize details_icon_size = details_view_->iconSize().isValid() ? details_view_->iconSize() : QSize(24, 24);
-          queue_thumbnail(full_path, leaf, child.source_path, static_cast<qint64>(child.size), details_icon_size);
         } else if (is_cfg_like_text_ext(ext)) {
           item->setIcon(0, cfg_icon);
         } else {
           item->setIcon(0, file_icon);
+        }
+        if (is_sprite_file_name(leaf)) {
+          queue_thumbnail(full_path, leaf, child.source_path, static_cast<qint64>(child.size), details_icon_size);
         }
       }
 
@@ -5946,7 +6060,10 @@ void PakTab::refresh_listing() {
       if (!child.is_dir) {
         const QString leaf = child.name;
         const QString ext = file_ext_lower(leaf);
-        if (ext == "bik") {
+        QIcon assoc_icon;
+        if (try_file_association_icon(leaf, icon_size, &assoc_icon)) {
+          icon = assoc_icon;
+        } else if (ext == "bik") {
           icon = bik_icon;
         } else if (is_supported_audio_file(leaf)) {
           icon = audio_icon;
@@ -5954,20 +6071,20 @@ void PakTab::refresh_listing() {
           icon = is_wad_archive_ext(ext) ? wad_icon : archive_icon;
         } else if (is_model_file_name(leaf)) {
           icon = model_icon;
-          if (want_thumbs) {
-            // Thumbnail will be set asynchronously.
-            queue_thumbnail(full_path, leaf, child.source_path, static_cast<qint64>(child.size), icon_size);
-          }
         } else if (is_sprite_file_name(leaf)) {
           icon = sprite_icon;
-          queue_thumbnail(full_path, leaf, child.source_path, static_cast<qint64>(child.size), icon_size);
-        } else if (is_bsp_file_name(leaf)) {
-          if (want_thumbs) {
-            // Thumbnail will be set asynchronously.
-            queue_thumbnail(full_path, leaf, child.source_path, static_cast<qint64>(child.size), icon_size);
-          }
         } else if (is_cfg_like_text_ext(ext)) {
           icon = cfg_icon;
+        }
+
+        if (is_model_file_name(leaf) && want_thumbs) {
+          // Thumbnail will be set asynchronously.
+          queue_thumbnail(full_path, leaf, child.source_path, static_cast<qint64>(child.size), icon_size);
+        } else if (is_sprite_file_name(leaf)) {
+          queue_thumbnail(full_path, leaf, child.source_path, static_cast<qint64>(child.size), icon_size);
+        } else if (is_bsp_file_name(leaf) && want_thumbs) {
+          // Thumbnail will be set asynchronously.
+          queue_thumbnail(full_path, leaf, child.source_path, static_cast<qint64>(child.size), icon_size);
         } else if (want_thumbs && (is_image_file_name(leaf) || ext == "cin" || ext == "roq")) {
           // Thumbnail will be set asynchronously.
           queue_thumbnail(full_path, leaf, child.source_path, static_cast<qint64>(child.size), icon_size);

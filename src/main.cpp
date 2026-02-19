@@ -42,9 +42,13 @@
 #include "pakfu_config.h"
 #include "update/update_service.h"
 #include "ui/game_set_dialog.h"
+#include "ui/audio_viewer_window.h"
+#include "ui/image_viewer_window.h"
 #include "ui/main_window.h"
+#include "ui/model_viewer_window.h"
 #include "ui/splash_screen.h"
 #include "ui/theme_manager.h"
+#include "ui/video_viewer_window.h"
 
 namespace {
 void set_app_metadata(QCoreApplication& app) {
@@ -150,7 +154,13 @@ bool is_archive_path(const QString& path) {
   return kExts.contains(ext);
 }
 
-QStringList find_initial_archives(int argc, char** argv) {
+bool is_openable_path(const QString& path) {
+  return is_archive_path(path) || ImageViewerWindow::is_supported_image_path(path) ||
+         VideoViewerWindow::is_supported_video_path(path) || AudioViewerWindow::is_supported_audio_path(path) ||
+         ModelViewerWindow::is_supported_model_path(path);
+}
+
+QStringList find_initial_open_paths(int argc, char** argv) {
   QStringList paths;
   for (int i = 1; i < argc; ++i) {
     const QString arg = QString::fromLocal8Bit(argv[i]);
@@ -162,7 +172,7 @@ QStringList find_initial_archives(int argc, char** argv) {
       continue;
     }
     const QString abs = info.absoluteFilePath();
-    if (!is_archive_path(abs)) {
+    if (!is_openable_path(abs)) {
       continue;
     }
     paths.push_back(abs);
@@ -441,13 +451,13 @@ int main(int argc, char** argv) {
   set_app_metadata(app);
   prefer_qt_ffmpeg_backend_if_available();
   const QString server_name = single_instance_server_name();
-  const QStringList initial_archives = find_initial_archives(argc, argv);
+  const QStringList initial_paths = find_initial_open_paths(argc, argv);
 
   // Allow multiple instances for testing/debugging.
   const bool allow_multi_instance = qEnvironmentVariableIsSet("PAKFU_ALLOW_MULTI_INSTANCE");
 
   if (!allow_multi_instance) {
-    if (send_ipc_payload(server_name, build_ipc_payload(initial_archives, true))) {
+    if (send_ipc_payload(server_name, build_ipc_payload(initial_paths, true))) {
       return 0;
     }
   }
@@ -504,14 +514,14 @@ int main(int argc, char** argv) {
             const QJsonArray arr = obj.value("paths").toArray();
             for (const QJsonValue& v : arr) {
               const QString p = QFileInfo(v.toString()).absoluteFilePath();
-              if (!p.isEmpty() && is_archive_path(p)) {
+              if (!p.isEmpty() && is_openable_path(p)) {
                 paths.push_back(p);
               }
             }
           } else if (!payload.isEmpty()) {
             // Legacy/fallback: treat payload as a single path.
             const QString p = QFileInfo(QString::fromUtf8(payload)).absoluteFilePath();
-            if (!p.isEmpty() && is_archive_path(p)) {
+            if (!p.isEmpty() && is_openable_path(p)) {
               paths.push_back(p);
             }
           }
@@ -567,8 +577,8 @@ int main(int argc, char** argv) {
 
   MainWindow window(*selected, QString(), false);
   main_window = &window;
-  if (!initial_archives.isEmpty()) {
-    window.open_archives(initial_archives);
+  if (!initial_paths.isEmpty()) {
+    window.open_archives(initial_paths);
   }
 
   QPointer<SplashScreen> splash = show_splash(app);

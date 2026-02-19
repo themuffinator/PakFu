@@ -1,7 +1,7 @@
 # PakFu 🥋📦🔥
 
 Bow to your Sensei! 🙇‍♂️🙇‍♀️🧎‍➡️🧎‍➡️🧎‍➡️  
-PakFu is a modern, cross-platform PAK/WAD file manager forged in the dojo of **C++20** ⚔️ and the ancient arts of **Qt6** 🐉 (Widgets or QML). It exists to bring balance to chaotic archives: browse 🧭, preview 👀, extract 🧤, rebuild 🛠️, and automate 🧙‍♂️ via CLI.
+PakFu is a modern, cross-platform game file viewer and PAK/WAD manager forged in the dojo of **C++20** ⚔️ and the ancient arts of **Qt6** 🐉 (Widgets or QML). It exists to bring balance to chaotic archives and assets: browse 🧭, preview 👀, extract 🧤, rebuild 🛠️, and automate 🧙‍♂️ via CLI.
 
 This project is still training under the waterfall 💦🥋 (early development). Expect rapid evolution, occasional shin bruises, and increasingly disciplined PAKs.
 
@@ -107,6 +107,16 @@ See `docs/DEPENDENCIES.md` for the current baseline and planned format loaders �
 ## UI Icon Map 🖼️
 See `docs/UI_BUTTON_ICONS.md` for the button/action icon inventory and SVG asset mapping.
 
+## File Association Icons 🧷
+PakFu now defines a full per-extension file-association icon set for archive, image, video, audio, and model types:
+archives (`.pak`, `.sin`, `.pk3`, `.pk4`, `.pkz`, `.zip`, `.resources`, `.wad`, `.wad2`, `.wad3`), images (`.pcx`, `.wal`, `.swl`, `.mip`, `.lmp`, `.dds`, `.png`, `.jpg`, `.jpeg`, `.tga`, `.bmp`, `.gif`, `.tif`, `.tiff`), videos (`.cin`, `.roq`, `.ogv`, `.bik`, `.mp4`, `.mkv`, `.avi`, `.webm`), audio (`.wav`, `.ogg`, `.mp3`), and models (`.mdl`, `.md2`, `.md3`, `.mdc`, `.md4`, `.mdr`, `.skb`, `.skd`, `.mdm`, `.glm`, `.iqm`, `.md5mesh`, `.lwo`, `.obj`).
+
+- On Windows: icons are generated with extension text + unique colors and registered per-extension in the user registry (`HKCU`).
+- On macOS/Linux: file associations remain installer-managed, but the same extension set is documented for packaging parity.
+- Manage per-format association state from **File → File Associations...** (tabbed **Archives** / **Images** / **Videos** / **Audio** / **Models**).
+
+See `docs/FILE_ASSOCIATION_ICONS.md` for the extension/color map and implementation notes.
+
 ## Build Ritual (Meson + Ninja) 🥷🛠️
 
 ### Windows (recommended) 🪟🥋
@@ -128,8 +138,15 @@ meson compile -C builddir
 ## Run (GUI or CLI) 🏃‍♂️💨
 
 ### GUI 🪟
-- Use **File → Open Archive…** or **File → Open Folder…** (opens in a tab).
+- PakFu now has five GUI modes: **Archive View** (main window), **Image Viewer**, **Video Viewer**, **Audio Viewer**, and **Model Viewer** (standalone, read-only viewer windows).
+- Use **File → Open File…** for direct file viewing. Supported images/videos/audio/models open in their standalone viewer windows; other file types still open in **Archive View** Insights.
+- Opening a supported image/video/audio/model file directly with PakFu from your OS goes straight to its dedicated viewer mode.
+- In **Image Viewer**, **Video Viewer**, **Audio Viewer**, and **Model Viewer**, use mouse wheel or Left/Right arrows to cycle sibling files in the same folder.
+- Fullscreen toggles for viewer windows: Middle Mouse, `F11`, or platform fullscreen shortcuts.
+- Opening an archive from disk now first offers: **Open directly**, **Install a copy then open**, or **Move to installation then open**.
 - Drag archives or folders onto the window to open them.
+- Drag regular files onto Archive View to open them in the appropriate viewer mode.
+- Double-click regular files in Archive View to export and open them with the OS-associated app.
 - Double-click nested container files (`wad`, `wad2`, `wad3`, `pak`, `sin`, `pk3`, `pk4`, `pkz`, `zip`, `resources`) to open them in-place.
 - Nested container mounting supports multiple layers (you can keep drilling into archives inside archives).
 - Drag files/folders into an open archive tab to add them.
@@ -144,9 +161,9 @@ PakFu uses **Game Sets** to store per-game defaults:
 - Palette selection (for game-specific previews)
 - Launch settings (executable + args)
 
-If **Game Sets** are already configured, PakFu opens directly into the main window.
+If **Game Sets** are already configured, PakFu opens directly into **Archive View**.
 If none are configured yet, the **Game Sets** window appears on startup.
-In the main window, use the **Game** drop-down to switch sets instantly, or choose **Configure Game Sets…** to edit/auto-detect.
+In **Archive View**, use the **Game** drop-down to switch sets instantly, or choose **Configure Game Sets…** to edit/auto-detect.
 When opening an archive, PakFu will try to auto-select the most likely Game Set based on the archive’s path and nearby install markers.
 Auto-detect checks installs in priority order: **Steam → GOG.com → EOS**.
 

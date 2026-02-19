@@ -204,6 +204,8 @@ private:
   QString ensure_export_root();
   bool export_path_to_temp(const QString& pak_path, bool is_dir, QString* out_fs_path, QString* error);
   bool export_dir_prefix_to_fs(const QString& dir_prefix, const QString& dest_dir, QString* error);
+  bool open_entry_with_associated_app(const QString& pak_path, const QString& display_name);
+  void activate_entry(const QString& item_name, bool is_dir, const QString& pak_path);
 
   void enter_directory(const QString& name);
   void activate_crumb(int index);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QPointer>
 #include <QStringList>
 
 #include "game/game_set.h"
@@ -21,6 +22,10 @@ class UpdateService;
 class PakTab;
 class QUndoStack;
 class PreferencesTab;
+class ImageViewerWindow;
+class VideoViewerWindow;
+class AudioViewerWindow;
+class ModelViewerWindow;
 
 class MainWindow : public QMainWindow {
 public:
@@ -49,9 +54,22 @@ private:
   void schedule_update_check();
   void check_for_updates();
   void create_new_pak();
+  void open_file_dialog();
   void open_pak_dialog();
   void open_folder_dialog();
+  void open_file_associations_dialog();
   void open_pak(const QString& path);
+  bool open_image_viewer(const QString& file_path, bool add_recent);
+  bool open_video_viewer(const QString& file_path, bool add_recent);
+  bool open_audio_viewer(const QString& file_path, bool add_recent);
+  bool open_model_viewer(const QString& file_path, bool add_recent);
+  bool open_file_in_viewer(const QString& file_path, bool allow_auto_select, bool add_recent);
+  QString resolve_archive_open_path(const QString& path, bool* cancelled);
+  bool run_archive_open_action(const QString& source_path,
+                               const QString& install_uid,
+                               bool move_file,
+                               QString* resulting_path,
+                               QString* error);
   PakTab* open_pak_internal(const QString& path, bool allow_auto_select, bool add_recent);
   void save_current();
   void save_current_as();
@@ -90,8 +108,10 @@ private:
   QWidget* welcome_tab_ = nullptr;
   PreferencesTab* preferences_tab_ = nullptr;
   QAction* new_action_ = nullptr;
-  QAction* open_action_ = nullptr;
+  QAction* open_file_action_ = nullptr;
+  QAction* open_archive_action_ = nullptr;
   QAction* open_folder_action_ = nullptr;
+  QAction* file_associations_action_ = nullptr;
   QAction* save_action_ = nullptr;
   QAction* save_as_action_ = nullptr;
   QAction* undo_action_ = nullptr;
@@ -107,4 +127,8 @@ private:
   bool schedule_updates_ = true;
   int untitled_counter_ = 1;
   DropOverlay* drop_overlay_ = nullptr;
+  QPointer<ImageViewerWindow> image_viewer_window_;
+  QPointer<VideoViewerWindow> video_viewer_window_;
+  QPointer<AudioViewerWindow> audio_viewer_window_;
+  QPointer<ModelViewerWindow> model_viewer_window_;
 };

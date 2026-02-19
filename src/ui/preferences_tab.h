@@ -8,7 +8,6 @@
 class QComboBox;
 class QCheckBox;
 class QLabel;
-class QPushButton;
 class QSlider;
 
 class PreferencesTab : public QWidget {
@@ -29,15 +28,10 @@ private:
   void build_ui();
   void load_settings();
   void apply_theme_from_combo();
-  void refresh_association_status();
-  void apply_association();
 
   QComboBox* theme_combo_ = nullptr;
   QComboBox* renderer_combo_ = nullptr;
-  QLabel* assoc_status_ = nullptr;
   QLabel* renderer_status_ = nullptr;
-  QPushButton* assoc_apply_ = nullptr;
-  QPushButton* assoc_details_ = nullptr;
   QCheckBox* model_texture_smoothing_ = nullptr;
   QSlider* preview_fov_slider_ = nullptr;
   QLabel* preview_fov_value_label_ = nullptr;

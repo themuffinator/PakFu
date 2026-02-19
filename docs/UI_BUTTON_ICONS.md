@@ -6,6 +6,7 @@ This table maps the current button/action controls to their visual representatio
 | --- | --- | --- | --- |
 | `Tab Close` | Archive tabs | Red tile with white close `X` | `assets/icons/ui/tab-close.svg` |
 | `Create PAK` / `New PAK` | Welcome, File menu | Package box with plus | `assets/icons/ui/new-pak.svg` |
+| `Open File...` | Welcome menu, File menu | Archive box with download arrow | `assets/icons/ui/open-archive.svg` |
 | `Open Archive...` | Welcome menu, File menu, updater release-page open | Archive box with download arrow | `assets/icons/ui/open-archive.svg` |
 | `Open Folder...` | Welcome menu, File menu | Folder with down arrow | `assets/icons/ui/open-folder.svg` |
 | `Save` | File menu, unsaved prompt | Floppy disk | `assets/icons/ui/save.svg` |
@@ -46,8 +47,11 @@ This table maps the current button/action controls to their visual representatio
 | `Configure...` / `Configure Installations…` / editor OK | Game Set UI | Slider controls | `assets/icons/ui/configure.svg` |
 | `Auto-detect` | Game Set dialog | Radar sweep arcs | `assets/icons/ui/auto-detect.svg` |
 | `Browse...` | Game Set editor rows | Folder + magnifier | `assets/icons/ui/browse.svg` |
-| `Associate .pak with PakFu` | Preferences | Linked chain | `assets/icons/ui/associate.svg` |
-| `Details...` | Preferences | Document with detail lines | `assets/icons/ui/details.svg` |
+| `File Associations...` / dialog `Apply` | File menu, File Associations dialog | Linked chain | `assets/icons/ui/associate.svg` |
+| `File Associations` dialog `Refresh` | File Associations dialog | Refresh arc + down arrow | `assets/icons/ui/check-updates.svg` |
+| `File Associations` dialog `Select All` | File Associations dialog | File sheet with plus | `assets/icons/ui/add-files.svg` |
+| `File Associations` dialog `Select None` | File Associations dialog | Trash can | `assets/icons/ui/delete.svg` |
+| `File Associations` dialog `Open Default Apps` | File Associations dialog | Slider controls | `assets/icons/ui/configure.svg` |
 
 Notes:
 - `Color...` buttons in preview panes remain dynamic swatch icons generated at runtime to reflect the selected color.
