@@ -26,11 +26,35 @@ miniz_lib = static_library(
 )
 
 qt_headers = qt6_dep.get_variable(configtool: 'QT_INSTALL_HEADERS', default_value: '')
+qt_libs = qt6_dep.get_variable(configtool: 'QT_INSTALL_LIBS', default_value: '')
 qt_version = qt6_dep.get_variable(configtool: 'QT_VERSION', default_value: '')
+
+fs = import('fs')
 qt_rhi_includes = []
+qt_rhi_candidates = []
 if qt_headers != '' and qt_version != ''
-  qt_rhi_includes += include_directories(join_paths(qt_headers, 'QtGui', qt_version, 'QtGui'))
+  qt_rhi_candidates += join_paths(qt_headers, 'QtGui', qt_version, 'QtGui')
+  qt_rhi_candidates += join_paths(qt_headers, 'QtGui.framework', 'Headers', qt_version, 'QtGui')
 endif
+if qt_headers != ''
+  qt_rhi_candidates += join_paths(qt_headers, 'QtGui')
+  qt_rhi_candidates += join_paths(qt_headers, 'QtGui.framework', 'Headers')
+endif
+if qt_libs != '' and qt_version != ''
+  qt_rhi_candidates += join_paths(qt_libs, 'QtGui.framework', 'Headers', qt_version, 'QtGui')
+  qt_rhi_candidates += join_paths(qt_libs, 'QtGui.framework', 'Versions', 'A', 'Headers', qt_version, 'QtGui')
+endif
+if qt_libs != ''
+  qt_rhi_candidates += join_paths(qt_libs, 'QtGui.framework', 'Headers')
+  qt_rhi_candidates += join_paths(qt_libs, 'QtGui.framework', 'Versions', 'A', 'Headers')
+endif
+
+foreach path : qt_rhi_candidates
+  if fs.exists(join_paths(path, 'rhi', 'qshader.h'))
+    qt_rhi_includes += include_directories(path)
+    break
+  endif
+endforeach
 
 pakfu_includes = [include_directories('.')] + qt_rhi_includes
 
