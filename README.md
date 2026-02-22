@@ -91,7 +91,7 @@ PakFu can also check for updates at runtime (GUI) and via CLI (`--check-updates`
   - Also supported: `jpeg`, `bmp`, `gif`, `tif`, `tiff`, `swl`, `mip`, `lmp`, `dds`
 - Audio:
   - Core: `wav`, `ogg`
-  - Also supported: `mp3`
+  - Also supported: `mp3`, `idwav` (Doom 3 BFG; converted to WAV for playback when payload codec is supported)
 - Video:
   - Core: `cin`, `roq`
   - Also supported: `bik`, `ogv`, `mp4`, `mkv`, `avi`, `webm`

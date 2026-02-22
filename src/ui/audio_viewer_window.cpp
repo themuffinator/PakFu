@@ -62,7 +62,7 @@ AudioViewerWindow::AudioViewerWindow(QWidget* parent) : QMainWindow(parent) {
 }
 
 bool AudioViewerWindow::is_supported_audio_ext(const QString& ext) {
-	static const QSet<QString> kAudioExts = {"wav", "ogg", "mp3"};
+	static const QSet<QString> kAudioExts = {"wav", "ogg", "mp3", "idwav"};
 	return kAudioExts.contains(ext.toLower());
 }
 
@@ -407,4 +407,3 @@ bool AudioViewerWindow::eventFilter(QObject* watched, QEvent* event) {
 void AudioViewerWindow::closeEvent(QCloseEvent* event) {
 	QMainWindow::closeEvent(event);
 }
-

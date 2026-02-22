@@ -39,6 +39,7 @@ PakFu uses a per-extension icon set for managed archive, image, video, audio, an
 | Video | `.avi` | `#6D4C41` |
 | Video | `.webm` | `#00ACC1` |
 | Audio | `.wav` | `#43A047` |
+| Audio | `.idwav` | `#66BB6A` |
 | Audio | `.ogg` | `#26A69A` |
 | Audio | `.mp3` | `#F9A825` |
 | Model | `.mdl` | `#8D6E63` |

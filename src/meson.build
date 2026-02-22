@@ -69,6 +69,7 @@ sources = files(
   'formats/dds_image.cpp',
   'formats/bsp_preview.cpp',
   'formats/idtech_asset_loader.cpp',
+  'formats/idwav_audio.cpp',
   'formats/sprite_loader.cpp',
   'formats/image_loader.cpp',
   'formats/lmp_image.cpp',

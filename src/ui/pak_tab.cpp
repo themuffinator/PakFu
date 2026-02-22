@@ -1171,7 +1171,7 @@ Return true when a file name uses a supported audio extension.
 */
 bool is_supported_audio_file(const QString& name) {
 	const QString ext = file_ext_lower(name);
-	return (ext == "wav" || ext == "ogg" || ext == "mp3" || ext == "bik");
+	return (ext == "wav" || ext == "ogg" || ext == "mp3" || ext == "idwav" || ext == "bik");
 }
 
 bool is_video_file_name(const QString& name) {

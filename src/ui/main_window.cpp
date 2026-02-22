@@ -1305,7 +1305,7 @@ void MainWindow::open_file_dialog() {
   dialog.setWindowTitle("Open File");
   dialog.setFileMode(QFileDialog::ExistingFile);
   dialog.setNameFilters({
-    "Supported files (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3 *.pcx *.wal *.swl *.mip *.lmp *.dds *.png *.bmp *.gif *.tga *.jpg *.jpeg *.tif *.tiff *.wav *.ogg *.mp3 *.bik *.cin *.roq *.ogv *.mp4 *.mkv *.avi *.webm *.bsp *.mdl *.md2 *.md3 *.mdc *.md4 *.mdr *.skb *.skd *.mdm *.glm *.iqm *.md5mesh *.lwo *.obj *.spr *.sp2 *.cfg *.txt *.json *.shader *.ttf *.otf)",
+    "Supported files (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3 *.pcx *.wal *.swl *.mip *.lmp *.dds *.png *.bmp *.gif *.tga *.jpg *.jpeg *.tif *.tiff *.wav *.ogg *.mp3 *.idwav *.bik *.cin *.roq *.ogv *.mp4 *.mkv *.avi *.webm *.bsp *.mdl *.md2 *.md3 *.mdc *.md4 *.mdr *.skb *.skd *.mdm *.glm *.iqm *.md5mesh *.lwo *.obj *.spr *.sp2 *.cfg *.txt *.json *.shader *.ttf *.otf)",
     "Archives (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3)",
     "All files (*.*)",
   });

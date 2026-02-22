@@ -84,6 +84,7 @@ const QVector<AssociationSpec>& association_specs() {
 	  {"avi", "AVI Video", QColor("#6D4C41"), AssociationCategory::Video},
 	  {"webm", "WEBM Video", QColor("#00ACC1"), AssociationCategory::Video},
 	  {"wav", "WAV Audio", QColor("#43A047"), AssociationCategory::Audio},
+	  {"idwav", "IDWAV Audio", QColor("#66BB6A"), AssociationCategory::Audio},
 	  {"ogg", "OGG Audio", QColor("#26A69A"), AssociationCategory::Audio},
 	  {"mp3", "MP3 Audio", QColor("#F9A825"), AssociationCategory::Audio},
 	  {"mdl", "MDL Model", QColor("#8D6E63"), AssociationCategory::Model},

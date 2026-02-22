@@ -5,6 +5,8 @@
 #include <QAudioOutput>
 #include <QColorDialog>
 #include <QComboBox>
+#include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QDateTime>
 #include <QTimeZone>
@@ -32,12 +34,14 @@
 #include <QSlider>
 #include <QStackedWidget>
 #include <QStringList>
+#include <QTemporaryFile>
 #include <QToolButton>
 #include <QTimer>
 #include <QTextOption>
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include "formats/idwav_audio.h"
 #include "formats/image_loader.h"
 #include "ui/bsp_preview_vulkan_widget.h"
 #include "ui/bsp_preview_widget.h"
@@ -2426,6 +2430,10 @@ void PreviewPane::update_audio_overview() {
 		return;
 	}
 
+	if (!audio_source_format_hint_.isEmpty()) {
+		set_overview_value("Source format", audio_source_format_hint_);
+	}
+
 	const qint64 duration = audio_player_->duration();
 	if (duration > 0) {
 		set_overview_value("Duration", format_duration(duration));
@@ -2772,7 +2780,11 @@ void PreviewPane::show_audio_from_file(const QString& title,
 	populate_basic_overview();
 	set_overview_value("Type", "Audio");
 
-	set_audio_source(file_path);
+	QString load_error;
+	if (!set_audio_source(file_path, &load_error)) {
+		show_message(title, load_error.isEmpty() ? "Unable to load audio." : load_error);
+		return;
+	}
 	update_audio_overview();
 	show_content_block("Multimedia Control", audio_page_);
 }
@@ -3099,17 +3111,87 @@ PreviewPane::set_audio_source
 Load a new audio source into the player and reset UI controls.
 =============
 */
-void PreviewPane::set_audio_source(const QString& file_path) {
-	if (!audio_player_) {
-		return;
+bool PreviewPane::set_audio_source(const QString& file_path, QString* error) {
+	if (error) {
+		error->clear();
 	}
-	audio_file_path_.clear();
+	if (!audio_player_) {
+		if (error) {
+			*error = "Audio playback is unavailable.";
+		}
+		return false;
+	}
+
 	audio_player_->stop();
-	audio_player_->setSource(QUrl::fromLocalFile(file_path));
+	audio_player_->setSource(QUrl());
+	audio_file_path_.clear();
+	audio_source_format_hint_.clear();
+	audio_temp_file_.reset();
+
+	QString playback_path = file_path;
+	if (is_idwav_file_name(file_path)) {
+		QFile in(file_path);
+		if (!in.open(QIODevice::ReadOnly)) {
+			if (error) {
+				*error = "Unable to open IDWAV file.";
+			}
+			return false;
+		}
+
+		const QByteArray idwav_bytes = in.readAll();
+		const IdWavDecodeResult decoded = decode_idwav_to_wav_bytes(idwav_bytes);
+		if (!decoded.ok()) {
+			if (error) {
+				*error = decoded.error.isEmpty() ? "Unable to decode IDWAV audio." : decoded.error;
+			}
+			return false;
+		}
+
+		auto temp_file = std::make_unique<QTemporaryFile>(QDir(QDir::tempPath()).filePath("pakfu-idwav-XXXXXX.wav"));
+		temp_file->setAutoRemove(true);
+		if (!temp_file->open()) {
+			if (error) {
+				*error = "Unable to create temporary WAV file for IDWAV playback.";
+			}
+			return false;
+		}
+		if (temp_file->write(decoded.wav_bytes) != decoded.wav_bytes.size()) {
+			if (error) {
+				*error = "Unable to write decoded IDWAV payload.";
+			}
+			return false;
+		}
+		if (!temp_file->flush()) {
+			if (error) {
+				*error = "Unable to finalize decoded IDWAV payload.";
+			}
+			return false;
+		}
+		temp_file->close();
+
+		playback_path = temp_file->fileName();
+		audio_temp_file_ = std::move(temp_file);
+
+		QStringList source_parts;
+		source_parts << "idwav";
+		if (!decoded.codec_name.isEmpty()) {
+			source_parts << decoded.codec_name;
+		}
+		if (decoded.channels > 0 && decoded.sample_rate > 0) {
+			source_parts << QString("%1 ch @ %2 Hz").arg(decoded.channels).arg(decoded.sample_rate);
+		}
+		if (decoded.bits_per_sample > 0) {
+			source_parts << QString("%1-bit").arg(decoded.bits_per_sample);
+		}
+		audio_source_format_hint_ = source_parts.join(" | ");
+	}
+
+	audio_player_->setSource(QUrl::fromLocalFile(playback_path));
 	audio_file_path_ = file_path;
 	sync_audio_controls();
 	update_audio_tooltip();
 	update_audio_status_label();
+	return true;
 }
 
 /*
@@ -3148,6 +3230,9 @@ void PreviewPane::update_audio_tooltip() {
 		if (!info.suffix().isEmpty()) {
 			lines << QString("Format: %1").arg(info.suffix().toLower());
 		}
+	}
+	if (!audio_source_format_hint_.isEmpty()) {
+		lines << QString("Source format: %1").arg(audio_source_format_hint_);
 	}
 	if (audio_player_) {
 		const qint64 duration = audio_player_->duration();

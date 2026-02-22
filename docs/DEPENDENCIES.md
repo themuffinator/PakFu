@@ -34,7 +34,7 @@
 ## Implemented
 - Multimedia playback:
   - Qt 6 Multimedia + MultimediaWidgets (codec support depends on backend; prefers FFmpeg when available):
-    - Audio: WAV, MP3, Ogg Vorbis, BIK (backend-dependent)
+    - Audio: WAV, MP3, Ogg Vorbis, BIK, IDWAV (IDWAV is converted to WAV for playback when the embedded codec is supported)
     - Video: formats supported by the installed backend (e.g. OGV/Theora/Bink when available on the installed backend)
   - Built-in cinematic playback:
     - CIN, ROQ

@@ -28,6 +28,7 @@ class QSlider;
 class QScrollBar;
 class QToolButton;
 class QTimer;
+class QTemporaryFile;
 class CinematicPlayerWidget;
 class VideoPlayerWidget;
 class QSyntaxHighlighter;
@@ -143,7 +144,7 @@ private:
 	void exit_3d_fullscreen();
 	[[nodiscard]] QWidget* active_3d_widget() const;
 	[[nodiscard]] QWidget* active_3d_page() const;
-	void set_audio_source(const QString& file_path);
+	bool set_audio_source(const QString& file_path, QString* error = nullptr);
 	void sync_audio_controls();
 	void update_audio_tooltip();
 	void update_audio_status_label();
@@ -256,6 +257,8 @@ private:
 	QToolButton* audio_info_button_ = nullptr;
 	QLabel* audio_status_label_ = nullptr;
 	QString audio_file_path_;
+	QString audio_source_format_hint_;
+	std::unique_ptr<QTemporaryFile> audio_temp_file_;
 	bool audio_user_scrubbing_ = false;
 
 	QWidget* cinematic_page_ = nullptr;
