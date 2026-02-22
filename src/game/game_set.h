@@ -35,6 +35,7 @@ enum class GameId {
   Warfork,
   WorldOfPadman,
   HeavyMetalFakk2,
+  AmericanMcGeesAlice,
   Quake4,
   Doom3,
   Doom3BFGEdition,

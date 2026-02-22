@@ -1202,6 +1202,8 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
       score += 18;
     } else if (ext == "jpg" || ext == "jpeg") {
       score += 16;
+    } else if (ext == "ftx") {
+      score += 21;
     } else if (ext == "pcx") {
       score += 14;
     } else if (ext == "wal") {
@@ -1237,7 +1239,8 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
                                                         << "*.swl"
                                                         << "*.dds"
                                                         << "*.lmp"
-                                                        << "*.mip",
+                                                        << "*.mip"
+                                                        << "*.ftx",
                                           QDir::Files,
                                           QDir::Name);
     QString best_name;
@@ -1337,7 +1340,7 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
   apply_embedded_surface_textures();
 
   if (!model_dir.isEmpty()) {
-    const QStringList exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "swl", "dds", "lmp", "mip"};
+    const QStringList exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "swl", "dds", "lmp", "mip", "ftx"};
 
     const auto try_find_in_dir = [&](const QString& base_or_file) -> QString {
       if (base_or_file.isEmpty()) {
@@ -1368,7 +1371,8 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
                                                           << "*.swl"
                                                           << "*.dds"
                                                           << "*.lmp"
-                                                          << "*.mip",
+                                                          << "*.mip"
+                                                          << "*.ftx",
                                             QDir::Files,
                                             QDir::Name);
       for (const QString& f : files) {

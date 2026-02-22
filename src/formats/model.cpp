@@ -2162,6 +2162,343 @@ std::optional<LoadedModel> load_md3(const QString& file_path, QString* error) {
   return out;
 }
 
+std::optional<LoadedModel> load_tan(const QString& file_path, QString* error) {
+  if (error) {
+    error->clear();
+  }
+
+  QFile f(file_path);
+  if (!f.open(QIODevice::ReadOnly)) {
+    if (error) {
+      *error = "Unable to open TAN.";
+    }
+    return std::nullopt;
+  }
+
+  const QByteArray bytes = f.readAll();
+  Cursor cur;
+  cur.bytes = &bytes;
+
+  constexpr quint32 kIdent = static_cast<quint32>('T') | (static_cast<quint32>('A') << 8) |
+                              (static_cast<quint32>('N') << 16) | (static_cast<quint32>(' ') << 24);
+  constexpr qint32 kVersion = 2;
+  constexpr int kSurfaceHeaderSize = 104;
+  constexpr int kMaxFrames = 10000;
+  constexpr int kMaxSurfaces = 1024;
+  constexpr int kMaxVerts = 1000000;
+  constexpr int kMaxTriangles = 2000000;
+  constexpr int kHeaderTagOffsetCount = 16;
+
+  quint32 ident = 0;
+  qint32 version = 0;
+  if (!cur.read_u32(&ident) || !cur.read_i32(&version)) {
+    if (error) {
+      *error = "TAN header is incomplete.";
+    }
+    return std::nullopt;
+  }
+  if (ident != kIdent || version != kVersion) {
+    if (error) {
+      *error = "Not a supported TAN (expected TAN version 2).";
+    }
+    return std::nullopt;
+  }
+
+  if (!cur.skip(64)) {  // name
+    if (error) {
+      *error = "TAN header is incomplete.";
+    }
+    return std::nullopt;
+  }
+
+  qint32 num_frames = 0;
+  qint32 num_tags = 0;
+  qint32 num_surfaces = 0;
+  float total_time = 0.0f;
+  float total_delta[3]{};
+  qint32 ofs_frames = 0;
+  qint32 ofs_surfaces = 0;
+  qint32 tag_offsets[kHeaderTagOffsetCount]{};
+  qint32 ofs_end = 0;
+
+  if (!cur.read_i32(&num_frames) ||
+      !cur.read_i32(&num_tags) ||
+      !cur.read_i32(&num_surfaces) ||
+      !cur.read_f32(&total_time) ||
+      !cur.read_f32(&total_delta[0]) ||
+      !cur.read_f32(&total_delta[1]) ||
+      !cur.read_f32(&total_delta[2]) ||
+      !cur.read_i32(&ofs_frames) ||
+      !cur.read_i32(&ofs_surfaces)) {
+    if (error) {
+      *error = "TAN header is incomplete.";
+    }
+    return std::nullopt;
+  }
+  for (int i = 0; i < kHeaderTagOffsetCount; ++i) {
+    if (!cur.read_i32(&tag_offsets[i])) {
+      if (error) {
+        *error = "TAN header is incomplete.";
+      }
+      return std::nullopt;
+    }
+  }
+  if (!cur.read_i32(&ofs_end)) {
+    if (error) {
+      *error = "TAN header is incomplete.";
+    }
+    return std::nullopt;
+  }
+
+  Q_UNUSED(total_time);
+  Q_UNUSED(total_delta);
+  Q_UNUSED(num_tags);
+  Q_UNUSED(tag_offsets);
+
+  const int file_size = bytes.size();
+  if (num_frames <= 0 || num_frames > kMaxFrames ||
+      num_surfaces < 0 || num_surfaces > kMaxSurfaces) {
+    if (error) {
+      *error = "TAN header values are invalid.";
+    }
+    return std::nullopt;
+  }
+  if (ofs_frames < 0 || ofs_frames + 48 > file_size ||
+      ofs_surfaces < 0 || ofs_surfaces > file_size ||
+      ofs_end <= 0 || ofs_end > file_size) {
+    if (error) {
+      *error = "TAN header offsets are invalid.";
+    }
+    return std::nullopt;
+  }
+
+  float frame_scale[3]{};
+  float frame_offset[3]{};
+  if (!cur.seek(ofs_frames + 24) ||
+      !cur.read_f32(&frame_scale[0]) || !cur.read_f32(&frame_scale[1]) || !cur.read_f32(&frame_scale[2]) ||
+      !cur.read_f32(&frame_offset[0]) || !cur.read_f32(&frame_offset[1]) || !cur.read_f32(&frame_offset[2])) {
+    if (error) {
+      *error = "Unable to parse TAN frame data.";
+    }
+    return std::nullopt;
+  }
+
+  QVector<ModelVertex> vertices;
+  QVector<std::uint32_t> indices;
+  QVector<ModelSurface> surfaces;
+  surfaces.reserve(num_surfaces);
+
+  int surf_off = ofs_surfaces;
+  for (int s = 0; s < num_surfaces; ++s) {
+    if (surf_off < 0 || surf_off + kSurfaceHeaderSize > file_size) {
+      if (error) {
+        *error = "TAN surface header is invalid.";
+      }
+      return std::nullopt;
+    }
+    if (!cur.seek(surf_off)) {
+      if (error) {
+        *error = "TAN surface header is invalid.";
+      }
+      return std::nullopt;
+    }
+
+    quint32 surf_ident = 0;
+    QString surf_name;
+    if (!cur.read_u32(&surf_ident) || surf_ident != kIdent || !cur.read_fixed_string(64, &surf_name)) {
+      if (error) {
+        *error = "TAN surface header is invalid.";
+      }
+      return std::nullopt;
+    }
+
+    qint32 surf_num_frames = 0;
+    qint32 surf_num_verts = 0;
+    qint32 surf_min_lod = 0;
+    qint32 surf_num_tris = 0;
+    qint32 ofs_tris = 0;
+    qint32 ofs_collapse = 0;
+    qint32 ofs_st = 0;
+    qint32 ofs_xyznormal = 0;
+    qint32 ofs_surf_end = 0;
+    if (!cur.read_i32(&surf_num_frames) || !cur.read_i32(&surf_num_verts) || !cur.read_i32(&surf_min_lod) ||
+        !cur.read_i32(&surf_num_tris) || !cur.read_i32(&ofs_tris) || !cur.read_i32(&ofs_collapse) ||
+        !cur.read_i32(&ofs_st) || !cur.read_i32(&ofs_xyznormal) || !cur.read_i32(&ofs_surf_end)) {
+      if (error) {
+        *error = "TAN surface header is incomplete.";
+      }
+      return std::nullopt;
+    }
+    Q_UNUSED(surf_min_lod);
+
+    if (surf_num_frames <= 0 || surf_num_verts <= 0 || surf_num_verts > kMaxVerts ||
+        surf_num_tris < 0 || surf_num_tris > kMaxTriangles || ofs_surf_end <= 0) {
+      if (error) {
+        *error = "TAN surface values are invalid.";
+      }
+      return std::nullopt;
+    }
+
+    const qint64 surf_end = static_cast<qint64>(surf_off) + static_cast<qint64>(ofs_surf_end);
+    if (surf_end <= surf_off || surf_end > file_size || surf_end > ofs_end) {
+      if (error) {
+        *error = "TAN surface exceeds file bounds.";
+      }
+      return std::nullopt;
+    }
+
+    const qint64 tri_bytes = static_cast<qint64>(surf_num_tris) * 3LL * 4LL;
+    const qint64 collapse_bytes = static_cast<qint64>(surf_num_verts) * 4LL;
+    const qint64 st_bytes = static_cast<qint64>(surf_num_verts) * 8LL;
+    const qint64 frame_vertex_stride = static_cast<qint64>(surf_num_verts) * 8LL;
+    const qint64 xyz_bytes = frame_vertex_stride * static_cast<qint64>(surf_num_frames);
+
+    const auto span_in_surface = [&](qint32 rel_ofs, qint64 len) -> bool {
+      if (rel_ofs < 0 || len < 0) {
+        return false;
+      }
+      const qint64 begin = static_cast<qint64>(surf_off) + static_cast<qint64>(rel_ofs);
+      const qint64 end = begin + len;
+      return begin >= surf_off && end >= begin && end <= surf_end;
+    };
+
+    if (!span_in_surface(ofs_tris, tri_bytes) ||
+        !span_in_surface(ofs_collapse, collapse_bytes) ||
+        !span_in_surface(ofs_st, st_bytes) ||
+        !span_in_surface(ofs_xyznormal, xyz_bytes)) {
+      if (error) {
+        *error = "TAN surface offsets are invalid.";
+      }
+      return std::nullopt;
+    }
+
+    const int base_vertex = vertices.size();
+    if (base_vertex > (std::numeric_limits<int>::max() - surf_num_verts)) {
+      if (error) {
+        *error = "TAN vertex count is too large.";
+      }
+      return std::nullopt;
+    }
+    vertices.resize(base_vertex + surf_num_verts);
+
+    if (!cur.seek(surf_off + ofs_xyznormal)) {
+      if (error) {
+        *error = "TAN vertex offset is invalid.";
+      }
+      return std::nullopt;
+    }
+    for (int v = 0; v < surf_num_verts; ++v) {
+      qint16 x = 0;
+      qint16 y = 0;
+      qint16 z = 0;
+      qint16 n = 0;
+      if (!cur.read_i16(&x) || !cur.read_i16(&y) || !cur.read_i16(&z) || !cur.read_i16(&n)) {
+        if (error) {
+          *error = "TAN vertices are incomplete.";
+        }
+        return std::nullopt;
+      }
+      Q_UNUSED(n);
+
+      ModelVertex mv;
+      mv.px = static_cast<float>(static_cast<quint16>(x)) * frame_scale[0] + frame_offset[0];
+      mv.py = static_cast<float>(static_cast<quint16>(y)) * frame_scale[1] + frame_offset[1];
+      mv.pz = static_cast<float>(static_cast<quint16>(z)) * frame_scale[2] + frame_offset[2];
+      vertices[base_vertex + v] = mv;
+    }
+
+    if (!cur.seek(surf_off + ofs_st)) {
+      if (error) {
+        *error = "TAN texture-coordinate offset is invalid.";
+      }
+      return std::nullopt;
+    }
+    for (int v = 0; v < surf_num_verts; ++v) {
+      float s0 = 0.0f;
+      float t0 = 0.0f;
+      if (!cur.read_f32(&s0) || !cur.read_f32(&t0)) {
+        if (error) {
+          *error = "TAN texture coordinates are incomplete.";
+        }
+        return std::nullopt;
+      }
+      vertices[base_vertex + v].u = s0;
+      vertices[base_vertex + v].v = 1.0f - t0;
+    }
+
+    if (!cur.seek(surf_off + ofs_tris)) {
+      if (error) {
+        *error = "TAN triangle offset is invalid.";
+      }
+      return std::nullopt;
+    }
+    const qint64 tri_index_add = static_cast<qint64>(surf_num_tris) * 3LL;
+    if (tri_index_add > (std::numeric_limits<int>::max() - static_cast<qint64>(indices.size()))) {
+      if (error) {
+        *error = "TAN triangle count is too large.";
+      }
+      return std::nullopt;
+    }
+    const int first_index = indices.size();
+    indices.reserve(indices.size() + static_cast<int>(tri_index_add));
+    for (int t = 0; t < surf_num_tris; ++t) {
+      qint32 i0 = 0;
+      qint32 i1 = 0;
+      qint32 i2 = 0;
+      if (!cur.read_i32(&i0) || !cur.read_i32(&i1) || !cur.read_i32(&i2)) {
+        if (error) {
+          *error = "TAN triangles are incomplete.";
+        }
+        return std::nullopt;
+      }
+      if (i0 < 0 || i1 < 0 || i2 < 0 || i0 >= surf_num_verts || i1 >= surf_num_verts || i2 >= surf_num_verts) {
+        continue;
+      }
+      indices.push_back(static_cast<std::uint32_t>(base_vertex + i0));
+      indices.push_back(static_cast<std::uint32_t>(base_vertex + i1));
+      indices.push_back(static_cast<std::uint32_t>(base_vertex + i2));
+    }
+
+    const int index_count = indices.size() - first_index;
+    if (index_count > 0) {
+      ModelSurface surf;
+      surf.name = surf_name.isEmpty() ? QString("surface_%1").arg(s) : surf_name;
+      surf.shader = surf.name;
+      surf.first_index = first_index;
+      surf.index_count = index_count;
+      surfaces.push_back(std::move(surf));
+    }
+
+    const qint64 next_surf_off = static_cast<qint64>(surf_off) + static_cast<qint64>(ofs_surf_end);
+    if (next_surf_off <= 0 || next_surf_off > ofs_end || next_surf_off > std::numeric_limits<int>::max()) {
+      break;
+    }
+    surf_off = static_cast<int>(next_surf_off);
+  }
+
+  if (vertices.isEmpty() || indices.isEmpty()) {
+    if (error) {
+      *error = "TAN contains no drawable geometry.";
+    }
+    return std::nullopt;
+  }
+
+  if (surfaces.isEmpty()) {
+    surfaces = {ModelSurface{QString("model"), QString(), 0, static_cast<int>(indices.size())}};
+  }
+
+  LoadedModel out;
+  out.format = "tan";
+  out.frame_count = num_frames;
+  out.surface_count = std::max(1, static_cast<int>(surfaces.size()));
+  out.mesh.vertices = std::move(vertices);
+  out.mesh.indices = std::move(indices);
+  out.surfaces = std::move(surfaces);
+  compute_smooth_normals(&out.mesh);
+  compute_bounds(&out.mesh);
+  return out;
+}
+
 std::optional<LoadedModel> load_mdc(const QString& file_path, QString* error) {
   if (error) {
     error->clear();
@@ -6606,6 +6943,9 @@ std::optional<LoadedModel> load_model_file(const QString& file_path, QString* er
   }
   if (ext == "md5mesh") {
     return load_md5mesh(info.absoluteFilePath(), error);
+  }
+  if (ext == "tan") {
+    return load_tan(info.absoluteFilePath(), error);
   }
   if (ext == "obj") {
     // Wavefront OBJ

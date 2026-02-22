@@ -14,6 +14,7 @@
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QDialog>
+#include <QEvent>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
@@ -154,16 +155,162 @@ struct OpenableDropPaths {
   int file_count = 0;
 };
 
-OpenableDropPaths collect_openable_paths(const QList<QUrl>& urls) {
-  OpenableDropPaths out;
-  for (const QUrl& url : urls) {
+QString normalize_local_drop_path(QString path) {
+  path = path.trimmed();
+  if (path.size() >= 2) {
+    const bool quoted =
+      (path.startsWith('"') && path.endsWith('"')) ||
+      (path.startsWith('\'') && path.endsWith('\''));
+    if (quoted) {
+      path = path.mid(1, path.size() - 2).trimmed();
+    }
+  }
+  path = QDir::fromNativeSeparators(path);
+#if defined(Q_OS_WIN)
+  if (path.startsWith("//?/UNC/", Qt::CaseInsensitive)) {
+    path = "//" + path.mid(8);
+  } else if (path.startsWith("//?/", Qt::CaseInsensitive)) {
+    path = path.mid(4);
+  }
+#endif
+  return path;
+}
+
+void append_existing_drop_path(QStringList* out, QSet<QString>* seen, const QString& path_in) {
+  if (!out || !seen) {
+    return;
+  }
+  const QString normalized = normalize_local_drop_path(path_in);
+  if (normalized.isEmpty()) {
+    return;
+  }
+
+  const QFileInfo info(normalized);
+  if (!info.exists()) {
+    return;
+  }
+
+  QString key = QDir::cleanPath(info.absoluteFilePath());
+#if defined(Q_OS_WIN)
+  key = key.toLower();
+#endif
+  if (seen->contains(key)) {
+    return;
+  }
+
+  seen->insert(key);
+  out->push_back(info.absoluteFilePath());
+}
+
+QStringList decode_windows_filenamew_payload(const QByteArray& payload) {
+  QStringList out;
+  if (payload.isEmpty()) {
+    return out;
+  }
+
+  const int bytes = payload.size() - (payload.size() % 2);
+  if (bytes <= 0) {
+    return out;
+  }
+
+  const uchar* data = reinterpret_cast<const uchar*>(payload.constData());
+  const int count = bytes / 2;
+  QString current;
+  for (int i = 0; i < count; ++i) {
+    const ushort ch = static_cast<ushort>(data[(i * 2) + 0]) |
+                      static_cast<ushort>(data[(i * 2) + 1] << 8);
+    if (ch == 0) {
+      if (!current.isEmpty()) {
+        out.push_back(current);
+        current.clear();
+      }
+      continue;
+    }
+    current.append(QChar(ch));
+  }
+  if (!current.isEmpty()) {
+    out.push_back(current);
+  }
+  return out;
+}
+
+QStringList decode_windows_filename_payload(const QByteArray& payload) {
+  QStringList out;
+  if (payload.isEmpty()) {
+    return out;
+  }
+
+  const QList<QByteArray> chunks = payload.split('\0');
+  out.reserve(chunks.size());
+  for (const QByteArray& chunk : chunks) {
+    if (chunk.isEmpty()) {
+      continue;
+    }
+    const QString path = QString::fromLocal8Bit(chunk).trimmed();
+    if (!path.isEmpty()) {
+      out.push_back(path);
+    }
+  }
+  return out;
+}
+
+QStringList collect_local_drop_paths_from_mime(const QMimeData* mime) {
+  QStringList out;
+  if (!mime) {
+    return out;
+  }
+
+  QSet<QString> seen;
+
+  for (const QUrl& url : mime->urls()) {
     if (!url.isLocalFile()) {
       continue;
     }
-    const QString path = url.toLocalFile();
-    if (path.isEmpty()) {
+    append_existing_drop_path(&out, &seen, url.toLocalFile());
+  }
+
+  if (mime->hasText()) {
+    const QStringList lines = mime->text().split('\n', Qt::SkipEmptyParts);
+    for (QString line : lines) {
+      line = line.trimmed();
+      if (line.isEmpty() || line.startsWith('#')) {
+        continue;
+      }
+      if (line.startsWith("file:", Qt::CaseInsensitive)) {
+        const QUrl url(line);
+        if (url.isLocalFile()) {
+          append_existing_drop_path(&out, &seen, url.toLocalFile());
+        }
+        continue;
+      }
+      append_existing_drop_path(&out, &seen, line);
+    }
+  }
+
+#if defined(Q_OS_WIN)
+  for (const QString& format : mime->formats()) {
+    const QString lower = format.toLower();
+    if (lower.startsWith("application/x-qt-windows-mime;value=\"filenamew\"")) {
+      for (const QString& path : decode_windows_filenamew_payload(mime->data(format))) {
+        append_existing_drop_path(&out, &seen, path);
+      }
       continue;
     }
+    if (lower.startsWith("application/x-qt-windows-mime;value=\"filename\"")) {
+      for (const QString& path : decode_windows_filename_payload(mime->data(format))) {
+        append_existing_drop_path(&out, &seen, path);
+      }
+    }
+  }
+#endif
+
+  return out;
+}
+
+OpenableDropPaths collect_openable_paths(const QMimeData* mime) {
+  OpenableDropPaths out;
+  const QStringList paths = collect_local_drop_paths_from_mime(mime);
+  for (const QString& path : paths) {
     const QFileInfo info(path);
     if (!info.exists()) {
       continue;
@@ -373,6 +520,41 @@ bool is_warsow_data_archive_name(const QString& lower_file) {
   return true;
 }
 
+bool is_alice_archive_name(const QString& lower_file) {
+  if (!lower_file.endsWith(".pk3")) {
+    return false;
+  }
+
+  const QString base = lower_file.left(lower_file.size() - 4);
+  if (!base.startsWith("pak")) {
+    return false;
+  }
+
+  int i = 3;
+  while (i < base.size() && base[i].isDigit()) {
+    ++i;
+  }
+  if (i <= 3) {
+    return false;
+  }
+  if (i == base.size()) {
+    return true;
+  }
+  if (base[i] != '_') {
+    return false;
+  }
+  if (i + 1 >= base.size()) {
+    return false;
+  }
+  for (int j = i + 1; j < base.size(); ++j) {
+    const QChar c = base[j];
+    if (!c.isLetterOrNumber() && c != '_') {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool is_doom_iwad_name(const QString& lower_file) {
   return lower_file == "doom.wad" || lower_file == "doomu.wad" || lower_file == "doom2.wad" ||
          lower_file == "tnt.wad" || lower_file == "plutonia.wad" || lower_file == "heretic.wad" ||
@@ -422,6 +604,8 @@ bool is_official_archive_name(GameId game, const QString& lower_file) {
         || is_prefixed_numbered_archive_name(lower_file, "wop_", "pk3");
     case GameId::HeavyMetalFakk2:
       return is_numbered_archive_name(lower_file, "pak") || is_numbered_archive_name(lower_file, "pk3");
+    case GameId::AmericanMcGeesAlice:
+      return is_alice_archive_name(lower_file);
     case GameId::JediOutcast:
     case GameId::JediAcademy:
       return is_numbered_archive_name(lower_file, "pk3") || is_assets_archive_name(lower_file);
@@ -1070,6 +1254,8 @@ void MainWindow::setup_central() {
     [this]() { close(); });
   tabs_->addTab(welcome_tab_, "Welcome");
   if (auto* bar = tabs_->tabBar()) {
+    bar->setAcceptDrops(true);
+    bar->installEventFilter(this);
     auto* close_btn = make_tab_close_button(bar, [this]() {
       if (!tabs_ || !welcome_tab_) {
         return;
@@ -1234,6 +1420,7 @@ void MainWindow::setup_menus() {
     const QString repo = PAKFU_GITHUB_REPO;
     const QString repo_url = QString("https://github.com/%1").arg(repo);
     const QString website_url = "https://www.darkmatter-quake.com";
+    const QString credits_url = QString("https://github.com/%1/blob/main/docs/CREDITS.md").arg(repo);
     const QString html = QString(
       "<b>PakFu %1</b><br/>"
       "A modern game archive manager and file viewer.<br/><br/>"
@@ -1245,8 +1432,11 @@ void MainWindow::setup_menus() {
       "<a href=\"%2\">%3</a><br/><br/>"
       "<b>Website</b><br/>"
       "<a href=\"%4\">www.darkmatter-quake.com</a><br/><br/>"
+      "<b>Credits</b><br/>"
+      "Built with Qt 6 and miniz. Compatibility work follows idTech-era format lineage and open engine references.<br/>"
+      "<a href=\"%5\">View full credits and acknowledgements</a><br/><br/>"
       "Created by themuffinator, DarkMatter Productions.")
-        .arg(PAKFU_VERSION, repo_url, repo_url, website_url);
+        .arg(PAKFU_VERSION, repo_url, repo_url, website_url, credits_url);
 
     QMessageBox box(this);
     box.setWindowTitle("About PakFu");
@@ -1305,7 +1495,7 @@ void MainWindow::open_file_dialog() {
   dialog.setWindowTitle("Open File");
   dialog.setFileMode(QFileDialog::ExistingFile);
   dialog.setNameFilters({
-    "Supported files (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3 *.pcx *.wal *.swl *.mip *.lmp *.dds *.png *.bmp *.gif *.tga *.jpg *.jpeg *.tif *.tiff *.wav *.ogg *.mp3 *.idwav *.bik *.cin *.roq *.ogv *.mp4 *.mkv *.avi *.webm *.bsp *.mdl *.md2 *.md3 *.mdc *.md4 *.mdr *.skb *.skd *.mdm *.glm *.iqm *.md5mesh *.lwo *.obj *.spr *.sp2 *.cfg *.txt *.json *.shader *.ttf *.otf)",
+    "Supported files (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3 *.pcx *.wal *.swl *.mip *.lmp *.dds *.ftx *.png *.bmp *.gif *.tga *.jpg *.jpeg *.tif *.tiff *.wav *.ogg *.mp3 *.idwav *.bik *.cin *.roq *.ogv *.mp4 *.mkv *.avi *.webm *.bsp *.mdl *.md2 *.md3 *.mdc *.md4 *.mdr *.skb *.skd *.mdm *.glm *.iqm *.md5mesh *.tan *.lwo *.obj *.spr *.sp2 *.cfg *.txt *.json *.shader *.ttf *.otf)",
     "Archives (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3)",
     "All files (*.*)",
   });
@@ -2160,6 +2350,73 @@ void MainWindow::close_tab(int index) {
   // Keep the app open even if all tabs are closed (blank workspace).
 }
 
+bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+  if (!tabs_ || !event) {
+    return QMainWindow::eventFilter(watched, event);
+  }
+
+  QTabBar* bar = tabs_->tabBar();
+  if (!bar || watched != bar) {
+    return QMainWindow::eventFilter(watched, event);
+  }
+
+  auto tab_for_pos = [this, bar](const QPointF& pos) -> PakTab* {
+    if (!tabs_ || !bar) {
+      return nullptr;
+    }
+    const int idx = bar->tabAt(pos.toPoint());
+    if (idx < 0 || idx >= tabs_->count()) {
+      return current_pak_tab();
+    }
+    if (tabs_->currentIndex() != idx) {
+      tabs_->setCurrentIndex(idx);
+    }
+    return qobject_cast<PakTab*>(tabs_->widget(idx));
+  };
+
+  switch (event->type()) {
+    case QEvent::DragEnter: {
+      auto* drag_event = static_cast<QDragEnterEvent*>(event);
+      PakTab* tab = tab_for_pos(drag_event->position());
+      if (tab && tab->can_accept_mime(drag_event->mimeData())) {
+        if (drop_overlay_) {
+          drop_overlay_->hide();
+        }
+        drag_event->acceptProposedAction();
+        return true;
+      }
+      break;
+    }
+    case QEvent::DragMove: {
+      auto* drag_event = static_cast<QDragMoveEvent*>(event);
+      PakTab* tab = tab_for_pos(drag_event->position());
+      if (tab && tab->can_accept_mime(drag_event->mimeData())) {
+        if (drop_overlay_) {
+          drop_overlay_->hide();
+        }
+        drag_event->acceptProposedAction();
+        return true;
+      }
+      break;
+    }
+    case QEvent::Drop: {
+      auto* drop_event = static_cast<QDropEvent*>(event);
+      PakTab* tab = tab_for_pos(drop_event->position());
+      if (tab && tab->handle_drop_event(drop_event, tab->current_prefix())) {
+        if (drop_overlay_) {
+          drop_overlay_->hide();
+        }
+        return true;
+      }
+      break;
+    }
+    default:
+      break;
+  }
+
+  return QMainWindow::eventFilter(watched, event);
+}
+
 void MainWindow::closeEvent(QCloseEvent* event) {
   if (!tabs_) {
     QMainWindow::closeEvent(event);
@@ -2184,8 +2441,8 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
-  if (event && event->mimeData() && event->mimeData()->hasUrls()) {
-    const OpenableDropPaths drop = collect_openable_paths(event->mimeData()->urls());
+  if (event && event->mimeData()) {
+    const OpenableDropPaths drop = collect_openable_paths(event->mimeData());
     if (has_openable_paths(drop)) {
       if (drop_overlay_) {
         drop_overlay_->resize(size());
@@ -2208,8 +2465,8 @@ void MainWindow::dragLeaveEvent(QDragLeaveEvent* event) {
 }
 
 void MainWindow::dragMoveEvent(QDragMoveEvent* event) {
-  if (event && event->mimeData() && event->mimeData()->hasUrls()) {
-    const OpenableDropPaths drop = collect_openable_paths(event->mimeData()->urls());
+  if (event && event->mimeData()) {
+    const OpenableDropPaths drop = collect_openable_paths(event->mimeData());
     if (has_openable_paths(drop)) {
       if (drop_overlay_) {
         drop_overlay_->set_message(drop_overlay_message(drop));
@@ -2225,8 +2482,8 @@ void MainWindow::dropEvent(QDropEvent* event) {
   if (drop_overlay_) {
     drop_overlay_->hide();
   }
-  if (event && event->mimeData() && event->mimeData()->hasUrls()) {
-    const OpenableDropPaths drop = collect_openable_paths(event->mimeData()->urls());
+  if (event && event->mimeData()) {
+    const OpenableDropPaths drop = collect_openable_paths(event->mimeData());
     if (!drop.paths.isEmpty()) {
       open_archives(drop.paths);
       event->acceptProposedAction();

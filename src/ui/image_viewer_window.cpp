@@ -126,7 +126,7 @@ ImageViewerWindow::ImageViewerWindow(QWidget* parent) : QMainWindow(parent) {
 
 bool ImageViewerWindow::is_supported_image_ext(const QString& ext) {
 	static const QSet<QString> kImageExts = {
-		"png", "jpg", "jpeg", "bmp", "gif", "tga", "pcx", "wal", "swl", "dds", "lmp", "mip", "tif", "tiff",
+		"png", "jpg", "jpeg", "bmp", "gif", "tga", "pcx", "wal", "swl", "dds", "lmp", "mip", "ftx", "tif", "tiff",
 	};
 	return kImageExts.contains(ext.toLower());
 }

@@ -67,6 +67,7 @@ const QVector<AssociationSpec>& association_specs() {
 	  {"mip", "MIP Image", QColor("#6A1B9A"), AssociationCategory::Image},
 	  {"lmp", "LMP Image", QColor("#5D4037"), AssociationCategory::Image},
 	  {"dds", "DDS Image", QColor("#0277BD"), AssociationCategory::Image},
+	  {"ftx", "FTX Image", QColor("#4E342E"), AssociationCategory::Image},
 	  {"png", "PNG Image", QColor("#00ACC1"), AssociationCategory::Image},
 	  {"jpg", "JPG Image", QColor("#F9A825"), AssociationCategory::Image},
 	  {"jpeg", "JPEG Image", QColor("#F57F17"), AssociationCategory::Image},
@@ -99,6 +100,7 @@ const QVector<AssociationSpec>& association_specs() {
 	  {"glm", "GLM Model", QColor("#546E7A"), AssociationCategory::Model},
 	  {"iqm", "IQM Model", QColor("#0277BD"), AssociationCategory::Model},
 	  {"md5mesh", "MD5MESH Model", QColor("#00838F"), AssociationCategory::Model},
+	  {"tan", "TAN Model", QColor("#6D4C41"), AssociationCategory::Model},
 	  {"lwo", "LWO Model", QColor("#7CB342"), AssociationCategory::Model},
 	  {"obj", "OBJ Model", QColor("#F57C00"), AssociationCategory::Model},
 	};

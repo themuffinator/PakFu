@@ -41,7 +41,7 @@ struct EmbeddedTexture {
 };
 
 struct LoadedModel {
-  QString format;  // "mdl", "md2", "md3", "mdc", "md4", "mdr", "skb", "skd", "mdm", "glm", "iqm", "md5mesh", "lwo", "obj"
+  QString format;  // "mdl", "md2", "md3", "mdc", "md4", "mdr", "skb", "skd", "mdm", "glm", "iqm", "md5mesh", "tan", "lwo", "obj"
   int frame_count = 1;
   int surface_count = 1;
   ModelMesh mesh;

@@ -363,6 +363,11 @@ QString GameSetEditorDialog::suggested_default_dir(GameId game, const QString& r
         return root.filePath("fakk");
       }
       return root_dir;
+    case GameId::AmericanMcGeesAlice:
+      if (QFileInfo::exists(root.filePath("base"))) {
+        return root.filePath("base");
+      }
+      return root_dir;
     case GameId::Quake4:
       return root.filePath("q4base");
     case GameId::Doom3:

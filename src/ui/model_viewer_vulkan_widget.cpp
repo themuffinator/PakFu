@@ -576,6 +576,8 @@ bool ModelViewerVulkanWidget::load_file(const QString& file_path, const QString&
 			score += 18;
 		} else if (ext == "jpg" || ext == "jpeg") {
 			score += 16;
+		} else if (ext == "ftx") {
+			score += 21;
 		} else if (ext == "pcx") {
 			score += 14;
 		} else if (ext == "wal") {
@@ -611,7 +613,8 @@ bool ModelViewerVulkanWidget::load_file(const QString& file_path, const QString&
 													<< "*.swl"
 													<< "*.dds"
 													<< "*.lmp"
-													<< "*.mip",
+													<< "*.mip"
+													<< "*.ftx",
 									QDir::Files,
 									QDir::Name);
 		QString best_name;
@@ -711,7 +714,7 @@ bool ModelViewerVulkanWidget::load_file(const QString& file_path, const QString&
 	apply_embedded_surface_textures();
 
 	if (!model_dir.isEmpty()) {
-		const QStringList exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "swl", "dds", "lmp", "mip"};
+		const QStringList exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "swl", "dds", "lmp", "mip", "ftx"};
 
 		const auto try_find_in_dir = [&](const QString& base_or_file) -> QString {
 			if (base_or_file.isEmpty()) {
@@ -742,7 +745,8 @@ bool ModelViewerVulkanWidget::load_file(const QString& file_path, const QString&
 																<< "*.swl"
 																<< "*.dds"
 																<< "*.lmp"
-																<< "*.mip",
+																<< "*.mip"
+																<< "*.ftx",
 													QDir::Files);
 			const QString want = base.toLower();
 			for (const QString& f : files) {

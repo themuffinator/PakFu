@@ -12,6 +12,7 @@ class QMenu;
 class QTabWidget;
 class QWidget;
 class QCloseEvent;
+class QEvent;
 class QDragEnterEvent;
 class QDragLeaveEvent;
 class QDragMoveEvent;
@@ -36,6 +37,7 @@ public:
   void open_archives(const QStringList& paths);
 
 protected:
+  bool eventFilter(QObject* watched, QEvent* event) override;
   void closeEvent(QCloseEvent* event) override;
   void dragEnterEvent(QDragEnterEvent* event) override;
   void dragLeaveEvent(QDragLeaveEvent* event) override;

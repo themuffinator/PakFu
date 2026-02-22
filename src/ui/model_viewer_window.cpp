@@ -125,7 +125,7 @@ ModelViewerWindow::ModelViewerWindow(QWidget* parent) : QMainWindow(parent) {
 
 bool ModelViewerWindow::is_supported_model_ext(const QString& ext) {
 	static const QSet<QString> kModelExts = {
-		"mdl", "md2", "md3", "mdc", "md4", "mdr", "skb", "skd", "mdm", "glm", "iqm", "md5mesh", "obj", "lwo",
+		"mdl", "md2", "md3", "mdc", "md4", "mdr", "skb", "skd", "mdm", "glm", "iqm", "md5mesh", "tan", "obj", "lwo",
 	};
 	return kModelExts.contains(ext.toLower());
 }
@@ -372,6 +372,8 @@ QString ModelViewerWindow::find_skin_on_disk(const QString& model_path) const {
 			score += 18;
 		} else if (skin_ext == "jpg" || skin_ext == "jpeg") {
 			score += 16;
+		} else if (skin_ext == "ftx") {
+			score += 21;
 		} else if (skin_ext == "lmp") {
 			score += (model_ext == "mdl") ? 26 : 12;
 		} else if (skin_ext == "mip") {
@@ -387,7 +389,7 @@ QString ModelViewerWindow::find_skin_on_disk(const QString& model_path) const {
 		return score;
 	};
 
-	QStringList filters = {"*.png", "*.tga", "*.jpg", "*.jpeg", "*.pcx", "*.wal", "*.swl", "*.dds", "*.lmp", "*.mip"};
+	QStringList filters = {"*.png", "*.tga", "*.jpg", "*.jpeg", "*.pcx", "*.wal", "*.swl", "*.dds", "*.lmp", "*.mip", "*.ftx"};
 	if (model_ext == "md3" || model_ext == "mdc" || model_ext == "mdr") {
 		filters.push_back("*.skin");
 	}
@@ -763,4 +765,3 @@ bool ModelViewerWindow::ensure_quake2_palette(const QString& model_path, QString
 	}
 	return false;
 }
-

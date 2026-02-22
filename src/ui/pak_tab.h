@@ -106,6 +106,9 @@ public:
   void rename();
   void undo();
   void redo();
+  // Drop helpers used by tab views and main-window tab-bar integration.
+  bool can_accept_mime(const QMimeData* mime) const;
+  bool handle_drop_event(QDropEvent* event, const QString& dest_prefix);
 
   struct AddedFile {
     QString pak_name;
@@ -199,8 +202,6 @@ private:
   void remove_added_file_by_name(const QString& pak_name);
   bool is_deleted_path(const QString& pak_name) const;
   void clear_deletions_under(const QString& pak_name);
-  bool can_accept_mime(const QMimeData* mime) const;
-  bool handle_drop_event(QDropEvent* event, const QString& dest_prefix);
   QString ensure_export_root();
   bool export_path_to_temp(const QString& pak_path, bool is_dir, QString* out_fs_path, QString* error);
   bool export_dir_prefix_to_fs(const QString& dir_prefix, const QString& dest_dir, QString* error);

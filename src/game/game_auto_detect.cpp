@@ -692,6 +692,15 @@ QVector<GameSupportInfo> supported_game_support() {
   });
 
   out.push_back(GameSupportInfo{
+    .game = GameId::AmericanMcGeesAlice,
+    .folder_names = {"American McGee's Alice", "American McGees Alice", "Alice"},
+    .marker_any = {"base/pak0.pk3", "base/PAK0.PK3", "base/pak1_large.pk3", "base/pak1_small.pk3",
+                   "base/pak2.pk3", "base/Pak2.pk3", "alice.exe", "Alice.exe"},
+    .default_dir_candidates = {"base"},
+    .executable_candidates = {"alice.exe", "Alice.exe", "AMA-Win10Fix.exe"},
+  });
+
+  out.push_back(GameSupportInfo{
     .game = GameId::Quake4,
     .folder_names = {"Quake 4", "Quake4"},
     .marker_any = {"q4base/pak001.pk4", "q4base/PAK001.PK4", "q4base/pak000.pk4", "q4base/pak00.pk4"},
@@ -864,6 +873,7 @@ std::optional<GameId> detect_game_id_for_path(const QString& file_or_dir_path) {
   push_if(GameId::Warfork);
   push_if(GameId::WorldOfPadman);
   push_if(GameId::HeavyMetalFakk2);
+  push_if(GameId::AmericanMcGeesAlice);
   push_if(GameId::Quake4);
   push_if(GameId::Doom3BFGEdition);
   push_if(GameId::Doom3);

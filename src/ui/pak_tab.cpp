@@ -548,6 +548,19 @@ bool pak_paths_equal(const QString& a_in, const QString& b_in) {
 #endif
 }
 
+bool fs_paths_equal(const QString& a_in, const QString& b_in) {
+  if (a_in.isEmpty() || b_in.isEmpty()) {
+    return false;
+  }
+  const QString a = QFileInfo(a_in).absoluteFilePath();
+  const QString b = QFileInfo(b_in).absoluteFilePath();
+#if defined(Q_OS_WIN)
+  return a.compare(b, Qt::CaseInsensitive) == 0;
+#else
+  return a == b;
+#endif
+}
+
 bool pak_path_is_under(const QString& path_in, const QString& root_in) {
   const QString path = normalize_pak_path(path_in);
   QString root = normalize_pak_path(root_in);
@@ -564,24 +577,192 @@ bool pak_path_is_under(const QString& path_in, const QString& root_in) {
 #endif
 }
 
-QList<QUrl> filter_local_urls(const QList<QUrl>& urls) {
+QString normalize_local_fs_path(QString path) {
+  path = path.trimmed();
+  if (path.size() >= 2) {
+    const bool quoted =
+      (path.startsWith('"') && path.endsWith('"')) ||
+      (path.startsWith('\'') && path.endsWith('\''));
+    if (quoted) {
+      path = path.mid(1, path.size() - 2).trimmed();
+    }
+  }
+  path = QDir::fromNativeSeparators(path);
+#if defined(Q_OS_WIN)
+  if (path.startsWith("//?/UNC/", Qt::CaseInsensitive)) {
+    path = "//" + path.mid(8);
+  } else if (path.startsWith("//?/", Qt::CaseInsensitive)) {
+    path = path.mid(4);
+  }
+#endif
+  return path;
+}
+
+void append_existing_local_path(QList<QUrl>* out, QSet<QString>* seen, const QString& local_path_in) {
+  if (!out || !seen) {
+    return;
+  }
+  const QString local_path = normalize_local_fs_path(local_path_in);
+  if (local_path.isEmpty()) {
+    return;
+  }
+
+  const QFileInfo info(local_path);
+  if (!info.exists()) {
+    return;
+  }
+
+  QString key = QDir::cleanPath(info.absoluteFilePath());
+#if defined(Q_OS_WIN)
+  key = key.toLower();
+#endif
+  if (seen->contains(key)) {
+    return;
+  }
+  seen->insert(key);
+  out->push_back(QUrl::fromLocalFile(info.absoluteFilePath()));
+}
+
+QStringList decode_windows_filenamew_payload(const QByteArray& payload) {
+  QStringList out;
+  if (payload.isEmpty()) {
+    return out;
+  }
+
+  const int bytes = payload.size() - (payload.size() % 2);
+  if (bytes <= 0) {
+    return out;
+  }
+
+  const uchar* data = reinterpret_cast<const uchar*>(payload.constData());
+  const int count = bytes / 2;
+  QString current;
+  for (int i = 0; i < count; ++i) {
+    const ushort ch = static_cast<ushort>(data[(i * 2) + 0]) |
+                      static_cast<ushort>(data[(i * 2) + 1] << 8);
+    if (ch == 0) {
+      if (!current.isEmpty()) {
+        out.push_back(current);
+        current.clear();
+      }
+      continue;
+    }
+    current.append(QChar(ch));
+  }
+  if (!current.isEmpty()) {
+    out.push_back(current);
+  }
+  return out;
+}
+
+QStringList decode_windows_filename_payload(const QByteArray& payload) {
+  QStringList out;
+  if (payload.isEmpty()) {
+    return out;
+  }
+
+  const QList<QByteArray> chunks = payload.split('\0');
+  out.reserve(chunks.size());
+  for (const QByteArray& chunk : chunks) {
+    if (chunk.isEmpty()) {
+      continue;
+    }
+    const QString path = QString::fromLocal8Bit(chunk).trimmed();
+    if (!path.isEmpty()) {
+      out.push_back(path);
+    }
+  }
+  return out;
+}
+
+QList<QUrl> local_urls_from_mime(const QMimeData* mime) {
   QList<QUrl> out;
-  out.reserve(urls.size());
+  if (!mime) {
+    return out;
+  }
+
+  QSet<QString> seen;
+
+  const QList<QUrl> urls = mime->urls();
   for (const QUrl& url : urls) {
     if (!url.isLocalFile()) {
       continue;
     }
-    const QString local = url.toLocalFile();
-    if (local.isEmpty()) {
-      continue;
-    }
-    const QFileInfo info(local);
-    if (!info.exists()) {
-      continue;
-    }
-    out.push_back(url);
+    append_existing_local_path(&out, &seen, url.toLocalFile());
   }
+
+  if (mime->hasText()) {
+    const QString text = mime->text();
+    const QStringList lines = text.split('\n', Qt::SkipEmptyParts);
+    for (QString line : lines) {
+      line = line.trimmed();
+      if (line.isEmpty() || line.startsWith('#')) {
+        continue;
+      }
+      if (line.startsWith("file:", Qt::CaseInsensitive)) {
+        const QUrl url(line);
+        if (url.isLocalFile()) {
+          append_existing_local_path(&out, &seen, url.toLocalFile());
+        }
+        continue;
+      }
+      append_existing_local_path(&out, &seen, line);
+    }
+  }
+
+#if defined(Q_OS_WIN)
+  const QStringList formats = mime->formats();
+  for (const QString& format : formats) {
+    const QString lower = format.toLower();
+    if (lower.startsWith("application/x-qt-windows-mime;value=\"filenamew\"")) {
+      const QStringList paths = decode_windows_filenamew_payload(mime->data(format));
+      for (const QString& path : paths) {
+        append_existing_local_path(&out, &seen, path);
+      }
+      continue;
+    }
+    if (lower.startsWith("application/x-qt-windows-mime;value=\"filename\"")) {
+      const QStringList paths = decode_windows_filename_payload(mime->data(format));
+      for (const QString& path : paths) {
+        append_existing_local_path(&out, &seen, path);
+      }
+    }
+  }
+#endif
+
   return out;
+}
+
+Qt::DropAction resolve_requested_drop_action(Qt::DropAction drop_action,
+                                             Qt::DropAction proposed_action,
+                                             Qt::DropActions possible_actions,
+                                             Qt::KeyboardModifiers modifiers) {
+  auto ensure_supported = [possible_actions](Qt::DropAction wanted) -> Qt::DropAction {
+    if (wanted != Qt::IgnoreAction && (possible_actions & wanted)) {
+      return wanted;
+    }
+    if (possible_actions & Qt::CopyAction) {
+      return Qt::CopyAction;
+    }
+    if (possible_actions & Qt::MoveAction) {
+      return Qt::MoveAction;
+    }
+    if (possible_actions & Qt::LinkAction) {
+      return Qt::LinkAction;
+    }
+    return Qt::IgnoreAction;
+  };
+
+  Qt::DropAction chosen = (drop_action != Qt::IgnoreAction) ? drop_action : proposed_action;
+  if (chosen == Qt::IgnoreAction) {
+    if (modifiers & Qt::ControlModifier) {
+      chosen = Qt::CopyAction;
+    } else if (modifiers & Qt::ShiftModifier) {
+      chosen = Qt::MoveAction;
+    }
+  }
+
+  return ensure_supported(chosen);
 }
 
 bool parse_pakfu_mime(const QMimeData* mime, PakFuMimePayload* out) {
@@ -750,7 +931,7 @@ bool is_image_file_name(const QString& name) {
   }
   const QString ext = lower.mid(dot + 1);
   static const QSet<QString> kImageExts = {
-    "png", "jpg", "jpeg", "bmp", "gif", "tga", "pcx", "wal", "swl", "dds", "lmp", "mip", "tif", "tiff"
+    "png", "jpg", "jpeg", "bmp", "gif", "tga", "pcx", "wal", "swl", "dds", "lmp", "mip", "ftx", "tif", "tiff"
   };
   return kImageExts.contains(ext);
 }
@@ -1182,6 +1363,7 @@ bool is_video_file_name(const QString& name) {
 bool is_model_file_name(const QString& name) {
   const QString ext = file_ext_lower(name);
   return (ext == "mdl" || ext == "md2" || ext == "md3" || ext == "mdc" || ext == "md4" || ext == "mdr" || ext == "skb" || ext == "skd" || ext == "mdm" || ext == "glm" || ext == "iqm" || ext == "md5mesh" ||
+          ext == "tan" ||
           ext == "obj" ||
           ext == "lwo");
 }
@@ -1203,6 +1385,7 @@ bool is_cfg_like_text_ext(const QString& ext) {
 bool is_plain_text_script_ext(const QString& ext) {
   static const QSet<QString> kPlainTextScriptExts = {
     "txt", "log", "md", "ini", "xml", "lst", "lang", "tik", "anim", "cam", "camera", "char", "voice", "gui", "bgui", "efx", "guide", "lipsync", "viseme", "vdf",
+    "st", "lip", "tlk", "mus", "snd", "ritualfont",
     "def", "mtr", "sndshd", "af", "pd", "decl", "ent", "map", "sab", "siege", "veh", "npc", "jts", "bset", "weap", "ammo",
     "campaign"
   };
@@ -1213,7 +1396,7 @@ bool is_text_file_name(const QString& name) {
   const QString ext = file_ext_lower(name);
   static const QSet<QString> kTextExts = {
     "cfg", "config", "rc", "arena", "bot", "skin", "shaderlist", "txt", "log", "md", "ini", "json", "xml", "shader", "menu", "script",
-    "lst", "lang", "tik", "anim", "cam", "camera", "char", "voice", "gui", "bgui", "efx", "guide", "lipsync", "viseme", "vdf", "def", "mtr", "sndshd", "af", "pd", "decl", "ent", "map",
+    "lst", "lang", "tik", "anim", "cam", "camera", "char", "voice", "gui", "bgui", "efx", "guide", "lipsync", "viseme", "vdf", "st", "lip", "tlk", "mus", "snd", "ritualfont", "def", "mtr", "sndshd", "af", "pd", "decl", "ent", "map",
     "qc", "sab", "siege", "veh", "npc", "jts", "bset", "weap", "ammo", "campaign", "c", "h"
   };
   return kTextExts.contains(ext);
@@ -3838,13 +4021,11 @@ bool PakTab::can_accept_mime(const QMimeData* mime) const {
   if (!mime) {
     return false;
   }
-  if (mime->hasFormat(kPakFuMimeType)) {
+  PakFuMimePayload payload;
+  if (parse_pakfu_mime(mime, &payload) && !payload.items.isEmpty()) {
     return true;
   }
-  if (!mime->hasUrls()) {
-    return false;
-  }
-  const QList<QUrl> urls = filter_local_urls(mime->urls());
+  const QList<QUrl> urls = local_urls_from_mime(mime);
   return !urls.isEmpty();
 }
 
@@ -3857,7 +4038,7 @@ bool PakTab::handle_drop_event(QDropEvent* event, const QString& dest_prefix_in)
   PakFuMimePayload payload;
   const bool has_payload = parse_pakfu_mime(mime, &payload);
 
-  QList<QUrl> urls = filter_local_urls(mime->urls());
+  QList<QUrl> urls = local_urls_from_mime(mime);
   if (urls.isEmpty() && !has_payload) {
     return false;
   }
@@ -3867,12 +4048,18 @@ bool PakTab::handle_drop_event(QDropEvent* event, const QString& dest_prefix_in)
     dest_prefix += '/';
   }
 
-  bool wants_move = false;
-  if (has_payload && payload.source_uid == drag_source_uid_) {
-    if (event->dropAction() == Qt::MoveAction) {
-      wants_move = true;
-    }
-  }
+  const Qt::DropAction requested_action = resolve_requested_drop_action(
+    event->dropAction(),
+    event->proposedAction(),
+    event->possibleActions(),
+    event->modifiers());
+
+  const bool source_is_this_tab = has_payload && payload.source_uid == drag_source_uid_;
+  const bool source_is_same_archive = has_payload &&
+    !payload.source_archive.isEmpty() &&
+    !pak_path_.isEmpty() &&
+    fs_paths_equal(payload.source_archive, pak_path_);
+  bool wants_move = (requested_action == Qt::MoveAction) && (source_is_this_tab || source_is_same_archive);
 
   QList<QUrl> import_urls = urls;
   QVector<QPair<QString, bool>> move_items;
@@ -3903,7 +4090,13 @@ bool PakTab::handle_drop_event(QDropEvent* event, const QString& dest_prefix_in)
       import_urls = filtered_urls;
       move_items = filtered_items;
       if (import_urls.isEmpty()) {
-        event->acceptProposedAction();
+        const Qt::DropAction accepted = resolve_requested_drop_action(
+          requested_action,
+          Qt::IgnoreAction,
+          event->possibleActions(),
+          event->modifiers());
+        event->setDropAction(accepted);
+        event->accept();
         return true;
       }
     } else {
@@ -3922,7 +4115,14 @@ bool PakTab::handle_drop_event(QDropEvent* event, const QString& dest_prefix_in)
   }
 
   import_urls_with_undo(import_urls, dest_prefix, wants_move ? "Move" : "Drop", move_items, wants_move);
-  event->acceptProposedAction();
+
+  const Qt::DropAction accepted_action = resolve_requested_drop_action(
+    wants_move ? Qt::MoveAction : Qt::CopyAction,
+    Qt::IgnoreAction,
+    event->possibleActions(),
+    event->modifiers());
+  event->setDropAction(accepted_action);
+  event->accept();
   return true;
 }
 
@@ -3981,14 +4181,25 @@ QMimeData* PakTab::make_mime_data_for_items(const QVector<QPair<QString, bool>>&
     return nullptr;
   }
 
-    QJsonObject root;
-    root.insert("cut", cut);
-    root.insert("source_uid", drag_source_uid_);
-    root.insert("source_archive", pak_path_.isEmpty() ? QString() : QFileInfo(pak_path_).absoluteFilePath());
-    root.insert("items", json_items);
+  QJsonObject root;
+  root.insert("cut", cut);
+  root.insert("source_uid", drag_source_uid_);
+  root.insert("source_archive", pak_path_.isEmpty() ? QString() : QFileInfo(pak_path_).absoluteFilePath());
+  root.insert("items", json_items);
+
+  QStringList local_paths;
+  local_paths.reserve(urls.size());
+  for (const QUrl& url : urls) {
+    if (url.isLocalFile()) {
+      local_paths.push_back(url.toLocalFile());
+    }
+  }
 
   auto* mime = new QMimeData();
   mime->setUrls(urls);
+  if (!local_paths.isEmpty()) {
+    mime->setText(local_paths.join('\n'));
+  }
   mime->setData(kPakFuMimeType, QJsonDocument(root).toJson(QJsonDocument::Compact));
   return mime;
 }
@@ -4164,7 +4375,7 @@ void PakTab::paste_from_clipboard() {
     return;
   }
 
-  QList<QUrl> urls = mime->urls();
+  QList<QUrl> urls = local_urls_from_mime(mime);
   if (urls.isEmpty()) {
     return;
   }
@@ -4173,7 +4384,11 @@ void PakTab::paste_from_clipboard() {
   QVector<QPair<QString, bool>> cut_items;
   PakFuMimePayload payload;
   if (parse_pakfu_mime(mime, &payload)) {
-    is_cut = payload.cut;
+    const bool source_is_this_tab = payload.source_uid == drag_source_uid_;
+    const bool source_is_same_archive = !payload.source_archive.isEmpty() &&
+      !pak_path_.isEmpty() &&
+      fs_paths_equal(payload.source_archive, pak_path_);
+    is_cut = payload.cut && (source_is_this_tab || source_is_same_archive);
     cut_items = payload.items;
   }
 
@@ -7049,6 +7264,8 @@ void PakTab::update_preview() {
         score += 18;
       } else if (skin_ext == "jpg" || skin_ext == "jpeg") {
         score += 16;
+      } else if (skin_ext == "ftx") {
+        score += 21;
       } else if (skin_ext == "lmp") {
         score += (model_ext == "mdl") ? 26 : 12;
       } else if (skin_ext == "mip") {
@@ -7073,7 +7290,7 @@ void PakTab::update_preview() {
         return {};
       }
 
-      QStringList filters = {"*.png", "*.tga", "*.jpg", "*.jpeg", "*.pcx", "*.wal", "*.swl", "*.dds", "*.lmp", "*.mip"};
+      QStringList filters = {"*.png", "*.tga", "*.jpg", "*.jpeg", "*.pcx", "*.wal", "*.swl", "*.dds", "*.lmp", "*.mip", "*.ftx"};
       if (model_ext == "md3" || model_ext == "mdc" || model_ext == "mdr") {
         filters.push_back("*.skin");
       }
@@ -7229,12 +7446,12 @@ void PakTab::update_preview() {
 
       // For multi-surface formats, try to extract per-surface textures referenced by the model so the model viewer can
       // auto-load them from the exported temp directory.
-      if (ext == "md3" || ext == "mdc" || ext == "md4" || ext == "mdr" || ext == "skb" || ext == "skd" || ext == "mdm" || ext == "glm" || ext == "md5mesh" || ext == "iqm" || ext == "obj" || ext == "lwo") {
+      if (ext == "md3" || ext == "mdc" || ext == "md4" || ext == "mdr" || ext == "skb" || ext == "skd" || ext == "mdm" || ext == "glm" || ext == "md5mesh" || ext == "iqm" || ext == "tan" || ext == "obj" || ext == "lwo") {
         const QString normalized_model = normalize_pak_path(pak_path);
         const int slash = normalized_model.lastIndexOf('/');
         const QString model_dir_prefix = (slash >= 0) ? normalized_model.left(slash + 1) : QString();
 
-        const QStringList img_exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "swl", "dds", "lmp", "mip"};
+        const QStringList img_exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "swl", "dds", "lmp", "mip", "ftx"};
 
         // Build a quick case-insensitive lookup across the currently-viewed archive + added files.
         QHash<QString, QString> by_lower;
@@ -7621,7 +7838,7 @@ void PakTab::update_preview() {
 
       if (!wanted.isEmpty()) {
         const BspFamily bsp_family = bsp_family_bytes(bsp_bytes);
-        const QStringList exts_q3 = {"tga", "jpg", "jpeg", "png", "dds"};
+        const QStringList exts_q3 = {"ftx", "tga", "jpg", "jpeg", "png", "dds"};
         const QStringList exts_q2 = {"wal", "swl", "png", "tga", "jpg", "jpeg", "dds"};
         const QStringList exts_q1 = {"mip", "lmp", "pcx", "png", "tga", "jpg", "jpeg"};
 

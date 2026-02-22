@@ -67,6 +67,7 @@ sources = files(
   'game/game_set.cpp',
   'game/game_auto_detect.cpp',
   'formats/dds_image.cpp',
+  'formats/ftx_image.cpp',
   'formats/bsp_preview.cpp',
   'formats/idtech_asset_loader.cpp',
   'formats/idwav_audio.cpp',

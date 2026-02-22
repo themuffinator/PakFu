@@ -39,6 +39,7 @@ PakFu is a cross-platform archive manager and asset viewer for idTech-era and ad
 - [Updates and Releases](#updates-and-releases)
 - [Environment Variables](#environment-variables)
 - [Documentation](#documentation)
+- [Credits](#credits)
 - [Tech Stack](#tech-stack)
 - [License](#license)
 
@@ -88,7 +89,7 @@ PakFu can also check for updates at runtime (GUI) and via CLI (`--check-updates`
 ### Preview And Inspector Support
 - Images:
   - Core: `pcx`, `wal`, `png`, `tga`, `jpg`
-  - Also supported: `jpeg`, `bmp`, `gif`, `tif`, `tiff`, `swl`, `mip`, `lmp`, `dds`
+  - Also supported: `jpeg`, `bmp`, `gif`, `tif`, `tiff`, `swl`, `mip`, `lmp`, `dds`, `ftx`
 - Audio:
   - Core: `wav`, `ogg`
   - Also supported: `mp3`, `idwav` (Doom 3 BFG; converted to WAV for playback when payload codec is supported)
@@ -96,7 +97,7 @@ PakFu can also check for updates at runtime (GUI) and via CLI (`--check-updates`
   - Core: `cin`, `roq`
   - Also supported: `bik`, `ogv`, `mp4`, `mkv`, `avi`, `webm`
 - Models:
-  - `mdl`, `md2`, `md3`, `mdc`, `md4`, `mdr`, `skb`, `skd`, `mdm`, `glm`, `iqm`, `md5mesh`, `obj`, `lwo`
+  - `mdl`, `md2`, `md3`, `mdc`, `md4`, `mdr`, `skb`, `skd`, `mdm`, `glm`, `iqm`, `md5mesh`, `tan`, `obj`, `lwo`
 - idTech inspectors and metadata views:
   - `spr`, `sp2`/`spr2`, `dm2`, `aas`, `qvm`, `progs.dat`, `tag`, `mdx`, `mds`, `skc`, `ska`, `ttf`, `otf`
 - Text and script assets:
@@ -107,6 +108,7 @@ Notes:
 - Multimedia playback support depends on the installed Qt Multimedia backend and codecs.
 - `cin` and `roq` are also handled by built-in cinematic decoders.
 - Some indexed formats (`wal`, `mip`, selected `lmp` cases) use game palettes when required.
+- BSP inspector/preview supports Quake 3-derived families including FAKK variants used by Heavy Metal: F.A.K.K.2 and American McGee's Alice (`FAKK` v42 checksum-header BSPs).
 
 ## Build and Run
 
@@ -192,7 +194,7 @@ Examples:
   - In standalone viewers, mouse wheel and arrow keys cycle sibling files in the same folder.
   - Fullscreen toggles with `F11`, middle mouse, or platform fullscreen shortcut.
 - Archive operations:
-  - Drag-and-drop import/export.
+  - Drag-and-drop import/export across directories and tabs, plus file/folder drops from external applications.
   - Double-click nested container files to mount and browse in-place.
   - Multiple nested layers are supported.
 - Safety:
@@ -208,7 +210,7 @@ Behavior:
 - If profiles exist, PakFu opens directly into Archive View.
 - If none exist, the Installations dialog opens on startup.
 - Auto-detection order: Steam -> GOG.com -> EOS.
-- Auto-detection coverage includes Quake-family, Doom-family, Half-Life, SiN, RtCW/ET, Jedi Outcast/Academy, Elite Force titles, Quake 4, Doom 3, Doom 3 BFG Edition, Prey, and Enemy Territory: Quake Wars.
+- Auto-detection coverage includes Quake-family, Doom-family, Half-Life, SiN, RtCW/ET, Jedi Outcast/Academy, Elite Force titles, Heavy Metal: F.A.K.K.2, American McGee's Alice, Quake 4, Doom 3, Doom 3 BFG Edition, Prey, and Enemy Territory: Quake Wars.
 
 Selector support:
 - `--select-game-install` accepts UID, game key, or display name.
@@ -252,7 +254,12 @@ For full policy details, see `docs/RELEASES.md`.
 - `docs/RELEASES.md` : versioning, release rules, and asset contract.
 - `docs/UI_BUTTON_ICONS.md` : UI action icon inventory.
 - `docs/FILE_ASSOCIATION_ICONS.md` : file association icon mapping and implementation notes.
+- `docs/CREDITS.md` : project attributions, compatibility acknowledgements, and third-party credits.
 - `CHANGELOG.md` : release-by-release change history.
+
+## Credits
+- Creator: themuffinator (DarkMatter Productions)
+- Full attribution list: `docs/CREDITS.md`
 
 ## Tech Stack
 - Language: C++20

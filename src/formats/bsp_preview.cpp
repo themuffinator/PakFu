@@ -71,6 +71,7 @@ constexpr int kQ3DerivedVersion = 47;  // Quake Live, RtCW, Wolf:ET
 constexpr int kRavenBspVersion = 1;
 constexpr int kFusionBspVersion = 1;
 constexpr int kFakk2Version = 12;
+constexpr int kAliceBspVersion = 42;
 constexpr int kEf2DemoVersion = 19;
 constexpr int kEf2Version = 20;
 
@@ -92,6 +93,10 @@ constexpr int kQ3LumpCount = 17;
 constexpr int kQ3ExtendedLumpCount = 18;
 constexpr int kFakk2LumpCount = 20;
 constexpr int kEf2LumpCount = 30;
+
+constexpr bool fakk_uses_checksum_header(int version) {
+  return version == kAliceBspVersion;
+}
 
 enum Q1Lump {
   Q1_ENTITIES = 0,
@@ -246,6 +251,12 @@ bool classify_format(const QString& magic, int version, int file_size, BspHeader
   }
 
   if (magic == "FAKK" && version == kFakk2Version) {
+    set_q3_layout(kFakk2LumpCount, 0, 13, 4, 5, 3, 2, 44, 76, 108);
+    return true;
+  }
+
+  if (magic == "FAKK" && version == kAliceBspVersion) {
+    // American McGee's Alice uses a FAKK-family BSP with a checksum field before the lump table.
     set_q3_layout(kFakk2LumpCount, 0, 13, 4, 5, 3, 2, 44, 76, 108);
     return true;
   }
@@ -501,7 +512,8 @@ bool parse_header(const QByteArray& data, BspHeader* out, QString* error) {
     modern.version = version_modern;
     QString modern_err;
     if (classify_format(modern.magic, modern.version, data.size(), &modern, &modern_err)) {
-      if (parse_lumps(&modern, 8, &modern_err)) {
+      const int lumps_offset = (modern.magic == "FAKK" && fakk_uses_checksum_header(modern.version)) ? 12 : 8;
+      if (parse_lumps(&modern, lumps_offset, &modern_err)) {
         *out = std::move(modern);
         return true;
       }

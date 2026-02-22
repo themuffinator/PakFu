@@ -133,6 +133,8 @@ QString game_id_key(GameId id) {
       return "world_of_padman";
     case GameId::HeavyMetalFakk2:
       return "heavy_metal_fakk2";
+    case GameId::AmericanMcGeesAlice:
+      return "american_mcgees_alice";
     case GameId::Quake4:
       return "quake4";
     case GameId::Doom3:
@@ -244,6 +246,10 @@ GameId game_id_from_key(const QString& key, bool* ok) {
   if (key == "heavy_metal_fakk2" || key == "fakk2") {
     return GameId::HeavyMetalFakk2;
   }
+  if (key == "american_mcgees_alice" || key == "alice" || key == "american_mcgee_alice" ||
+      key == "americanmcgeesalice" || key == "american-mcgees-alice") {
+    return GameId::AmericanMcGeesAlice;
+  }
   if (key == "quake4") {
     return GameId::Quake4;
   }
@@ -329,6 +335,8 @@ QString game_display_name(GameId id) {
       return "World of Padman";
     case GameId::HeavyMetalFakk2:
       return "Heavy Metal: F.A.K.K.2";
+    case GameId::AmericanMcGeesAlice:
+      return "American McGee's Alice";
     case GameId::Quake4:
       return "Quake 4";
     case GameId::Doom3:
@@ -378,6 +386,7 @@ QString default_palette_for_game(GameId id) {
     case GameId::Warfork:
     case GameId::WorldOfPadman:
     case GameId::HeavyMetalFakk2:
+    case GameId::AmericanMcGeesAlice:
     case GameId::Quake4:
     case GameId::Doom3:
     case GameId::Doom3BFGEdition:
@@ -421,6 +430,7 @@ QVector<GameId> supported_game_ids() {
     GameId::Warfork,
     GameId::WorldOfPadman,
     GameId::HeavyMetalFakk2,
+    GameId::AmericanMcGeesAlice,
     GameId::Quake4,
     GameId::Doom3,
     GameId::Doom3BFGEdition,
