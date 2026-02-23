@@ -92,6 +92,7 @@ export VERSION="${version}"
 APPIMAGE_EXTRACT_AND_RUN=1 "${linuxdeployqt_tool}" \
   "${desktop_file}" \
   -qmake="${qmake_bin}" \
+  -unsupported-allow-new-glibc \
   -bundle-non-qt-libs \
   -appimage
 
