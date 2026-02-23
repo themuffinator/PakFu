@@ -93,7 +93,7 @@ if [[ ! -f "${linuxdeployqt_tool}" ]]; then
   chmod +x "${linuxdeployqt_tool}"
 fi
 
-find "${out_dir}" -maxdepth 1 -type f -name "*.AppImage" ! -name "$(basename "${linuxdeployqt_tool}")" -delete
+find "${out_dir}" . -maxdepth 1 -type f -name "*.AppImage" ! -name "$(basename "${linuxdeployqt_tool}")" -delete
 
 disabled_plugins=()
 restore_disabled_plugins() {
@@ -129,7 +129,7 @@ APPIMAGE_EXTRACT_AND_RUN=1 "${linuxdeployqt_tool}" \
   -bundle-non-qt-libs \
   -appimage
 
-generated_appimage="$(find "${out_dir}" -maxdepth 1 -type f -name "*.AppImage" ! -name "$(basename "${linuxdeployqt_tool}")" | head -n1)"
+generated_appimage="$(find "${out_dir}" . -maxdepth 1 -type f -name "*.AppImage" ! -name "$(basename "${linuxdeployqt_tool}")" | head -n1)"
 if [[ -z "${generated_appimage}" ]]; then
   echo "linuxdeployqt did not produce an AppImage." >&2
   exit 1
