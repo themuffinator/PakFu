@@ -198,6 +198,14 @@ jobs:
 
           echo "PAKFU_BINARY=$target_binary" >> "$GITHUB_ENV"
 
+      - name: Configure macOS Runtime Paths
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          echo "DYLD_FRAMEWORK_PATH=${QT_ROOT_DIR}/lib" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=${QT_ROOT_DIR}/lib" >> "$GITHUB_ENV"
+          echo "DYLD_FALLBACK_FRAMEWORK_PATH=${QT_ROOT_DIR}/lib" >> "$GITHUB_ENV"
+
       - name: Validate Build
         shell: bash
         run: |
