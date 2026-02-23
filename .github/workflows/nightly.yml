@@ -162,15 +162,41 @@ jobs:
           name: pakfu-build-${{ matrix.os }}
           path: .
 
-      - name: Resolve Binary Path
+      - name: Prepare Binary Artifact
         shell: bash
         run: |
+          mkdir -p builddir/src
+
+          target_binary="builddir/src/pakfu"
+          candidates=("builddir/src/pakfu" "pakfu")
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            echo "PAKFU_BINARY=builddir/src/pakfu.exe" >> "$GITHUB_ENV"
-          else
-            chmod +x builddir/src/pakfu
-            echo "PAKFU_BINARY=builddir/src/pakfu" >> "$GITHUB_ENV"
+            target_binary="builddir/src/pakfu.exe"
+            candidates=("builddir/src/pakfu.exe" "pakfu.exe")
           fi
+
+          source_binary=""
+          for candidate in "${candidates[@]}"; do
+            if [[ -f "$candidate" ]]; then
+              source_binary="$candidate"
+              break
+            fi
+          done
+
+          if [[ -z "$source_binary" ]]; then
+            echo "Unable to locate downloaded pakfu binary." >&2
+            find . -maxdepth 4 -type f | sort
+            exit 1
+          fi
+
+          if [[ "$source_binary" != "$target_binary" ]]; then
+            mv "$source_binary" "$target_binary"
+          fi
+
+          if [[ "${{ matrix.os }}" != "windows-latest" ]]; then
+            chmod +x "$target_binary"
+          fi
+
+          echo "PAKFU_BINARY=$target_binary" >> "$GITHUB_ENV"
 
       - name: Validate Build
         shell: bash
@@ -211,6 +237,40 @@ jobs:
         with:
           name: pakfu-build-${{ matrix.os }}
           path: .
+
+      - name: Prepare Binary Artifact
+        shell: bash
+        run: |
+          mkdir -p builddir/src
+
+          target_binary="builddir/src/pakfu"
+          candidates=("builddir/src/pakfu" "pakfu")
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            target_binary="builddir/src/pakfu.exe"
+            candidates=("builddir/src/pakfu.exe" "pakfu.exe")
+          fi
+
+          source_binary=""
+          for candidate in "${candidates[@]}"; do
+            if [[ -f "$candidate" ]]; then
+              source_binary="$candidate"
+              break
+            fi
+          done
+
+          if [[ -z "$source_binary" ]]; then
+            echo "Unable to locate downloaded pakfu binary." >&2
+            find . -maxdepth 4 -type f | sort
+            exit 1
+          fi
+
+          if [[ "$source_binary" != "$target_binary" ]]; then
+            mv "$source_binary" "$target_binary"
+          fi
+
+          if [[ "${{ matrix.os }}" != "windows-latest" ]]; then
+            chmod +x "$target_binary"
+          fi
 
       - name: Write Nightly Version
         shell: bash
