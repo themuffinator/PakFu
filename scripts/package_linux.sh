@@ -94,6 +94,32 @@ if [[ ! -f "${linuxdeployqt_tool}" ]]; then
 fi
 
 find "${out_dir}" -maxdepth 1 -type f -name "*.AppImage" ! -name "$(basename "${linuxdeployqt_tool}")" -delete
+
+disabled_plugins=()
+restore_disabled_plugins() {
+  for plugin in "${disabled_plugins[@]}"; do
+    if [[ -f "${plugin}.pakfu-disabled" ]]; then
+      mv "${plugin}.pakfu-disabled" "${plugin}" || true
+    fi
+  done
+}
+trap restore_disabled_plugins EXIT
+
+qt_plugins_dir="${QT_PLUGIN_PATH:-}"
+if [[ -z "${qt_plugins_dir}" ]]; then
+  qt_plugins_dir="$("${qmake_bin}" -query QT_INSTALL_PLUGINS 2>/dev/null || true)"
+fi
+
+if [[ -n "${qt_plugins_dir}" && -d "${qt_plugins_dir}" ]]; then
+  while IFS= read -r plugin; do
+    if ldd "${plugin}" 2>/dev/null | grep -q "not found"; then
+      mv "${plugin}" "${plugin}.pakfu-disabled"
+      disabled_plugins+=("${plugin}")
+      echo "Disabled Qt plugin with unresolved dependencies: ${plugin}"
+    fi
+  done < <(find "${qt_plugins_dir}" -type f -name "*.so" | sort)
+fi
+
 export VERSION="${version}"
 APPIMAGE_EXTRACT_AND_RUN=1 "${linuxdeployqt_tool}" \
   "${desktop_file}" \
