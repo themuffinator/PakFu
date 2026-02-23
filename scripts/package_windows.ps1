@@ -161,7 +161,7 @@ if (Test-Path $wixWork) {
 }
 New-Item -ItemType Directory -Force -Path $wixWork | Out-Null
 
-$productWxs = @"
+$productWxs = @'
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product
@@ -187,7 +187,7 @@ $productWxs = @"
     </Directory>
   </Fragment>
 </Wix>
-"@
+'@
 
 $productWxsPath = Join-Path $wixWork "Product.wxs"
 $appFilesWxsPath = Join-Path $wixWork "AppFiles.wxs"

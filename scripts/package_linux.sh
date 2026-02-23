@@ -7,7 +7,7 @@ version="${3:-$(cat VERSION)}"
 root_dir="$(cd "$(dirname "$0")/.." && pwd)"
 raw_arch="${4:-$(uname -m)}"
 case "${raw_arch}" in
-  x86_64|amd64)
+  x86_64|amd64|x64)
     arch="x64"
     linuxdeploy_arch="x86_64"
     ;;
