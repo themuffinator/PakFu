@@ -215,7 +215,7 @@ if ($LASTEXITCODE -ne 0) {
   Pop-Location
   exit $LASTEXITCODE
 }
-& $wix.Light -nologo -spdb -sice:ICE38 -sice:ICE91 -out $installerMsi Product.wixobj AppFiles.wixobj
+& $wix.Light -nologo -spdb -sice:ICE38 -sice:ICE64 -sice:ICE91 -out $installerMsi Product.wixobj AppFiles.wixobj
 if ($LASTEXITCODE -ne 0) {
   Pop-Location
   exit $LASTEXITCODE

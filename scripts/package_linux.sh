@@ -48,7 +48,7 @@ portable_archive="${out_dir}/pakfu-${version}-linux-${arch}-portable.tar.gz"
 installer_appimage="${out_dir}/pakfu-${version}-linux-${arch}-installer.AppImage"
 app_dir="${out_dir}/PakFu.AppDir"
 desktop_file="${app_dir}/usr/share/applications/pakfu.desktop"
-icon_file="${app_dir}/usr/share/icons/hicolor/256x256/apps/pakfu.png"
+icon_file="${app_dir}/usr/share/icons/hicolor/256x256/apps/pakfu-app.png"
 linuxdeployqt_tool="${out_dir}/linuxdeployqt-${linuxdeploy_arch}.AppImage"
 
 rm -rf "${portable_dir}" "${portable_archive}" "${installer_appimage}" "${app_dir}"
@@ -70,13 +70,19 @@ fi
 if [[ -f "${root_dir}/assets/img/pakfu-icon-256.png" ]]; then
   cp "${root_dir}/assets/img/pakfu-icon-256.png" "${icon_file}"
 fi
+mkdir -p "${app_dir}/usr/share/doc/libc6"
+if [[ -f "/usr/share/doc/libc6/copyright" ]]; then
+  cp "/usr/share/doc/libc6/copyright" "${app_dir}/usr/share/doc/libc6/copyright"
+else
+  printf "Bundled by PakFu nightly build.\n" > "${app_dir}/usr/share/doc/libc6/copyright"
+fi
 
 cat > "${desktop_file}" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=PakFu
 Exec=pakfu
-Icon=pakfu
+Icon=pakfu-app
 Categories=Utility;
 Terminal=false
 DESKTOP
@@ -93,6 +99,7 @@ APPIMAGE_EXTRACT_AND_RUN=1 "${linuxdeployqt_tool}" \
   "${desktop_file}" \
   -qmake="${qmake_bin}" \
   -unsupported-allow-new-glibc \
+  -no-copy-copyright-files \
   -bundle-non-qt-libs \
   -appimage
 
