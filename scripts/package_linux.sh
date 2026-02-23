@@ -88,15 +88,12 @@ if [[ ! -f "${linuxdeployqt_tool}" ]]; then
 fi
 
 find "${out_dir}" -maxdepth 1 -type f -name "*.AppImage" ! -name "$(basename "${linuxdeployqt_tool}")" -delete
-(
-  cd "${out_dir}"
-  export VERSION="${version}"
-  APPIMAGE_EXTRACT_AND_RUN=1 "${linuxdeployqt_tool}" \
-    "${desktop_file}" \
-    -qmake="${qmake_bin}" \
-    -bundle-non-qt-libs \
-    -appimage
-)
+export VERSION="${version}"
+APPIMAGE_EXTRACT_AND_RUN=1 "${linuxdeployqt_tool}" \
+  "${desktop_file}" \
+  -qmake="${qmake_bin}" \
+  -bundle-non-qt-libs \
+  -appimage
 
 generated_appimage="$(find "${out_dir}" -maxdepth 1 -type f -name "*.AppImage" ! -name "$(basename "${linuxdeployqt_tool}")" | head -n1)"
 if [[ -z "${generated_appimage}" ]]; then

@@ -108,6 +108,7 @@ if (-not (Test-Path $exe)) {
 }
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+$OutDir = (Resolve-Path $OutDir).Path
 
 $portableDirName = "pakfu-$Version-windows-$Arch-portable"
 $portableDir = Join-Path $OutDir $portableDirName
