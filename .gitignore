@@ -46,3 +46,7 @@ dist/
 # Local reference checkouts (too large for repo)
 .tmp_refs/ffmpeg/
 tmp/
+dist-wsl-test/
+
+*.log
+_log_*
