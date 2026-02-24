@@ -32,7 +32,7 @@ FileAssociationsDialog::FileAssociationsDialog(QWidget* parent) : QDialog(parent
 	layout->setContentsMargins(18, 16, 18, 16);
 	layout->setSpacing(10);
 
-	auto* title = new QLabel("Manage archive, image, video, audio, and model file associations by format.", this);
+	auto* title = new QLabel("Manage archive, image, video, audio, and model Open With registrations by format.", this);
 	QFont title_font = title->font();
 	title_font.setBold(true);
 	title_font.setPointSize(title_font.pointSize() + 1);
@@ -40,7 +40,7 @@ FileAssociationsDialog::FileAssociationsDialog(QWidget* parent) : QDialog(parent
 	layout->addWidget(title);
 
 	auto* help = new QLabel(
-		"Use tabs to configure archives, images, videos, audio, and models independently. On Windows, you may still need to confirm defaults in Settings -> Default apps.",
+		"Use tabs to configure archives, images, videos, audio, and models independently. On Windows, this registers PakFu as an Open With option; defaults remain user-selected in Settings -> Default apps.",
 		this);
 	help->setWordWrap(true);
 	layout->addWidget(help);
@@ -219,7 +219,7 @@ void FileAssociationsDialog::refresh_status() {
 
 	if (summary_label_) {
 #if defined(Q_OS_WIN)
-		summary_label_->setText(QString("Registered %1 of %2 managed formats. Archives: %3/%4. Images: %5/%6. Videos: %7/%8. Audio: %9/%10. Models: %11/%12.")
+		summary_label_->setText(QString("Open-with ready for %1 of %2 managed formats. Archives: %3/%4. Images: %5/%6. Videos: %7/%8. Audio: %9/%10. Models: %11/%12.")
 		                        .arg(registered_count)
 		                        .arg(rows_.size())
 		                        .arg(archive_registered)
@@ -266,7 +266,7 @@ void FileAssociationsDialog::apply_changes() {
     return;
   }
 
-  QString text = "File associations were updated.";
+  QString text = "Open With registrations were updated.";
   if (!warnings.isEmpty()) {
     text += "\n\nNotes:\n" + warnings.join('\n');
   }

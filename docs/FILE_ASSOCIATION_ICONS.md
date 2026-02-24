@@ -60,6 +60,7 @@ PakFu uses a per-extension icon set for managed archive, image, video, audio, an
 ## Notes
 
 - In-app management is split into a dedicated **File -> File Associations...** dialog with tabbed **Archives**, **Images**, **Videos**, **Audio**, and **Models** lists.
-- Windows registration writes per-extension `ProgID` entries and `DefaultIcon` paths under `HKCU\Software\Classes`.
+- Windows registration writes per-extension `ProgID`/`DefaultIcon` entries plus `.ext\OpenWithProgids` and `Applications\pakfu.exe\SupportedTypes` under `HKCU\Software\Classes`.
+- PakFu does not set the `.ext` default handler key; this keeps defaults user-managed while still listing PakFu in **Open with**.
 - Icons are generated at registration time and cached in the app-local data directory (`file-association-icons`), with a fallback to the app icon if generation fails.
 - macOS and Linux associations are installer-managed in this repository; the dialog reports this state and keeps controls read-only. The extension list above is the canonical target set for installer integration.

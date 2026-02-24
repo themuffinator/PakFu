@@ -33,7 +33,7 @@ public:
   // Returns a null icon when the extension is not managed.
   static QIcon icon_for_extension(const QString& extension, const QSize& icon_size = QSize(32, 32));
 
-  // Returns true when a specific managed extension appears registered to PakFu.
+  // Returns true when a specific managed extension appears registered for "Open with".
   static bool is_extension_registered(const QString& extension, QString* details = nullptr);
 
   // Enables/disables one managed extension registration.
@@ -42,10 +42,10 @@ public:
   // Opens the system's default apps UI when available.
   static void open_default_apps_settings();
 
-  // Returns true if this app appears to be registered as a handler for all managed types.
+  // Returns true if this app appears in "Open with" for all managed types.
   static bool is_pak_registered(QString* details);
 
-  // Registers this app as a handler for all managed types (best-effort).
-  // Note: On modern Windows, the user may still need to choose PakFu in "Default apps".
+  // Registers this app in "Open with" for all managed types (best-effort).
+  // Note: On modern Windows, this does not set defaults; user choice is required in "Default apps".
   static bool apply_pak_registration(QString* error);
 };

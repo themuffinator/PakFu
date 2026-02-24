@@ -237,27 +237,40 @@ bool is_extension_registered_on_windows(const AssociationSpec& spec, const QStri
 	const QString dot_ext = dotted_extension(spec.extension);
 	const QString expected_prog_id = prog_id_for(spec.extension);
 
-	QSettings ext_key(QString("HKEY_CURRENT_USER\\Software\\Classes\\%1").arg(dot_ext), QSettings::NativeFormat);
-	const QString prog_id = ext_key.value(".").toString().trimmed();
+	QSettings open_with_key(QString("HKEY_CURRENT_USER\\Software\\Classes\\%1\\OpenWithProgids").arg(dot_ext),
+	                        QSettings::NativeFormat);
+	const bool has_open_with_prog_id = open_with_key.contains(expected_prog_id);
 
-	QSettings cmd_key(QString("HKEY_CURRENT_USER\\Software\\Classes\\%1\\shell\\open\\command").arg(expected_prog_id),
-	                  QSettings::NativeFormat);
-	const QString open_cmd = cmd_key.value(".").toString().trimmed();
+	QSettings app_types(QString("HKEY_CURRENT_USER\\Software\\Classes\\Applications\\%1\\SupportedTypes").arg(exe_name),
+	                    QSettings::NativeFormat);
+	const bool has_supported_type = app_types.contains(dot_ext);
+
+	QSettings app_cmd_key(QString("HKEY_CURRENT_USER\\Software\\Classes\\Applications\\%1\\shell\\open\\command").arg(exe_name),
+	                      QSettings::NativeFormat);
+	const QString app_open_cmd = app_cmd_key.value(".").toString().trimmed();
+
+	QSettings prog_cmd_key(QString("HKEY_CURRENT_USER\\Software\\Classes\\%1\\shell\\open\\command").arg(expected_prog_id),
+	                       QSettings::NativeFormat);
+	const QString prog_open_cmd = prog_cmd_key.value(".").toString().trimmed();
 
 	QSettings icon_key(QString("HKEY_CURRENT_USER\\Software\\Classes\\%1\\DefaultIcon").arg(expected_prog_id),
 	                   QSettings::NativeFormat);
 	const QString icon_value = icon_key.value(".").toString().trimmed();
 
-	const bool ok = (prog_id.compare(expected_prog_id, Qt::CaseInsensitive) == 0) &&
-	                open_cmd.contains(exe_name, Qt::CaseInsensitive) &&
+	const bool ok = has_open_with_prog_id &&
+	                has_supported_type &&
+	                app_open_cmd.contains(exe_name, Qt::CaseInsensitive) &&
+	                prog_open_cmd.contains(exe_name, Qt::CaseInsensitive) &&
 	                !icon_value.isEmpty();
 	if (details) {
 		*details = QString("%1: %2")
 		             .arg(dot_ext,
-		                  ok ? "registered"
-		                     : QString("missing (ProgID=%1, Command=%2, Icon=%3)")
-		                         .arg(prog_id.isEmpty() ? "<unset>" : prog_id,
-		                              open_cmd.isEmpty() ? "<unset>" : open_cmd,
+		                  ok ? "open-with ready"
+		                     : QString("missing (OpenWith=%1, SupportedTypes=%2, AppCommand=%3, ProgCommand=%4, Icon=%5)")
+		                         .arg(has_open_with_prog_id ? "ok" : "<unset>",
+		                              has_supported_type ? "ok" : "<unset>",
+		                              app_open_cmd.isEmpty() ? "<unset>" : app_open_cmd,
+		                              prog_open_cmd.isEmpty() ? "<unset>" : prog_open_cmd,
 		                              icon_value.isEmpty() ? "<unset>" : icon_value));
 	}
 	return ok;
@@ -276,9 +289,6 @@ bool register_extension_on_windows(const AssociationSpec& spec,
 	const QString icon_path = icon_paths.value(spec.extension, exe);
 	const QString icon_ref = QString("%1,0").arg(quoted(QDir::toNativeSeparators(icon_path)));
 
-	QSettings ext_key(QString("HKEY_CURRENT_USER\\Software\\Classes\\%1").arg(dot_ext), QSettings::NativeFormat);
-	ext_key.setValue(".", prog_id);
-
 	QSettings open_with_key(QString("HKEY_CURRENT_USER\\Software\\Classes\\%1\\OpenWithProgids").arg(dot_ext),
 	                        QSettings::NativeFormat);
 	open_with_key.setValue(prog_id, QString());
@@ -293,14 +303,13 @@ bool register_extension_on_windows(const AssociationSpec& spec,
 	                  QSettings::NativeFormat);
 	cmd_key.setValue(".", open_cmd);
 
-	ext_key.sync();
 	open_with_key.sync();
 	prog_key.sync();
 	icon_key.sync();
 	cmd_key.sync();
 
-	if (ext_key.status() != QSettings::NoError || open_with_key.status() != QSettings::NoError ||
-	    prog_key.status() != QSettings::NoError || icon_key.status() != QSettings::NoError ||
+	if (open_with_key.status() != QSettings::NoError || prog_key.status() != QSettings::NoError ||
+	    icon_key.status() != QSettings::NoError ||
 	    cmd_key.status() != QSettings::NoError) {
 		if (error) {
 			*error = QString("Failed to register %1 in the current user registry.").arg(dot_ext);
@@ -314,6 +323,7 @@ bool unregister_extension_on_windows(const AssociationSpec& spec, const QString&
 	const QString dot_ext = dotted_extension(spec.extension);
 	const QString prog_id = prog_id_for(spec.extension);
 
+	// Cleanup legacy default-association registrations from older PakFu builds.
 	QSettings ext_key(QString("HKEY_CURRENT_USER\\Software\\Classes\\%1").arg(dot_ext), QSettings::NativeFormat);
 	const QString current_prog = ext_key.value(".").toString().trimmed();
 	if (current_prog.compare(prog_id, Qt::CaseInsensitive) == 0) {
@@ -328,11 +338,16 @@ bool unregister_extension_on_windows(const AssociationSpec& spec, const QString&
 	                    QSettings::NativeFormat);
 	app_types.remove(dot_ext);
 
+	QSettings classes_root("HKEY_CURRENT_USER\\Software\\Classes", QSettings::NativeFormat);
+	classes_root.remove(prog_id);
+
 	ext_key.sync();
 	open_with_key.sync();
 	app_types.sync();
+	classes_root.sync();
 
-	if (ext_key.status() != QSettings::NoError || open_with_key.status() != QSettings::NoError || app_types.status() != QSettings::NoError) {
+	if (ext_key.status() != QSettings::NoError || open_with_key.status() != QSettings::NoError ||
+	    app_types.status() != QSettings::NoError || classes_root.status() != QSettings::NoError) {
 		if (error) {
 			*error = QString("Failed to update registration for %1.").arg(dot_ext);
 		}
@@ -541,6 +556,12 @@ bool FileAssociations::set_extension_registration(const QString& extension, bool
 			app_root.sync();
 			app_cmd.sync();
 			app_types.sync();
+			if (app_root.status() != QSettings::NoError || app_cmd.status() != QSettings::NoError ||
+			    app_types.status() != QSettings::NoError) {
+				ok = false;
+				op_error = QString("Failed to register %1 in the current user registry.")
+				             .arg(dotted_extension(spec->extension));
+			}
 		}
 	} else {
 		ok = unregister_extension_on_windows(*spec, exe_name, &op_error);
@@ -590,7 +611,7 @@ bool FileAssociations::is_pak_registered(QString* details) {
 	}
 
 	if (details) {
-		*details = QString("Registered %1/%2 managed extensions (%3).\n%4")
+		*details = QString("Open-with ready for %1/%2 managed extensions (%3).\n%4")
 		             .arg(ok_count)
 		             .arg(association_specs().size())
 		             .arg(managed_extension_list(), lines.join('\n'));
@@ -616,7 +637,7 @@ bool FileAssociations::apply_pak_registration(QString* error) {
 		if (!set_extension_registration(spec.extension, true, &ext_warning)) {
 			if (error) {
 				*error = ext_warning.isEmpty()
-				           ? QString("Unable to register .%1 file association.").arg(spec.extension)
+				           ? QString("Unable to register .%1 in Open with.").arg(spec.extension)
 				           : ext_warning;
 			}
 			return false;
@@ -626,8 +647,7 @@ bool FileAssociations::apply_pak_registration(QString* error) {
 		}
 	}
 
-	// Windows 10/11 typically require user confirmation via "Default apps" UI, but this at least
-	// registers the ProgIDs and commands so they can be selected.
+	// Windows 10/11 require user action for defaults; this only registers Open with candidates.
 	open_default_apps_settings();
 
 	if (error && !warnings.isEmpty()) {
