@@ -207,7 +207,7 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
     "repo");
   const QCommandLineOption update_channel_option(
     "update-channel",
-    "Override the update channel (stable, beta, dev).",
+    "Override the update channel (full releases only; prereleases are ignored).",
     "channel");
   const QCommandLineOption output_option(
     {"o", "output"},

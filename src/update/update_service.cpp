@@ -30,6 +30,10 @@ constexpr char kLastCheckKey[] = "updates/lastCheckUtc";
 constexpr char kSkipVersionKey[] = "updates/skipVersion";
 constexpr char kAutoCheckKey[] = "updates/autoCheck";
 
+QUrl releases_api_url(const QString& github_repo) {
+  return QUrl(QString("https://api.github.com/repos/%1/releases").arg(github_repo));
+}
+
 int score_asset_name(const QString& name) {
   const QString lower = name.toLower();
   int score = 0;
@@ -276,12 +280,7 @@ void UpdateService::check_for_updates(bool user_initiated, QWidget* parent) {
   QSettings settings;
   settings.setValue(kLastCheckKey, QDateTime::currentDateTimeUtc());
 
-  QUrl api_url;
-  if (channel_.compare("stable", Qt::CaseInsensitive) == 0) {
-    api_url = QUrl(QString("https://api.github.com/repos/%1/releases/latest").arg(github_repo_));
-  } else {
-    api_url = QUrl(QString("https://api.github.com/repos/%1/releases").arg(github_repo_));
-  }
+  const QUrl api_url = releases_api_url(github_repo_);
 
   QNetworkRequest request(api_url);
   request.setRawHeader("Accept", "application/vnd.github+json");
@@ -322,12 +321,7 @@ UpdateCheckResult UpdateService::check_for_updates_sync() {
     return result;
   }
 
-  QUrl api_url;
-  if (channel_.compare("stable", Qt::CaseInsensitive) == 0) {
-    api_url = QUrl(QString("https://api.github.com/repos/%1/releases/latest").arg(github_repo_));
-  } else {
-    api_url = QUrl(QString("https://api.github.com/repos/%1/releases").arg(github_repo_));
-  }
+  const QUrl api_url = releases_api_url(github_repo_);
 
   QNetworkRequest request(api_url);
   request.setRawHeader("Accept", "application/vnd.github+json");
@@ -377,7 +371,7 @@ UpdateCheckResult UpdateService::check_for_updates_sync() {
 
   if (info.version.isEmpty()) {
     result.state = UpdateCheckState::NoRelease;
-    result.message = "No valid release was found.";
+    result.message = "No valid full release was found.";
     return result;
   }
 
@@ -461,7 +455,7 @@ void UpdateService::on_check_finished() {
   if (info.version.isEmpty()) {
     UpdateCheckResult result;
     result.state = UpdateCheckState::NoRelease;
-    result.message = "No valid release was found.";
+    result.message = "No valid full release was found.";
     if (user_initiated_) {
       show_error_message(parent_window_, result.message);
     }
@@ -513,6 +507,10 @@ void UpdateService::show_update_prompt(const UpdateInfo& info, QWidget* parent, 
 }
 
 UpdateInfo UpdateService::parse_release_object(const QJsonObject& release_obj) const {
+  if (release_obj.value("draft").toBool() || release_obj.value("prerelease").toBool()) {
+    return UpdateInfo{};
+  }
+
   UpdateInfo info;
   info.version = release_obj.value("tag_name").toString().trimmed();
   info.title = release_obj.value("name").toString().trimmed();
@@ -525,7 +523,6 @@ UpdateInfo UpdateService::parse_release_object(const QJsonObject& release_obj) c
 }
 
 UpdateInfo UpdateService::select_release_from_array(const QJsonArray& releases) const {
-  const bool wants_prerelease = channel_.compare("stable", Qt::CaseInsensitive) != 0;
   for (const QJsonValue& value : releases) {
     if (!value.isObject()) {
       continue;
@@ -535,10 +532,7 @@ UpdateInfo UpdateService::select_release_from_array(const QJsonArray& releases) 
       continue;
     }
     const bool prerelease = release_obj.value("prerelease").toBool();
-    if (wants_prerelease && !prerelease) {
-      continue;
-    }
-    if (!wants_prerelease && prerelease) {
+    if (prerelease) {
       continue;
     }
     return parse_release_object(release_obj);

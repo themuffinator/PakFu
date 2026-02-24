@@ -167,7 +167,7 @@ Legacy aliases still accepted:
 
 Update source overrides:
 - `--update-repo <owner/name>`
-- `--update-channel <stable|beta|dev>`
+- `--update-channel <stable|beta|dev>` (full releases only; prereleases are ignored)
 
 Examples:
 ```sh
@@ -221,7 +221,7 @@ PakFu can check GitHub Releases at runtime and from CLI.
 
 Build-time updater config:
 - `-Dgithub_repo=themuffinator/PakFu` (default; see `meson_options.txt`)
-- `-Dupdate_channel=stable|beta|dev` (default: `stable`; see `meson_options.txt`)
+- `-Dupdate_channel=stable|beta|dev` (default: `stable`; full releases only; see `meson_options.txt`)
 
 Release automation:
 - Nightly pipeline: `.github/workflows/nightly.yml`
