@@ -119,6 +119,16 @@ namespace {
     return false;
   }
 
+  const QFileInfo installer_info(installer_path);
+  if (!installer_info.exists() || !installer_info.isFile()) {
+    if (error) {
+      *error = "Downloaded installer file is missing.";
+    }
+    return false;
+  }
+
+  const QString installer_absolute_path = installer_info.absoluteFilePath();
+
   const QString temp_dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
   if (temp_dir.isEmpty()) {
     if (error) {
@@ -147,27 +157,30 @@ namespace {
 
   const QByteArray payload =
     "@echo off\r\n"
-    "setlocal\r\n"
-    "set \"PID=%1\"\r\n"
-    "set \"INSTALLER=%~2\"\r\n"
+    "setlocal EnableExtensions\r\n"
+    "set \"PID=%~1\"\r\n"
+    "set \"INSTALLER=%~f2\"\r\n"
+    "set \"EXT=%~x2\"\r\n"
     ":waitloop\r\n"
     "tasklist /FI \"PID eq %PID%\" 2>NUL | findstr /I \"%PID%\" >NUL\r\n"
     "if not errorlevel 1 (\r\n"
     "  timeout /T 1 /NOBREAK >NUL\r\n"
     "  goto waitloop\r\n"
     ")\r\n"
-    "start \"\" \"%INSTALLER%\"\r\n"
-    "del \"%~f0\" >NUL 2>&1\r\n"
+    "if /I \"%EXT%\"==\".msi\" (\r\n"
+    "  start \"\" msiexec.exe /i \"%INSTALLER%\"\r\n"
+    ") else (\r\n"
+    "  start \"\" \"%INSTALLER%\"\r\n"
+    ")\r\n"
+    "start \"\" /B cmd.exe /C del /F /Q \"%~f0\" >NUL 2>&1\r\n"
     "endlocal\r\n";
   script.write(payload);
   script.close();
 
   const QString script_path = QDir::toNativeSeparators(script.fileName());
-  const QString installer_arg = QDir::toNativeSeparators(installer_path);
-  const QString cmd =
-    QString("\"\"%1\" %2 \"%3\"\"").arg(script_path, QString::number(pid), installer_arg);
+  const QString installer_arg = QDir::toNativeSeparators(installer_absolute_path);
 
-  if (!QProcess::startDetached("cmd.exe", {"/C", cmd})) {
+  if (!QProcess::startDetached("cmd.exe", {"/C", script_path, QString::number(pid), installer_arg})) {
     if (error) {
       *error = "Unable to start deferred update launcher.";
     }
@@ -198,7 +211,7 @@ namespace {
     "  chmod +x \"$INSTALLER\" 2>/dev/null\n"
     "  \"$INSTALLER\" >/dev/null 2>&1 &\n"
     "fi\n"
-    "rm -- \"$0\" >/dev/null 2>&1\n";
+    "rm -- \"$0\" >/dev/null 2>&1 &\n";
   script.write(payload);
   script.close();
 
@@ -206,7 +219,7 @@ namespace {
                         QFile::permissions(script.fileName()) | QFileDevice::ExeUser | QFileDevice::ReadUser |
                           QFileDevice::WriteUser);
 
-  if (!QProcess::startDetached("sh", {script.fileName(), QString::number(pid), installer_path})) {
+  if (!QProcess::startDetached("sh", {script.fileName(), QString::number(pid), installer_absolute_path})) {
     if (error) {
       *error = "Unable to start deferred update launcher.";
     }
@@ -837,12 +850,12 @@ bool UpdateService::launch_installer(const QString& file_path, QWidget* parent) 
   QMessageBox box(parent);
   box.setIcon(QMessageBox::Information);
   box.setWindowTitle("Install Update");
-  box.setText("The update has been downloaded.\n\nPakFu can quit now and launch the installer after it closes.");
+  box.setText("The update has been downloaded.\n\nPakFu will close and start the installer.");
   if (parent && parent->windowFlags().testFlag(Qt::SplashScreen)) {
     box.setWindowFlag(Qt::WindowStaysOnTopHint, true);
   }
 
-  QPushButton* install = box.addButton("Install and Quit", QMessageBox::AcceptRole);
+  QPushButton* install = box.addButton("Install and Restart", QMessageBox::AcceptRole);
   QPushButton* later = box.addButton("Later", QMessageBox::RejectRole);
   install->setIcon(UiIcons::icon(UiIcons::Id::Save, install->style()));
   later->setIcon(UiIcons::icon(UiIcons::Id::ExitApp, later->style()));
@@ -862,6 +875,7 @@ bool UpdateService::launch_installer(const QString& file_path, QWidget* parent) 
     return false;
   }
 
+  QApplication::closeAllWindows();
   QCoreApplication::quit();
   return true;
 }
