@@ -75,6 +75,9 @@ private:
   PakTab* open_pak_internal(const QString& path, bool allow_auto_select, bool add_recent);
   void save_current();
   void save_current_as();
+  void extract_current_selection();
+  void extract_current_archive();
+  void convert_current_selection();
   void open_preferences();
   void update_window_title();
   void close_tab(int index);
@@ -116,6 +119,9 @@ private:
   QAction* file_associations_action_ = nullptr;
   QAction* save_action_ = nullptr;
   QAction* save_as_action_ = nullptr;
+  QAction* extract_selected_action_ = nullptr;
+  QAction* extract_all_action_ = nullptr;
+  QAction* convert_selected_action_ = nullptr;
   QAction* undo_action_ = nullptr;
   QAction* redo_action_ = nullptr;
   QAction* cut_action_ = nullptr;

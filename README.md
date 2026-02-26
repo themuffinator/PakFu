@@ -65,6 +65,8 @@ PakFu can also check for updates at runtime (GUI) and via CLI (`--check-updates`
 - Archive and folder support in both GUI and CLI.
 - Dedicated standalone viewer windows for image, video, audio, and model files.
 - Nested container mounting (open archives inside archives).
+- One-click `Extract Selected` and `Extract All` workflows for the active archive tab.
+- Batch conversion tool for selected assets with category tabs (images, video, archives, models, sound, maps, text, other).
 - 3D preview renderer selection with Vulkan/OpenGL behavior and fallback.
 - Fly camera controls for 3D preview (`Right Mouse + WASD`, `Q/E`, mouse wheel speed, `Shift` faster, `Ctrl` slower, `F` frame, `R`/`Home` reset).
 - Auto-detection and management of per-game installation profiles.
@@ -197,6 +199,7 @@ Examples:
   - Drag-and-drop import/export across directories and tabs, plus file/folder drops from external applications.
   - Double-click nested container files to mount and browse in-place.
   - Multiple nested layers are supported.
+  - `File` menu and context menu actions support `Extract Selected`, `Extract All` (archive views), and `Convert Selected Assets...`.
 - Safety:
   - Pure PAK Protector is enabled by default for official archives (read-only protection with Save As workflow).
 

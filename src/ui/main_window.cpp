@@ -1328,15 +1328,29 @@ void MainWindow::setup_menus() {
   connect(recent_files_menu_, &QMenu::aboutToShow, this, &MainWindow::rebuild_recent_files_menu);
   rebuild_recent_files_menu();
 
-  save_action_ = file_menu->addAction("Save");
+  save_action_ = file_menu->addAction("Save Archive");
   save_action_->setIcon(UiIcons::icon(UiIcons::Id::Save, style()));
   save_action_->setShortcut(QKeySequence::Save);
   connect(save_action_, &QAction::triggered, this, &MainWindow::save_current);
 
-  save_as_action_ = file_menu->addAction("Save As...");
+  save_as_action_ = file_menu->addAction("Save Archive As...");
   save_as_action_->setIcon(UiIcons::icon(UiIcons::Id::SaveAs, style()));
   save_as_action_->setShortcut(QKeySequence::SaveAs);
   connect(save_as_action_, &QAction::triggered, this, &MainWindow::save_current_as);
+
+  file_menu->addSeparator();
+
+  extract_selected_action_ = file_menu->addAction("Extract Selected...");
+  extract_selected_action_->setIcon(UiIcons::icon(UiIcons::Id::OpenFolder, style()));
+  connect(extract_selected_action_, &QAction::triggered, this, &MainWindow::extract_current_selection);
+
+  extract_all_action_ = file_menu->addAction("Extract All...");
+  extract_all_action_->setIcon(UiIcons::icon(UiIcons::Id::OpenFolder, style()));
+  connect(extract_all_action_, &QAction::triggered, this, &MainWindow::extract_current_archive);
+
+  convert_selected_action_ = file_menu->addAction("Convert Selected Assets...");
+  convert_selected_action_->setIcon(UiIcons::icon(UiIcons::Id::Configure, style()));
+  connect(convert_selected_action_, &QAction::triggered, this, &MainWindow::convert_current_selection);
 
   file_menu->addSeparator();
 
@@ -1998,6 +2012,15 @@ void MainWindow::update_action_states() {
   if (save_as_action_) {
     save_as_action_->setEnabled(has_pak && loaded);
   }
+  if (extract_selected_action_) {
+    extract_selected_action_->setEnabled(has_pak && loaded);
+  }
+  if (extract_all_action_) {
+    extract_all_action_->setEnabled(has_pak && loaded && pak_tab->can_extract_all());
+  }
+  if (convert_selected_action_) {
+    convert_selected_action_->setEnabled(has_pak && loaded);
+  }
 
   if (undo_action_) {
     const QUndoStack* stack = pak_tab ? pak_tab->undo_stack() : nullptr;
@@ -2239,6 +2262,30 @@ void MainWindow::save_current_as() {
     return;
   }
   save_tab_as(tab);
+}
+
+void MainWindow::extract_current_selection() {
+  PakTab* tab = current_pak_tab();
+  if (!tab || !tab->is_loaded()) {
+    return;
+  }
+  tab->extract_selected();
+}
+
+void MainWindow::extract_current_archive() {
+  PakTab* tab = current_pak_tab();
+  if (!tab || !tab->is_loaded() || !tab->can_extract_all()) {
+    return;
+  }
+  tab->extract_all();
+}
+
+void MainWindow::convert_current_selection() {
+  PakTab* tab = current_pak_tab();
+  if (!tab || !tab->is_loaded()) {
+    return;
+  }
+  tab->convert_selected_assets();
 }
 
 void MainWindow::open_preferences() {

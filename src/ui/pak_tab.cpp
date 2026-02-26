@@ -9,10 +9,13 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QAbstractScrollArea>
+#include <QCheckBox>
 #include <QClipboard>
+#include <QComboBox>
 #include <QDesktopServices>
 #include <QDateTime>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QDirIterator>
 #include <QDragEnterEvent>
@@ -22,6 +25,9 @@
 #include <QFileDialog>
 #include <QFileIconProvider>
 #include <QFileInfo>
+#include <QFormLayout>
+#include <QFrame>
+#include <QHBoxLayout>
 #include <QHash>
 #include <QHeaderView>
 #include <QInputDialog>
@@ -45,8 +51,11 @@
 #include <QShortcut>
 #include <QSet>
 #include <QSize>
+#include <QSizePolicy>
+#include <QSpinBox>
 #include <QStackedWidget>
 #include <QStyle>
+#include <QTabWidget>
 #include <QTimeZone>
 #include <QBrush>
 #include <QSaveFile>
@@ -68,6 +77,8 @@
 #include "formats/bsp_preview.h"
 #include "formats/cinematic.h"
 #include "formats/idtech_asset_loader.h"
+#include "formats/idwav_audio.h"
+#include "formats/image_loader.h"
 #include "formats/miptex_image.h"
 #include "formats/wal_image.h"
 #include "formats/lmp_image.h"
@@ -100,6 +111,7 @@ QString normalize_pak_path(QString path);
 bool is_wad_archive_ext(const QString& ext);
 bool is_mountable_archive_ext(const QString& ext);
 bool is_mountable_archive_file_name(const QString& name);
+bool copy_file_stream(const QString& src_path, const QString& dest_path, QString* error);
 
 [[nodiscard]] size_t mz_read_qfile(void* opaque, mz_uint64 file_ofs, void* buf, size_t n) {
   auto* f = static_cast<QFile*>(opaque);
@@ -1628,6 +1640,1104 @@ bool looks_like_text(const QByteArray& bytes) {
   }
   return (printable * 100) / total >= 85 && control * 100 / total < 5;
 }
+
+struct ReducedSelection {
+  QStringList dirs;
+  QStringList files;
+};
+
+ReducedSelection reduce_selected_items(const QVector<QPair<QString, bool>>& raw) {
+  QSet<QString> dir_prefixes;
+  QSet<QString> files;
+  for (const auto& it : raw) {
+    QString p = normalize_pak_path(it.first);
+    if (p.isEmpty()) {
+      continue;
+    }
+    if (it.second) {
+      if (!p.endsWith('/')) {
+        p += '/';
+      }
+      dir_prefixes.insert(p);
+    } else {
+      files.insert(p);
+    }
+  }
+
+  QStringList dirs = dir_prefixes.values();
+  std::sort(dirs.begin(), dirs.end(), [](const QString& a, const QString& b) { return a.size() < b.size(); });
+
+  QSet<QString> reduced_dirs_set;
+  QStringList reduced_dirs;
+  for (const QString& d : dirs) {
+    bool covered = false;
+    for (const QString& keep : reduced_dirs_set) {
+      if (!keep.isEmpty() && d.startsWith(keep)) {
+        covered = true;
+        break;
+      }
+    }
+    if (!covered) {
+      reduced_dirs_set.insert(d);
+      reduced_dirs.push_back(d);
+    }
+  }
+
+  QStringList reduced_files;
+  for (const QString& f : files) {
+    bool covered = false;
+    for (const QString& d : reduced_dirs_set) {
+      if (!d.isEmpty() && f.startsWith(d)) {
+        covered = true;
+        break;
+      }
+    }
+    if (!covered) {
+      reduced_files.push_back(f);
+    }
+  }
+
+  std::sort(reduced_dirs.begin(), reduced_dirs.end(), [](const QString& a, const QString& b) {
+    return a.compare(b, Qt::CaseInsensitive) < 0;
+  });
+  std::sort(reduced_files.begin(), reduced_files.end(), [](const QString& a, const QString& b) {
+    return a.compare(b, Qt::CaseInsensitive) < 0;
+  });
+
+  return ReducedSelection{reduced_dirs, reduced_files};
+}
+
+QString change_file_extension(const QString& path, const QString& new_ext) {
+  const QFileInfo info(path);
+  const QString base = info.completeBaseName().isEmpty() ? info.fileName() : info.completeBaseName();
+  const QString ext = new_ext.startsWith('.') ? new_ext : ("." + new_ext);
+  return QDir(info.absolutePath()).filePath(base + ext);
+}
+
+bool write_bytes_file(const QString& path, const QByteArray& bytes, QString* error) {
+  const QFileInfo info(path);
+  QDir dir(info.absolutePath());
+  if (!dir.exists() && !dir.mkpath(".")) {
+    if (error) {
+      *error = QString("Unable to create output directory: %1").arg(info.absolutePath());
+    }
+    return false;
+  }
+
+  QSaveFile out(path);
+  if (!out.open(QIODevice::WriteOnly)) {
+    if (error) {
+      *error = QString("Unable to open output file: %1").arg(path);
+    }
+    return false;
+  }
+  if (out.write(bytes) != bytes.size()) {
+    if (error) {
+      *error = QString("Unable to write output file: %1").arg(path);
+    }
+    return false;
+  }
+  if (!out.commit()) {
+    if (error) {
+      *error = QString("Unable to finalize output file: %1").arg(path);
+    }
+    return false;
+  }
+  return true;
+}
+
+bool copy_directory_tree(const QString& source_dir, const QString& dest_dir, QString* error) {
+  const QFileInfo src_info(source_dir);
+  if (!src_info.exists() || !src_info.isDir()) {
+    if (error) {
+      *error = QString("Source directory does not exist: %1").arg(source_dir);
+    }
+    return false;
+  }
+
+  QDir dest(dest_dir);
+  if (!dest.exists() && !dest.mkpath(".")) {
+    if (error) {
+      *error = QString("Unable to create destination directory: %1").arg(dest_dir);
+    }
+    return false;
+  }
+
+  const QDir source(source_dir);
+  QDirIterator it(source_dir, QDir::AllEntries | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+  while (it.hasNext()) {
+    const QString abs_path = it.next();
+    const QFileInfo info(abs_path);
+    const QString rel = source.relativeFilePath(abs_path);
+    const QString out_path = dest.filePath(rel);
+    if (info.isDir()) {
+      if (!QDir().mkpath(out_path)) {
+        if (error) {
+          *error = QString("Unable to create destination directory: %1").arg(out_path);
+        }
+        return false;
+      }
+      continue;
+    }
+    QString copy_err;
+    if (!copy_file_stream(abs_path, out_path, &copy_err)) {
+      if (error) {
+        *error = copy_err;
+      }
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool extract_archive_prefix_to_directory(const Archive& archive,
+                                         const QString& prefix_in,
+                                         const QString& dest_dir,
+                                         QString* error,
+                                         int* extracted_files = nullptr) {
+  if (error) {
+    *error = {};
+  }
+  if (extracted_files) {
+    *extracted_files = 0;
+  }
+
+  QString prefix = normalize_pak_path(prefix_in);
+  if (!prefix.isEmpty() && !prefix.endsWith('/')) {
+    prefix += '/';
+  }
+
+  QDir dest(dest_dir);
+  if (!dest.exists() && !dest.mkpath(".")) {
+    if (error) {
+      *error = QString("Unable to create output directory: %1").arg(dest_dir);
+    }
+    return false;
+  }
+
+  for (const ArchiveEntry& e : archive.entries()) {
+    const QString name = normalize_pak_path(e.name);
+    if (name.isEmpty()) {
+      continue;
+    }
+    if (!prefix.isEmpty() && !name.startsWith(prefix)) {
+      continue;
+    }
+    if (!is_safe_entry_name(name)) {
+      continue;
+    }
+
+    const QString rel = prefix.isEmpty() ? name : name.mid(prefix.size());
+    if (rel.isEmpty()) {
+      continue;
+    }
+
+    if (rel.endsWith('/')) {
+      dest.mkpath(rel);
+      continue;
+    }
+
+    const QString out_path = dest.filePath(rel);
+    QString ex_err;
+    if (!archive.extract_entry_to_file(name, out_path, &ex_err)) {
+      if (error) {
+        *error = ex_err.isEmpty() ? QString("Unable to extract %1").arg(name) : ex_err;
+      }
+      return false;
+    }
+    if (extracted_files) {
+      ++(*extracted_files);
+    }
+  }
+
+  return true;
+}
+
+enum class ConversionCategory {
+  Image = 0,
+  Video,
+  Archive,
+  Model,
+  Sound,
+  Map,
+  Text,
+  Other,
+};
+
+QString conversion_category_name(ConversionCategory category) {
+  switch (category) {
+    case ConversionCategory::Image:
+      return "Images";
+    case ConversionCategory::Video:
+      return "Videos";
+    case ConversionCategory::Archive:
+      return "Archives";
+    case ConversionCategory::Model:
+      return "Models";
+    case ConversionCategory::Sound:
+      return "Sound";
+    case ConversionCategory::Map:
+      return "Maps";
+    case ConversionCategory::Text:
+      return "Text";
+    case ConversionCategory::Other:
+    default:
+      return "Other";
+  }
+}
+
+QString conversion_category_folder_name(ConversionCategory category) {
+  switch (category) {
+    case ConversionCategory::Image:
+      return "images";
+    case ConversionCategory::Video:
+      return "video";
+    case ConversionCategory::Archive:
+      return "archives";
+    case ConversionCategory::Model:
+      return "models";
+    case ConversionCategory::Sound:
+      return "sound";
+    case ConversionCategory::Map:
+      return "maps";
+    case ConversionCategory::Text:
+      return "text";
+    case ConversionCategory::Other:
+    default:
+      return "other";
+  }
+}
+
+ConversionCategory classify_conversion_category(const QString& file_name) {
+  const QString ext = file_ext_lower(file_name);
+  if (is_mountable_archive_ext(ext)) {
+    return ConversionCategory::Archive;
+  }
+  if (is_video_file_name(file_name)) {
+    return ConversionCategory::Video;
+  }
+  if (is_supported_audio_file(file_name)) {
+    return ConversionCategory::Sound;
+  }
+  if (is_image_file_name(file_name) || is_sprite_file_name(file_name)) {
+    return ConversionCategory::Image;
+  }
+  if (is_model_file_name(file_name)) {
+    return ConversionCategory::Model;
+  }
+  if (is_bsp_file_name(file_name) || ext == "map") {
+    return ConversionCategory::Map;
+  }
+  if (is_text_file_name(file_name)) {
+    return ConversionCategory::Text;
+  }
+  return ConversionCategory::Other;
+}
+
+struct ConversionCategoryCounts {
+  int image = 0;
+  int video = 0;
+  int archive = 0;
+  int model = 0;
+  int sound = 0;
+  int map = 0;
+  int text = 0;
+  int other = 0;
+};
+
+struct BatchConversionOptions {
+  QString output_dir;
+  bool create_category_subdirs = true;
+  bool preserve_selection_layout = true;
+
+  bool process_images = true;
+  QString image_format = "png";
+  int image_quality = 90;
+
+  bool process_videos = true;
+  QString video_mode = "frames_png";
+  int video_quality = 90;
+  bool video_export_audio = true;
+
+  bool process_archives = true;
+  QString archive_mode = "extract";
+
+  bool process_models = true;
+  QString model_mode = "obj";
+
+  bool process_sound = true;
+  QString sound_mode = "wav";
+
+  bool process_maps = true;
+  QString map_mode = "preview";
+  int map_preview_size = 1024;
+
+  bool process_text = true;
+  QString text_mode = "utf8";
+  QString text_newlines = "preserve";
+
+  bool copy_other = true;
+};
+
+class BatchConversionDialog final : public QDialog {
+public:
+  BatchConversionDialog(const ConversionCategoryCounts& counts,
+                        const QString& default_output_dir,
+                        QWidget* parent = nullptr)
+      : QDialog(parent), counts_(counts) {
+    setWindowTitle("Batch Asset Conversion");
+    setMinimumWidth(840);
+    setStyleSheet(
+      "QFrame#batchGlobalCard, QFrame#batchCategoryCard {"
+      " border: 1px solid palette(mid);"
+      " border-radius: 8px;"
+      " background-color: palette(base);"
+      "}"
+      "QFrame#batchCategoryCard QLabel[role=\"sectionTitle\"] {"
+      " font-weight: 600;"
+      " padding-bottom: 2px;"
+      "}"
+      "QTabWidget::pane { border: 0px; }"
+    );
+
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(14, 12, 14, 12);
+    layout->setSpacing(6);
+
+    auto* title = new QLabel("Convert selected assets in batch with per-category settings.", this);
+    QFont title_font = title->font();
+    title_font.setBold(true);
+    title_font.setPointSize(title_font.pointSize() + 1);
+    title->setFont(title_font);
+    layout->addWidget(title);
+
+    auto* global_card = make_card(this, "batchGlobalCard");
+    auto* global_layout = new QVBoxLayout(global_card);
+    global_layout->setContentsMargins(12, 10, 12, 10);
+    global_layout->setSpacing(6);
+
+    auto* out_row = new QWidget(global_card);
+    auto* out_row_layout = new QHBoxLayout(out_row);
+    out_row_layout->setContentsMargins(0, 0, 0, 0);
+    out_row_layout->setSpacing(8);
+    auto* out_label = new QLabel("Output folder:", out_row);
+    out_label->setMinimumWidth(kOutputLabelMinWidth);
+    out_row_layout->addWidget(out_label);
+    output_edit_ = new QLineEdit(default_output_dir, out_row);
+    output_edit_->setMinimumWidth(kFieldMinWidth + 120);
+    out_row_layout->addWidget(output_edit_, 1);
+    auto* browse = new QPushButton("Browse…", out_row);
+    browse->setIcon(UiIcons::icon(UiIcons::Id::Browse, browse->style()));
+    out_row_layout->addWidget(browse, 0);
+    global_layout->addWidget(out_row);
+
+    preserve_layout_check_ = new QCheckBox("Preserve selection directory layout", global_card);
+    preserve_layout_check_->setChecked(true);
+    global_layout->addWidget(preserve_layout_check_);
+
+    category_folders_check_ = new QCheckBox("Create category subfolders (images, video, archives, ...)", global_card);
+    category_folders_check_->setChecked(true);
+    global_layout->addWidget(category_folders_check_);
+    layout->addWidget(global_card);
+
+    tabs_ = new QTabWidget(this);
+    tabs_->setDocumentMode(true);
+    layout->addWidget(tabs_, 1);
+
+    add_image_tab();
+    add_video_tab();
+    add_archive_tab();
+    add_model_tab();
+    add_sound_tab();
+    add_map_tab();
+    add_text_tab();
+    add_other_tab();
+
+    connect(browse, &QPushButton::clicked, this, [this]() {
+      QFileDialog dialog(this);
+      dialog.setWindowTitle("Choose Output Folder");
+      dialog.setFileMode(QFileDialog::Directory);
+      dialog.setOption(QFileDialog::ShowDirsOnly, true);
+      if (!output_edit_->text().trimmed().isEmpty()) {
+        dialog.setDirectory(output_edit_->text().trimmed());
+      }
+#if defined(Q_OS_WIN)
+      dialog.setOption(QFileDialog::DontUseNativeDialog, true);
+#endif
+      if (dialog.exec() != QDialog::Accepted) {
+        return;
+      }
+      const QStringList selected = dialog.selectedFiles();
+      if (selected.isEmpty()) {
+        return;
+      }
+      output_edit_->setText(QDir::cleanPath(selected.first()));
+    });
+
+    if (image_format_) {
+      connect(image_format_, &QComboBox::currentIndexChanged, this, [this](int) { refresh_dynamic_visibility(); });
+    }
+    if (video_mode_) {
+      connect(video_mode_, &QComboBox::currentIndexChanged, this, [this](int) { refresh_dynamic_visibility(); });
+    }
+    if (map_mode_) {
+      connect(map_mode_, &QComboBox::currentIndexChanged, this, [this](int) { refresh_dynamic_visibility(); });
+    }
+    if (text_mode_) {
+      connect(text_mode_, &QComboBox::currentIndexChanged, this, [this](int) { refresh_dynamic_visibility(); });
+    }
+    refresh_dynamic_visibility();
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    if (QPushButton* ok = buttons->button(QDialogButtonBox::Ok)) {
+      ok->setIcon(UiIcons::icon(UiIcons::Id::Configure, ok->style()));
+      ok->setText("Convert");
+    }
+    if (QPushButton* cancel = buttons->button(QDialogButtonBox::Cancel)) {
+      cancel->setIcon(UiIcons::icon(UiIcons::Id::ExitApp, cancel->style()));
+    }
+    connect(buttons, &QDialogButtonBox::accepted, this, [this]() {
+      if (output_edit_->text().trimmed().isEmpty()) {
+        QMessageBox::warning(this, "Batch Conversion", "Choose an output folder.");
+        return;
+      }
+      accept();
+    });
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    layout->addWidget(buttons);
+  }
+
+  BatchConversionOptions options() const {
+    BatchConversionOptions out;
+    out.output_dir = QDir::cleanPath(output_edit_ ? output_edit_->text().trimmed() : QString());
+    out.preserve_selection_layout = preserve_layout_check_ && preserve_layout_check_->isChecked();
+    out.create_category_subdirs = category_folders_check_ && category_folders_check_->isChecked();
+
+    out.process_images = image_enabled_ && image_enabled_->isChecked();
+    out.image_format = image_format_ ? image_format_->currentData().toString() : "png";
+    out.image_quality = image_quality_ ? image_quality_->value() : 90;
+
+    out.process_videos = video_enabled_ && video_enabled_->isChecked();
+    out.video_mode = video_mode_ ? video_mode_->currentData().toString() : "frames_png";
+    out.video_quality = video_quality_ ? video_quality_->value() : 90;
+    out.video_export_audio = video_audio_ && video_audio_->isChecked();
+
+    out.process_archives = archive_enabled_ && archive_enabled_->isChecked();
+    out.archive_mode = archive_mode_ ? archive_mode_->currentData().toString() : "extract";
+
+    out.process_models = model_enabled_ && model_enabled_->isChecked();
+    out.model_mode = model_mode_ ? model_mode_->currentData().toString() : "obj";
+
+    out.process_sound = sound_enabled_ && sound_enabled_->isChecked();
+    out.sound_mode = sound_mode_ ? sound_mode_->currentData().toString() : "wav";
+
+    out.process_maps = map_enabled_ && map_enabled_->isChecked();
+    out.map_mode = map_mode_ ? map_mode_->currentData().toString() : "preview";
+    out.map_preview_size = map_preview_size_ ? map_preview_size_->value() : 1024;
+
+    out.process_text = text_enabled_ && text_enabled_->isChecked();
+    out.text_mode = text_mode_ ? text_mode_->currentData().toString() : "utf8";
+    out.text_newlines = text_newlines_ ? text_newlines_->currentData().toString() : "preserve";
+
+    out.copy_other = other_copy_ && other_copy_->isChecked();
+    return out;
+  }
+
+private:
+  static constexpr int kOutputLabelMinWidth = 120;
+  static constexpr int kFormLabelMinWidth = 124;
+  static constexpr int kFieldMinWidth = 260;
+
+  static QFrame* make_card(QWidget* parent, const char* object_name) {
+    auto* card = new QFrame(parent);
+    card->setObjectName(QString::fromLatin1(object_name));
+    card->setFrameStyle(QFrame::NoFrame);
+    card->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    return card;
+  }
+
+  static QLabel* make_form_label(const QString& text, QWidget* parent) {
+    auto* label = new QLabel(text, parent);
+    label->setMinimumWidth(kFormLabelMinWidth);
+    return label;
+  }
+
+  static QFormLayout* make_form_layout() {
+    auto* form = new QFormLayout();
+    form->setContentsMargins(0, 0, 0, 0);
+    form->setHorizontalSpacing(10);
+    form->setVerticalSpacing(6);
+    form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    form->setFormAlignment(Qt::AlignTop);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    return form;
+  }
+
+  static void tune_field(QWidget* field) {
+    if (!field) {
+      return;
+    }
+    field->setMinimumWidth(kFieldMinWidth);
+    field->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+  }
+
+  QWidget* make_category_tab(const QString& section_title, QVBoxLayout** card_layout_out) {
+    if (!tabs_) {
+      return nullptr;
+    }
+
+    auto* tab = new QWidget(tabs_);
+    auto* tab_layout = new QVBoxLayout(tab);
+    tab_layout->setContentsMargins(8, 8, 8, 6);
+    tab_layout->setSpacing(0);
+
+    auto* card = make_card(tab, "batchCategoryCard");
+    auto* card_layout = new QVBoxLayout(card);
+    card_layout->setContentsMargins(12, 10, 12, 10);
+    card_layout->setSpacing(8);
+
+    if (!section_title.isEmpty()) {
+      auto* title = new QLabel(section_title, card);
+      title->setProperty("role", "sectionTitle");
+      card_layout->addWidget(title);
+    }
+
+    tab_layout->addWidget(card, 0, Qt::AlignTop);
+    tab_layout->addStretch(1);
+    if (card_layout_out) {
+      *card_layout_out = card_layout;
+    }
+    return tab;
+  }
+
+  int count_for_category(ConversionCategory category) const {
+    switch (category) {
+      case ConversionCategory::Image:
+        return counts_.image;
+      case ConversionCategory::Video:
+        return counts_.video;
+      case ConversionCategory::Archive:
+        return counts_.archive;
+      case ConversionCategory::Model:
+        return counts_.model;
+      case ConversionCategory::Sound:
+        return counts_.sound;
+      case ConversionCategory::Map:
+        return counts_.map;
+      case ConversionCategory::Text:
+        return counts_.text;
+      case ConversionCategory::Other:
+      default:
+        return counts_.other;
+    }
+  }
+
+  bool apply_tab_meta(QWidget* tab, ConversionCategory category, QCheckBox* enabled) {
+    if (!tabs_ || !tab || !enabled) {
+      return false;
+    }
+    const int count = count_for_category(category);
+    if (count <= 0) {
+      enabled->setChecked(false);
+      enabled->setEnabled(false);
+      return false;
+    }
+    enabled->setChecked(true);
+    enabled->setEnabled(true);
+    const QString label = QString("%1 (%2)").arg(conversion_category_name(category)).arg(count);
+    tabs_->addTab(tab, label);
+    return true;
+  }
+
+  void set_row_visible(QLabel* label, QWidget* field, bool visible) const {
+    if (label) {
+      label->setVisible(visible);
+    }
+    if (field) {
+      field->setVisible(visible);
+    }
+  }
+
+  void refresh_dynamic_visibility() {
+    const bool image_jpg = image_format_ && image_format_->currentData().toString() == "jpg";
+    set_row_visible(image_quality_label_, image_quality_, image_jpg);
+
+    const QString video_mode = video_mode_ ? video_mode_->currentData().toString() : QString();
+    const bool video_jpg = video_mode == "frames_jpg";
+    const bool video_frames = video_mode.startsWith("frames_");
+    set_row_visible(video_quality_label_, video_quality_, video_jpg);
+    if (video_audio_) {
+      video_audio_->setVisible(video_frames);
+    }
+
+    const bool map_preview = map_mode_ && map_mode_->currentData().toString() == "preview";
+    set_row_visible(map_preview_size_label_, map_preview_size_, map_preview);
+
+    const bool text_utf8 = text_mode_ && text_mode_->currentData().toString() == "utf8";
+    set_row_visible(text_newlines_label_, text_newlines_, text_utf8);
+  }
+
+  void add_image_tab() {
+    if (count_for_category(ConversionCategory::Image) <= 0 || !tabs_) {
+      return;
+    }
+
+    QVBoxLayout* card_layout = nullptr;
+    auto* tab = make_category_tab("Image conversion", &card_layout);
+    if (!tab || !card_layout) {
+      return;
+    }
+
+    QFrame* card = qobject_cast<QFrame*>(card_layout->parentWidget());
+    image_enabled_ = new QCheckBox("Process image assets", card);
+    image_format_ = new QComboBox(card);
+    image_format_->addItem("PNG", "png");
+    image_format_->addItem("JPG", "jpg");
+    image_format_->addItem("TGA", "tga");
+    image_format_->addItem("BMP", "bmp");
+    tune_field(image_format_);
+
+    image_quality_ = new QSpinBox(card);
+    image_quality_->setRange(1, 100);
+    image_quality_->setValue(90);
+    tune_field(image_quality_);
+
+    card_layout->addWidget(image_enabled_);
+    auto* form = make_form_layout();
+    form->addRow(make_form_label("Output format", card), image_format_);
+    image_quality_label_ = make_form_label("JPG quality", card);
+    form->addRow(image_quality_label_, image_quality_);
+    card_layout->addLayout(form);
+    (void)apply_tab_meta(tab, ConversionCategory::Image, image_enabled_);
+  }
+
+  void add_video_tab() {
+    if (count_for_category(ConversionCategory::Video) <= 0 || !tabs_) {
+      return;
+    }
+
+    QVBoxLayout* card_layout = nullptr;
+    auto* tab = make_category_tab("Video conversion", &card_layout);
+    if (!tab || !card_layout) {
+      return;
+    }
+
+    QFrame* card = qobject_cast<QFrame*>(card_layout->parentWidget());
+    video_enabled_ = new QCheckBox("Process video assets", card);
+    video_mode_ = new QComboBox(card);
+    video_mode_->addItem("Frame sequence (PNG)", "frames_png");
+    video_mode_->addItem("Frame sequence (JPG)", "frames_jpg");
+    video_mode_->addItem("Copy source file", "copy");
+    tune_field(video_mode_);
+
+    video_quality_ = new QSpinBox(card);
+    video_quality_->setRange(1, 100);
+    video_quality_->setValue(90);
+    tune_field(video_quality_);
+
+    video_audio_ = new QCheckBox("Export cinematic audio as WAV when available", card);
+    video_audio_->setChecked(true);
+
+    card_layout->addWidget(video_enabled_);
+    auto* form = make_form_layout();
+    form->addRow(make_form_label("Conversion mode", card), video_mode_);
+    video_quality_label_ = make_form_label("JPG quality", card);
+    form->addRow(video_quality_label_, video_quality_);
+    card_layout->addLayout(form);
+    card_layout->addWidget(video_audio_);
+    (void)apply_tab_meta(tab, ConversionCategory::Video, video_enabled_);
+  }
+
+  void add_archive_tab() {
+    if (count_for_category(ConversionCategory::Archive) <= 0 || !tabs_) {
+      return;
+    }
+
+    QVBoxLayout* card_layout = nullptr;
+    auto* tab = make_category_tab("Archive conversion", &card_layout);
+    if (!tab || !card_layout) {
+      return;
+    }
+
+    QFrame* card = qobject_cast<QFrame*>(card_layout->parentWidget());
+    archive_enabled_ = new QCheckBox("Process archive assets", card);
+    archive_mode_ = new QComboBox(card);
+    archive_mode_->addItem("Extract archive contents", "extract");
+    archive_mode_->addItem("Copy source archive", "copy");
+    tune_field(archive_mode_);
+
+    card_layout->addWidget(archive_enabled_);
+    auto* form = make_form_layout();
+    form->addRow(make_form_label("Conversion mode", card), archive_mode_);
+    card_layout->addLayout(form);
+    (void)apply_tab_meta(tab, ConversionCategory::Archive, archive_enabled_);
+  }
+
+  void add_model_tab() {
+    if (count_for_category(ConversionCategory::Model) <= 0 || !tabs_) {
+      return;
+    }
+
+    QVBoxLayout* card_layout = nullptr;
+    auto* tab = make_category_tab("Model conversion", &card_layout);
+    if (!tab || !card_layout) {
+      return;
+    }
+
+    QFrame* card = qobject_cast<QFrame*>(card_layout->parentWidget());
+    model_enabled_ = new QCheckBox("Process model assets", card);
+    model_mode_ = new QComboBox(card);
+    model_mode_->addItem("Wavefront OBJ mesh", "obj");
+    model_mode_->addItem("Model summary text", "summary");
+    model_mode_->addItem("Copy source file", "copy");
+    tune_field(model_mode_);
+
+    card_layout->addWidget(model_enabled_);
+    auto* form = make_form_layout();
+    form->addRow(make_form_label("Conversion mode", card), model_mode_);
+    card_layout->addLayout(form);
+    (void)apply_tab_meta(tab, ConversionCategory::Model, model_enabled_);
+  }
+
+  void add_sound_tab() {
+    if (count_for_category(ConversionCategory::Sound) <= 0 || !tabs_) {
+      return;
+    }
+
+    QVBoxLayout* card_layout = nullptr;
+    auto* tab = make_category_tab("Sound conversion", &card_layout);
+    if (!tab || !card_layout) {
+      return;
+    }
+
+    QFrame* card = qobject_cast<QFrame*>(card_layout->parentWidget());
+    sound_enabled_ = new QCheckBox("Process sound assets", card);
+    sound_mode_ = new QComboBox(card);
+    sound_mode_->addItem("Convert to WAV where supported", "wav");
+    sound_mode_->addItem("Copy source file", "copy");
+    tune_field(sound_mode_);
+
+    card_layout->addWidget(sound_enabled_);
+    auto* form = make_form_layout();
+    form->addRow(make_form_label("Conversion mode", card), sound_mode_);
+    card_layout->addLayout(form);
+    (void)apply_tab_meta(tab, ConversionCategory::Sound, sound_enabled_);
+  }
+
+  void add_map_tab() {
+    if (count_for_category(ConversionCategory::Map) <= 0 || !tabs_) {
+      return;
+    }
+
+    QVBoxLayout* card_layout = nullptr;
+    auto* tab = make_category_tab("Map conversion", &card_layout);
+    if (!tab || !card_layout) {
+      return;
+    }
+
+    QFrame* card = qobject_cast<QFrame*>(card_layout->parentWidget());
+    map_enabled_ = new QCheckBox("Process map assets", card);
+    map_mode_ = new QComboBox(card);
+    map_mode_->addItem("Render BSP preview image", "preview");
+    map_mode_->addItem("Map summary text", "summary");
+    map_mode_->addItem("Copy source file", "copy");
+    tune_field(map_mode_);
+
+    map_preview_size_ = new QSpinBox(card);
+    map_preview_size_->setRange(256, 4096);
+    map_preview_size_->setSingleStep(128);
+    map_preview_size_->setValue(1024);
+    tune_field(map_preview_size_);
+
+    card_layout->addWidget(map_enabled_);
+    auto* form = make_form_layout();
+    form->addRow(make_form_label("Conversion mode", card), map_mode_);
+    map_preview_size_label_ = make_form_label("Preview size", card);
+    form->addRow(map_preview_size_label_, map_preview_size_);
+    card_layout->addLayout(form);
+    (void)apply_tab_meta(tab, ConversionCategory::Map, map_enabled_);
+  }
+
+  void add_text_tab() {
+    if (count_for_category(ConversionCategory::Text) <= 0 || !tabs_) {
+      return;
+    }
+
+    QVBoxLayout* card_layout = nullptr;
+    auto* tab = make_category_tab("Text conversion", &card_layout);
+    if (!tab || !card_layout) {
+      return;
+    }
+
+    QFrame* card = qobject_cast<QFrame*>(card_layout->parentWidget());
+    text_enabled_ = new QCheckBox("Process text assets", card);
+    text_mode_ = new QComboBox(card);
+    text_mode_->addItem("Normalize to UTF-8 text", "utf8");
+    text_mode_->addItem("Copy source file", "copy");
+    tune_field(text_mode_);
+
+    text_newlines_ = new QComboBox(card);
+    text_newlines_->addItem("Preserve", "preserve");
+    text_newlines_->addItem("LF", "lf");
+    text_newlines_->addItem("CRLF", "crlf");
+    tune_field(text_newlines_);
+
+    card_layout->addWidget(text_enabled_);
+    auto* form = make_form_layout();
+    form->addRow(make_form_label("Conversion mode", card), text_mode_);
+    text_newlines_label_ = make_form_label("Line endings", card);
+    form->addRow(text_newlines_label_, text_newlines_);
+    card_layout->addLayout(form);
+    (void)apply_tab_meta(tab, ConversionCategory::Text, text_enabled_);
+  }
+
+  void add_other_tab() {
+    const int count = count_for_category(ConversionCategory::Other);
+    if (!tabs_ || count <= 0) {
+      return;
+    }
+
+    QVBoxLayout* card_layout = nullptr;
+    auto* tab = make_category_tab("Other assets", &card_layout);
+    if (!tab || !card_layout) {
+      return;
+    }
+
+    QFrame* card = qobject_cast<QFrame*>(card_layout->parentWidget());
+    other_copy_ = new QCheckBox("Copy unsupported/other assets unchanged", card);
+    other_copy_->setChecked(true);
+    card_layout->addWidget(other_copy_);
+    tabs_->addTab(tab, QString("Other (%1)").arg(count));
+  }
+
+  ConversionCategoryCounts counts_;
+
+  QLineEdit* output_edit_ = nullptr;
+  QCheckBox* preserve_layout_check_ = nullptr;
+  QCheckBox* category_folders_check_ = nullptr;
+  QTabWidget* tabs_ = nullptr;
+
+  QCheckBox* image_enabled_ = nullptr;
+  QComboBox* image_format_ = nullptr;
+  QLabel* image_quality_label_ = nullptr;
+  QSpinBox* image_quality_ = nullptr;
+
+  QCheckBox* video_enabled_ = nullptr;
+  QComboBox* video_mode_ = nullptr;
+  QLabel* video_quality_label_ = nullptr;
+  QSpinBox* video_quality_ = nullptr;
+  QCheckBox* video_audio_ = nullptr;
+
+  QCheckBox* archive_enabled_ = nullptr;
+  QComboBox* archive_mode_ = nullptr;
+
+  QCheckBox* model_enabled_ = nullptr;
+  QComboBox* model_mode_ = nullptr;
+
+  QCheckBox* sound_enabled_ = nullptr;
+  QComboBox* sound_mode_ = nullptr;
+
+  QCheckBox* map_enabled_ = nullptr;
+  QComboBox* map_mode_ = nullptr;
+  QLabel* map_preview_size_label_ = nullptr;
+  QSpinBox* map_preview_size_ = nullptr;
+
+  QCheckBox* text_enabled_ = nullptr;
+  QComboBox* text_mode_ = nullptr;
+  QLabel* text_newlines_label_ = nullptr;
+  QComboBox* text_newlines_ = nullptr;
+
+  QCheckBox* other_copy_ = nullptr;
+};
+
+QByteArray normalize_text_bytes(const QByteArray& in, const QString& newline_mode) {
+  QString text = QString::fromUtf8(in);
+  if (text.contains(QChar::ReplacementCharacter)) {
+    text = QString::fromLatin1(in);
+  }
+  if (newline_mode == "lf") {
+    text.replace("\r\n", "\n");
+    text.replace('\r', '\n');
+  } else if (newline_mode == "crlf") {
+    text.replace("\r\n", "\n");
+    text.replace('\r', '\n');
+    text.replace("\n", "\r\n");
+  }
+  return text.toUtf8();
+}
+
+QByteArray pcm_to_wav_bytes(const QByteArray& pcm, const CinematicInfo& info) {
+  const int channels = std::max(1, info.audio_channels);
+  const int sample_rate = std::max(1, info.audio_sample_rate);
+  const int bytes_per_sample = std::clamp(info.audio_bytes_per_sample, 1, 2);
+  QByteArray data = pcm;
+
+  if (bytes_per_sample == 1 && info.audio_signed) {
+    for (char& c : data) {
+      const int s = static_cast<signed char>(c);
+      c = static_cast<char>(std::clamp(s + 128, 0, 255));
+    }
+  }
+
+  QByteArray out;
+  auto append_u16 = [&out](quint16 v) {
+    out.append(static_cast<char>(v & 0xFF));
+    out.append(static_cast<char>((v >> 8) & 0xFF));
+  };
+  auto append_u32 = [&out](quint32 v) {
+    out.append(static_cast<char>(v & 0xFF));
+    out.append(static_cast<char>((v >> 8) & 0xFF));
+    out.append(static_cast<char>((v >> 16) & 0xFF));
+    out.append(static_cast<char>((v >> 24) & 0xFF));
+  };
+
+  const quint32 data_size = static_cast<quint32>(data.size());
+  const quint16 bits_per_sample = static_cast<quint16>(bytes_per_sample * 8);
+  const quint32 byte_rate = static_cast<quint32>(sample_rate * channels * bytes_per_sample);
+  const quint16 block_align = static_cast<quint16>(channels * bytes_per_sample);
+  const quint32 riff_size = 36u + data_size;
+
+  out.reserve(static_cast<int>(riff_size + 8u));
+  out.append("RIFF", 4);
+  append_u32(riff_size);
+  out.append("WAVE", 4);
+  out.append("fmt ", 4);
+  append_u32(16);
+  append_u16(1);
+  append_u16(static_cast<quint16>(channels));
+  append_u32(static_cast<quint32>(sample_rate));
+  append_u32(byte_rate);
+  append_u16(block_align);
+  append_u16(bits_per_sample);
+  out.append("data", 4);
+  append_u32(data_size);
+  out.append(data);
+  return out;
+}
+
+bool write_model_obj(const LoadedModel& model, const QString& out_path, QString* error) {
+  const QFileInfo info(out_path);
+  QDir dir(info.absolutePath());
+  if (!dir.exists() && !dir.mkpath(".")) {
+    if (error) {
+      *error = QString("Unable to create output directory: %1").arg(info.absolutePath());
+    }
+    return false;
+  }
+
+  QSaveFile out(out_path);
+  if (!out.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    if (error) {
+      *error = QString("Unable to write OBJ file: %1").arg(out_path);
+    }
+    return false;
+  }
+
+  QTextStream s(&out);
+  s << "# PakFu generated OBJ\n";
+  s << "# format: " << model.format << "\n";
+  for (const ModelVertex& v : model.mesh.vertices) {
+    s << "v " << v.px << " " << v.py << " " << v.pz << "\n";
+  }
+  for (const ModelVertex& v : model.mesh.vertices) {
+    s << "vt " << v.u << " " << (1.0f - v.v) << "\n";
+  }
+  for (const ModelVertex& v : model.mesh.vertices) {
+    s << "vn " << v.nx << " " << v.ny << " " << v.nz << "\n";
+  }
+
+  const int tri_count = model.mesh.indices.size() / 3;
+  for (int tri = 0; tri < tri_count; ++tri) {
+    const int base = tri * 3;
+    const int i0 = static_cast<int>(model.mesh.indices[base + 0]) + 1;
+    const int i1 = static_cast<int>(model.mesh.indices[base + 1]) + 1;
+    const int i2 = static_cast<int>(model.mesh.indices[base + 2]) + 1;
+    s << "f "
+      << i0 << "/" << i0 << "/" << i0 << " "
+      << i1 << "/" << i1 << "/" << i1 << " "
+      << i2 << "/" << i2 << "/" << i2 << "\n";
+  }
+
+  if (!out.commit()) {
+    if (error) {
+      *error = QString("Unable to finalize OBJ file: %1").arg(out_path);
+    }
+    return false;
+  }
+  return true;
+}
+
+QString model_summary_text(const LoadedModel& model) {
+  QString text;
+  QTextStream s(&text);
+  s << "Format: " << model.format << "\n";
+  s << "Frames: " << model.frame_count << "\n";
+  s << "Surface count: " << model.surface_count << "\n";
+  s << "Vertices: " << model.mesh.vertices.size() << "\n";
+  s << "Triangles: " << (model.mesh.indices.size() / 3) << "\n";
+  s << "Bounds min: " << model.mesh.mins.x() << ", " << model.mesh.mins.y() << ", " << model.mesh.mins.z() << "\n";
+  s << "Bounds max: " << model.mesh.maxs.x() << ", " << model.mesh.maxs.y() << ", " << model.mesh.maxs.z() << "\n";
+  if (!model.surfaces.isEmpty()) {
+    s << "Surfaces:\n";
+    for (const ModelSurface& surface : model.surfaces) {
+      s << "  - " << (surface.name.isEmpty() ? "<unnamed>" : surface.name)
+        << " shader=" << (surface.shader.isEmpty() ? "<none>" : surface.shader)
+        << " indices=" << surface.index_count << "\n";
+    }
+  }
+  return text;
+}
+
+QString bsp_summary_text(const QByteArray& bytes, const QString& file_name) {
+  QString text;
+  QTextStream s(&text);
+
+  QString version_err;
+  const int version = bsp_version_bytes(bytes, &version_err);
+  QString family_err;
+  const BspFamily family = bsp_family_bytes(bytes, &family_err);
+
+  s << "File: " << file_name << "\n";
+  if (version >= 0) {
+    s << "Version: " << version << "\n";
+  } else if (!version_err.isEmpty()) {
+    s << "Version: " << version_err << "\n";
+  }
+
+  switch (family) {
+    case BspFamily::Quake1:
+      s << "Family: Quake 1\n";
+      break;
+    case BspFamily::Quake2:
+      s << "Family: Quake 2\n";
+      break;
+    case BspFamily::Quake3:
+      s << "Family: Quake 3\n";
+      break;
+    case BspFamily::Unknown:
+    default:
+      s << "Family: Unknown\n";
+      if (!family_err.isEmpty()) {
+        s << "Family note: " << family_err << "\n";
+      }
+      break;
+  }
+
+  BspMesh mesh;
+  QString mesh_err;
+  if (load_bsp_mesh_bytes(bytes, file_name, &mesh, &mesh_err, false)) {
+    s << "Vertices: " << mesh.vertices.size() << "\n";
+    s << "Triangles: " << (mesh.indices.size() / 3) << "\n";
+    s << "Surfaces: " << mesh.surfaces.size() << "\n";
+    s << "Bounds min: " << mesh.mins.x() << ", " << mesh.mins.y() << ", " << mesh.mins.z() << "\n";
+    s << "Bounds max: " << mesh.maxs.x() << ", " << mesh.maxs.y() << ", " << mesh.maxs.z() << "\n";
+  } else if (!mesh_err.isEmpty()) {
+    s << "Mesh parse: " << mesh_err << "\n";
+  }
+
+  return text;
+}
 }  // namespace
 
 class PakTabStateCommand : public QUndoCommand {
@@ -1946,6 +3056,14 @@ bool PakTab::is_pure_protected() const {
   return pure_pak_protector_enabled_ && official_archive_;
 }
 
+bool PakTab::can_extract_all() const {
+  if (!loaded_ || !view_archive().is_loaded()) {
+    return false;
+  }
+  const Archive::Format fmt = view_archive().format();
+  return fmt != Archive::Format::Unknown && fmt != Archive::Format::Directory;
+}
+
 void PakTab::cut() {
   copy_selected(true);
 }
@@ -1966,6 +3084,683 @@ void PakTab::paste() {
 
 void PakTab::rename() {
   rename_selected();
+}
+
+void PakTab::extract_selected() {
+  if (!loaded_) {
+    return;
+  }
+
+  const QVector<QPair<QString, bool>> raw = selected_items();
+  if (raw.isEmpty()) {
+    QMessageBox::information(this, "Extract Selected", "Select one or more files or folders first.");
+    return;
+  }
+  const ReducedSelection selection = reduce_selected_items(raw);
+  if (selection.dirs.isEmpty() && selection.files.isEmpty()) {
+    QMessageBox::information(this, "Extract Selected", "No extractable items are selected.");
+    return;
+  }
+
+  QFileDialog dialog(this);
+  dialog.setWindowTitle("Extract Selected To");
+  dialog.setFileMode(QFileDialog::Directory);
+  dialog.setOption(QFileDialog::ShowDirsOnly, true);
+  const QString base_dir = !default_directory_.isEmpty()
+    ? default_directory_
+    : (!pak_path_.isEmpty() ? QFileInfo(pak_path_).absolutePath() : QDir::homePath());
+  dialog.setDirectory(base_dir);
+#if defined(Q_OS_WIN)
+  dialog.setOption(QFileDialog::DontUseNativeDialog, true);
+#endif
+  if (dialog.exec() != QDialog::Accepted) {
+    return;
+  }
+  const QStringList selected = dialog.selectedFiles();
+  if (selected.isEmpty()) {
+    return;
+  }
+
+  const QString out_dir = QDir::cleanPath(selected.first());
+  if (out_dir.isEmpty()) {
+    return;
+  }
+
+  QDir out(out_dir);
+  if (!out.exists() && !out.mkpath(".")) {
+    QMessageBox::warning(this, "Extract Selected", QString("Unable to create output folder:\n%1").arg(out_dir));
+    return;
+  }
+
+  int extracted_files = 0;
+  int extracted_dirs = 0;
+  QStringList failures;
+
+  const bool mounted = is_wad_mounted();
+
+  for (const QString& dir_prefix : selection.dirs) {
+    const QString leaf = pak_leaf_name(dir_prefix);
+    if (leaf.isEmpty()) {
+      continue;
+    }
+    const QString dest_dir = out.filePath(leaf);
+    QString err;
+    if (mounted) {
+      int count = 0;
+      if (!extract_archive_prefix_to_directory(view_archive(), dir_prefix, dest_dir, &err, &count)) {
+        failures.push_back(err.isEmpty() ? QString("Unable to extract folder: %1").arg(dir_prefix) : err);
+        continue;
+      }
+      ++extracted_dirs;
+      extracted_files += count;
+      continue;
+    }
+
+    QString exported_dir;
+    if (!export_path_to_temp(dir_prefix, true, &exported_dir, &err)) {
+      failures.push_back(err.isEmpty() ? QString("Unable to extract folder: %1").arg(dir_prefix) : err);
+      continue;
+    }
+    if (!copy_directory_tree(exported_dir, dest_dir, &err)) {
+      failures.push_back(err.isEmpty() ? QString("Unable to write folder: %1").arg(dest_dir) : err);
+      continue;
+    }
+    ++extracted_dirs;
+
+    int copied = 0;
+    QDirIterator count_it(dest_dir, QDir::Files, QDirIterator::Subdirectories);
+    while (count_it.hasNext()) {
+      count_it.next();
+      ++copied;
+    }
+    extracted_files += copied;
+  }
+
+  for (const QString& pak_path : selection.files) {
+    const QString leaf = pak_leaf_name(pak_path);
+    if (leaf.isEmpty()) {
+      continue;
+    }
+    const QString dest_file = out.filePath(leaf);
+    QString exported_path;
+    QString err;
+    if (!export_path_to_temp(pak_path, false, &exported_path, &err)) {
+      failures.push_back(err.isEmpty() ? QString("Unable to extract file: %1").arg(pak_path) : err);
+      continue;
+    }
+    if (!copy_file_stream(exported_path, dest_file, &err)) {
+      failures.push_back(err.isEmpty() ? QString("Unable to write file: %1").arg(dest_file) : err);
+      continue;
+    }
+    ++extracted_files;
+  }
+
+  QString summary = QString("Extracted %1 file(s)").arg(extracted_files);
+  if (extracted_dirs > 0) {
+    summary += QString(" from %1 folder(s)").arg(extracted_dirs);
+  }
+  summary += QString("\nOutput: %1").arg(out_dir);
+
+  if (!failures.isEmpty()) {
+    summary += QString("\n\nFailed: %1 item(s)").arg(failures.size());
+    summary += "\n";
+    summary += failures.mid(0, 12).join("\n");
+    QMessageBox::warning(this, "Extract Selected", summary);
+    return;
+  }
+  QMessageBox::information(this, "Extract Selected", summary);
+}
+
+void PakTab::extract_all() {
+  if (!can_extract_all()) {
+    QMessageBox::information(this, "Extract All", "Extract All is available only when viewing an archive.");
+    return;
+  }
+
+  QFileDialog dialog(this);
+  dialog.setWindowTitle("Extract Archive To");
+  dialog.setFileMode(QFileDialog::Directory);
+  dialog.setOption(QFileDialog::ShowDirsOnly, true);
+  const QString base_dir = !default_directory_.isEmpty()
+    ? default_directory_
+    : (!pak_path_.isEmpty() ? QFileInfo(pak_path_).absolutePath() : QDir::homePath());
+  dialog.setDirectory(base_dir);
+#if defined(Q_OS_WIN)
+  dialog.setOption(QFileDialog::DontUseNativeDialog, true);
+#endif
+  if (dialog.exec() != QDialog::Accepted) {
+    return;
+  }
+  const QStringList selected = dialog.selectedFiles();
+  if (selected.isEmpty()) {
+    return;
+  }
+
+  const QString out_dir = QDir::cleanPath(selected.first());
+  if (out_dir.isEmpty()) {
+    return;
+  }
+
+  QDir out(out_dir);
+  if (!out.exists() && !out.mkpath(".")) {
+    QMessageBox::warning(this, "Extract All", QString("Unable to create output folder:\n%1").arg(out_dir));
+    return;
+  }
+
+  int extracted_files = 0;
+  QString err;
+
+  if (is_wad_mounted()) {
+    if (!extract_archive_prefix_to_directory(view_archive(), QString(), out_dir, &err, &extracted_files)) {
+      QMessageBox::warning(this, "Extract All", err.isEmpty() ? "Unable to extract archive." : err);
+      return;
+    }
+  } else {
+    int expected_files = 0;
+    if (archive_.is_loaded()) {
+      for (const ArchiveEntry& e : archive_.entries()) {
+        const QString name = normalize_pak_path(e.name);
+        if (name.isEmpty() || name.endsWith('/')) {
+          continue;
+        }
+        if (is_deleted_path(name)) {
+          continue;
+        }
+        if (added_index_by_name_.contains(name)) {
+          continue;
+        }
+        ++expected_files;
+      }
+    }
+    for (const AddedFile& f : added_files_) {
+      const QString name = normalize_pak_path(f.pak_name);
+      if (name.isEmpty() || name.endsWith('/') || is_deleted_path(name)) {
+        continue;
+      }
+      ++expected_files;
+    }
+
+    if (!export_dir_prefix_to_fs(QString(), out_dir, &err)) {
+      QMessageBox::warning(this, "Extract All", err.isEmpty() ? "Unable to extract archive." : err);
+      return;
+    }
+    extracted_files = expected_files;
+  }
+
+  QMessageBox::information(this,
+                           "Extract All",
+                           QString("Extracted %1 file(s)\nOutput: %2").arg(extracted_files).arg(out_dir));
+}
+
+void PakTab::convert_selected_assets() {
+  if (!loaded_) {
+    return;
+  }
+
+  struct PendingAsset {
+    QString display_name;
+    QString pak_path;
+    QString relative_path;
+    QString source_fs_path;
+    ConversionCategory category = ConversionCategory::Other;
+  };
+
+  QVector<PendingAsset> assets;
+  QStringList gather_failures;
+
+  const QVector<QPair<QString, bool>> raw = selected_items();
+  if (raw.isEmpty()) {
+    QMessageBox::information(this, "Batch Conversion", "Select one or more files or folders first.");
+    return;
+  }
+  const ReducedSelection selection = reduce_selected_items(raw);
+  const bool mounted = is_wad_mounted();
+
+  auto add_asset = [&assets](PendingAsset item) {
+    if (item.relative_path.isEmpty()) {
+      return;
+    }
+    item.relative_path = QDir::fromNativeSeparators(item.relative_path);
+    while (item.relative_path.startsWith('/')) {
+      item.relative_path.remove(0, 1);
+    }
+    if (item.relative_path.isEmpty()) {
+      return;
+    }
+    assets.push_back(std::move(item));
+  };
+
+  for (const QString& pak_path : selection.files) {
+    const QString leaf = pak_leaf_name(pak_path);
+    if (leaf.isEmpty()) {
+      continue;
+    }
+    PendingAsset item;
+    item.display_name = leaf;
+    item.pak_path = pak_path;
+    item.relative_path = leaf;
+    item.category = classify_conversion_category(leaf);
+    add_asset(std::move(item));
+  }
+
+  for (const QString& dir_prefix_in : selection.dirs) {
+    QString dir_prefix = normalize_pak_path(dir_prefix_in);
+    if (!dir_prefix.endsWith('/')) {
+      dir_prefix += '/';
+    }
+    const QString dir_leaf = pak_leaf_name(dir_prefix);
+    if (dir_leaf.isEmpty()) {
+      continue;
+    }
+
+    if (mounted) {
+      for (const ArchiveEntry& e : view_archive().entries()) {
+        const QString name = normalize_pak_path(e.name);
+        if (name.isEmpty() || name.endsWith('/')) {
+          continue;
+        }
+        if (!name.startsWith(dir_prefix)) {
+          continue;
+        }
+        const QString rel = name.mid(dir_prefix.size());
+        if (rel.isEmpty()) {
+          continue;
+        }
+        PendingAsset item;
+        item.display_name = pak_leaf_name(name);
+        item.pak_path = name;
+        item.relative_path = dir_leaf + "/" + rel;
+        item.category = classify_conversion_category(name);
+        add_asset(std::move(item));
+      }
+      continue;
+    }
+
+    QString exported_dir;
+    QString err;
+    if (!export_path_to_temp(dir_prefix, true, &exported_dir, &err)) {
+      gather_failures.push_back(err.isEmpty() ? QString("Unable to prepare folder for conversion: %1").arg(dir_prefix) : err);
+      continue;
+    }
+    const QDir root(exported_dir);
+    QDirIterator it(exported_dir, QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+      const QString abs_file = it.next();
+      const QString rel = root.relativeFilePath(abs_file);
+      if (rel.isEmpty()) {
+        continue;
+      }
+      PendingAsset item;
+      item.display_name = QFileInfo(abs_file).fileName();
+      item.pak_path = QString();
+      item.source_fs_path = abs_file;
+      item.relative_path = dir_leaf + "/" + QDir::fromNativeSeparators(rel);
+      item.category = classify_conversion_category(item.display_name);
+      add_asset(std::move(item));
+    }
+  }
+
+  if (assets.isEmpty()) {
+    QString msg = "No files were resolved from the current selection.";
+    if (!gather_failures.isEmpty()) {
+      msg += "\n\n" + gather_failures.mid(0, 8).join("\n");
+    }
+    QMessageBox::information(this, "Batch Conversion", msg);
+    return;
+  }
+
+  ConversionCategoryCounts counts;
+  for (const PendingAsset& item : assets) {
+    switch (item.category) {
+      case ConversionCategory::Image:
+        ++counts.image;
+        break;
+      case ConversionCategory::Video:
+        ++counts.video;
+        break;
+      case ConversionCategory::Archive:
+        ++counts.archive;
+        break;
+      case ConversionCategory::Model:
+        ++counts.model;
+        break;
+      case ConversionCategory::Sound:
+        ++counts.sound;
+        break;
+      case ConversionCategory::Map:
+        ++counts.map;
+        break;
+      case ConversionCategory::Text:
+        ++counts.text;
+        break;
+      case ConversionCategory::Other:
+      default:
+        ++counts.other;
+        break;
+    }
+  }
+
+  const QString default_out = !default_directory_.isEmpty()
+    ? default_directory_
+    : (!pak_path_.isEmpty() ? QFileInfo(pak_path_).absolutePath() : QDir::homePath());
+
+  BatchConversionDialog dialog(counts, default_out, this);
+  if (dialog.exec() != QDialog::Accepted) {
+    return;
+  }
+  const BatchConversionOptions options = dialog.options();
+  if (options.output_dir.isEmpty()) {
+    return;
+  }
+
+  QDir out_root(options.output_dir);
+  if (!out_root.exists() && !out_root.mkpath(".")) {
+    QMessageBox::warning(this, "Batch Conversion", QString("Unable to create output folder:\n%1").arg(options.output_dir));
+    return;
+  }
+
+  auto is_category_enabled = [&options](ConversionCategory category) -> bool {
+    switch (category) {
+      case ConversionCategory::Image:
+        return options.process_images;
+      case ConversionCategory::Video:
+        return options.process_videos;
+      case ConversionCategory::Archive:
+        return options.process_archives;
+      case ConversionCategory::Model:
+        return options.process_models;
+      case ConversionCategory::Sound:
+        return options.process_sound;
+      case ConversionCategory::Map:
+        return options.process_maps;
+      case ConversionCategory::Text:
+        return options.process_text;
+      case ConversionCategory::Other:
+      default:
+        return options.copy_other;
+    }
+  };
+
+  auto output_path_for = [&options](const PendingAsset& item) -> QString {
+    QDir base(options.output_dir);
+    if (options.create_category_subdirs) {
+      base = QDir(base.filePath(conversion_category_folder_name(item.category)));
+    }
+    const QString rel = options.preserve_selection_layout
+      ? item.relative_path
+      : QFileInfo(item.relative_path).fileName();
+    return base.filePath(rel);
+  };
+
+  QProgressDialog progress("Converting assets...", "Cancel", 0, assets.size(), this);
+  progress.setWindowModality(Qt::WindowModal);
+  progress.setMinimumDuration(200);
+
+  int converted_ok = 0;
+  int skipped = 0;
+  QStringList failures = gather_failures;
+
+  for (int i = 0; i < assets.size(); ++i) {
+    if (progress.wasCanceled()) {
+      break;
+    }
+
+    const PendingAsset& item = assets[i];
+    progress.setValue(i);
+    progress.setLabelText(QString("Converting %1 (%2/%3)...").arg(item.display_name).arg(i + 1).arg(assets.size()));
+    if ((i % 2) == 0) {
+      QCoreApplication::processEvents();
+    }
+
+    if (!is_category_enabled(item.category)) {
+      ++skipped;
+      continue;
+    }
+
+    QString source_path = item.source_fs_path;
+    QString err;
+    if (source_path.isEmpty()) {
+      if (!export_path_to_temp(item.pak_path, false, &source_path, &err)) {
+        failures.push_back(err.isEmpty() ? QString("Unable to export source file: %1").arg(item.display_name) : err);
+        continue;
+      }
+    }
+
+    QFile source_file(source_path);
+    if (!source_file.open(QIODevice::ReadOnly)) {
+      failures.push_back(QString("Unable to read source file: %1").arg(source_path));
+      continue;
+    }
+    const QByteArray source_bytes = source_file.readAll();
+    source_file.close();
+
+    QString target_path = output_path_for(item);
+    bool ok = false;
+
+    if (item.category == ConversionCategory::Image) {
+      ImageDecodeOptions decode_opts;
+      const QString ext = file_ext_lower(item.display_name);
+      if (ext == "wal") {
+        QString pal_err;
+        if (!ensure_quake2_palette(&pal_err) || quake2_palette_.size() != 256) {
+          failures.push_back(pal_err.isEmpty() ? QString("Missing Quake II palette for WAL conversion: %1").arg(item.display_name) : pal_err);
+          continue;
+        }
+        decode_opts.palette = &quake2_palette_;
+      } else if (ext == "mip") {
+        QString pal_err;
+        if (ensure_quake1_palette(&pal_err) && quake1_palette_.size() == 256) {
+          decode_opts.palette = &quake1_palette_;
+        }
+      }
+      const ImageDecodeResult decoded = decode_image_bytes(source_bytes, item.display_name, decode_opts);
+      if (!decoded.ok()) {
+        failures.push_back(decoded.error.isEmpty() ? QString("Unable to decode image: %1").arg(item.display_name) : decoded.error);
+        continue;
+      }
+      target_path = change_file_extension(target_path, options.image_format);
+      const QByteArray fmt = options.image_format.toUpper().toLatin1();
+      const int quality = (options.image_format == "jpg") ? options.image_quality : -1;
+      const QFileInfo info(target_path);
+      if (!QDir(info.absolutePath()).exists() && !QDir().mkpath(info.absolutePath())) {
+        failures.push_back(QString("Unable to create output directory: %1").arg(info.absolutePath()));
+        continue;
+      }
+      ok = decoded.image.save(target_path, fmt.constData(), quality);
+      if (!ok) {
+        failures.push_back(QString("Unable to save converted image: %1").arg(target_path));
+      }
+    } else if (item.category == ConversionCategory::Sound) {
+      if (options.sound_mode == "copy") {
+        ok = copy_file_stream(source_path, target_path, &err);
+      } else {
+        const QString ext = file_ext_lower(item.display_name);
+        if (ext == "idwav") {
+          const IdWavDecodeResult decoded = decode_idwav_to_wav_bytes(source_bytes);
+          if (!decoded.ok()) {
+            failures.push_back(decoded.error.isEmpty() ? QString("Unable to convert IDWAV: %1").arg(item.display_name) : decoded.error);
+            continue;
+          }
+          target_path = change_file_extension(target_path, "wav");
+          ok = write_bytes_file(target_path, decoded.wav_bytes, &err);
+        } else if (ext == "wav") {
+          target_path = change_file_extension(target_path, "wav");
+          ok = write_bytes_file(target_path, source_bytes, &err);
+        } else {
+          failures.push_back(QString("Unsupported sound conversion for %1 (use Copy mode for this format).").arg(item.display_name));
+          continue;
+        }
+      }
+      if (!ok) {
+        failures.push_back(err.isEmpty() ? QString("Unable to convert sound: %1").arg(item.display_name) : err);
+      }
+    } else if (item.category == ConversionCategory::Video) {
+      if (options.video_mode == "copy") {
+        ok = copy_file_stream(source_path, target_path, &err);
+        if (!ok) {
+          failures.push_back(err.isEmpty() ? QString("Unable to copy video: %1").arg(item.display_name) : err);
+        }
+      } else {
+        QString open_err;
+        std::unique_ptr<CinematicDecoder> decoder = open_cinematic_file(source_path, &open_err);
+        if (!decoder) {
+          failures.push_back(open_err.isEmpty()
+                               ? QString("Only CIN/ROQ frame export is supported for %1.").arg(item.display_name)
+                               : open_err);
+          continue;
+        }
+
+        const QFileInfo target_info(target_path);
+        const QString frame_root = QDir(target_info.absolutePath()).filePath(target_info.completeBaseName() + "_frames");
+        if (!QDir().mkpath(frame_root)) {
+          failures.push_back(QString("Unable to create frame output folder: %1").arg(frame_root));
+          continue;
+        }
+
+        QByteArray pcm_audio;
+        int frame_index = 0;
+        CinematicFrame frame;
+        QString decode_err;
+        while (decoder->decode_next(&frame, &decode_err)) {
+          const QString image_ext = (options.video_mode == "frames_jpg") ? "jpg" : "png";
+          const QString frame_name = QString("frame_%1.%2").arg(frame_index, 6, 10, QLatin1Char('0')).arg(image_ext);
+          const QString frame_path = QDir(frame_root).filePath(frame_name);
+          const QByteArray fmt = image_ext.toUpper().toLatin1();
+          const int quality = (image_ext == "jpg") ? options.video_quality : -1;
+          if (!frame.image.save(frame_path, fmt.constData(), quality)) {
+            failures.push_back(QString("Unable to write video frame: %1").arg(frame_path));
+            break;
+          }
+          if (options.video_export_audio && !frame.audio_pcm.isEmpty()) {
+            pcm_audio += frame.audio_pcm;
+          }
+          ++frame_index;
+        }
+
+        if (frame_index <= 0) {
+          failures.push_back(decode_err.isEmpty()
+                               ? QString("No frames were decoded from: %1").arg(item.display_name)
+                               : decode_err);
+          continue;
+        }
+
+        if (options.video_export_audio && !pcm_audio.isEmpty()) {
+          const QByteArray wav = pcm_to_wav_bytes(pcm_audio, decoder->info());
+          const QString audio_path = QDir(frame_root).filePath("audio.wav");
+          if (!write_bytes_file(audio_path, wav, &err)) {
+            failures.push_back(err.isEmpty() ? QString("Unable to write cinematic audio: %1").arg(audio_path) : err);
+          }
+        }
+        ok = true;
+      }
+    } else if (item.category == ConversionCategory::Archive) {
+      if (options.archive_mode == "copy") {
+        ok = copy_file_stream(source_path, target_path, &err);
+        if (!ok) {
+          failures.push_back(err.isEmpty() ? QString("Unable to copy archive: %1").arg(item.display_name) : err);
+        }
+      } else {
+        Archive nested;
+        QString load_err;
+        if (!nested.load(source_path, &load_err) || !nested.is_loaded()) {
+          failures.push_back(load_err.isEmpty() ? QString("Unable to open nested archive: %1").arg(item.display_name) : load_err);
+          continue;
+        }
+        const QFileInfo info(target_path);
+        const QString unpack_dir = QDir(info.absolutePath()).filePath(info.completeBaseName());
+        int extracted = 0;
+        if (!extract_archive_prefix_to_directory(nested, QString(), unpack_dir, &err, &extracted)) {
+          failures.push_back(err.isEmpty() ? QString("Unable to extract nested archive: %1").arg(item.display_name) : err);
+          continue;
+        }
+        ok = true;
+      }
+    } else if (item.category == ConversionCategory::Model) {
+      if (options.model_mode == "copy") {
+        ok = copy_file_stream(source_path, target_path, &err);
+      } else {
+        QString load_err;
+        const std::optional<LoadedModel> model = load_model_file(source_path, &load_err);
+        if (!model.has_value()) {
+          failures.push_back(load_err.isEmpty() ? QString("Unable to decode model: %1").arg(item.display_name) : load_err);
+          continue;
+        }
+        if (options.model_mode == "obj") {
+          target_path = change_file_extension(target_path, "obj");
+          ok = write_model_obj(*model, target_path, &err);
+        } else {
+          target_path = change_file_extension(target_path, "txt");
+          ok = write_bytes_file(target_path, model_summary_text(*model).toUtf8(), &err);
+        }
+      }
+      if (!ok) {
+        failures.push_back(err.isEmpty() ? QString("Unable to convert model: %1").arg(item.display_name) : err);
+      }
+    } else if (item.category == ConversionCategory::Map) {
+      if (options.map_mode == "copy") {
+        ok = copy_file_stream(source_path, target_path, &err);
+      } else if (options.map_mode == "preview") {
+        const BspPreviewResult preview = render_bsp_preview_bytes(source_bytes, item.display_name, BspPreviewStyle::Lightmapped, options.map_preview_size);
+        if (!preview.ok()) {
+          failures.push_back(preview.error.isEmpty() ? QString("Unable to render map preview: %1").arg(item.display_name) : preview.error);
+          continue;
+        }
+        target_path = change_file_extension(target_path, "png");
+        const QFileInfo info(target_path);
+        if (!QDir(info.absolutePath()).exists() && !QDir().mkpath(info.absolutePath())) {
+          failures.push_back(QString("Unable to create output directory: %1").arg(info.absolutePath()));
+          continue;
+        }
+        ok = preview.image.save(target_path, "PNG");
+      } else {
+        target_path = change_file_extension(target_path, "txt");
+        ok = write_bytes_file(target_path, bsp_summary_text(source_bytes, item.display_name).toUtf8(), &err);
+      }
+      if (!ok) {
+        failures.push_back(err.isEmpty() ? QString("Unable to convert map: %1").arg(item.display_name) : err);
+      }
+    } else if (item.category == ConversionCategory::Text) {
+      if (options.text_mode == "copy") {
+        ok = copy_file_stream(source_path, target_path, &err);
+      } else {
+        if (!looks_like_text(source_bytes)) {
+          failures.push_back(QString("Skipped non-text payload: %1").arg(item.display_name));
+          ++skipped;
+          continue;
+        }
+        const QByteArray normalized = normalize_text_bytes(source_bytes, options.text_newlines);
+        ok = write_bytes_file(target_path, normalized, &err);
+      }
+      if (!ok) {
+        failures.push_back(err.isEmpty() ? QString("Unable to convert text: %1").arg(item.display_name) : err);
+      }
+    } else {
+      ok = copy_file_stream(source_path, target_path, &err);
+      if (!ok) {
+        failures.push_back(err.isEmpty() ? QString("Unable to copy file: %1").arg(item.display_name) : err);
+      }
+    }
+
+    if (ok) {
+      ++converted_ok;
+    }
+  }
+
+  progress.setValue(assets.size());
+
+  QString summary = QString("Converted: %1 of %2 file(s)").arg(converted_ok).arg(assets.size());
+  if (skipped > 0) {
+    summary += QString("\nSkipped: %1").arg(skipped);
+  }
+  summary += QString("\nOutput: %1").arg(options.output_dir);
+
+  if (!failures.isEmpty()) {
+    summary += QString("\n\nIssues (%1):\n%2").arg(failures.size()).arg(failures.mid(0, 16).join("\n"));
+    QMessageBox::warning(this, "Batch Conversion", summary);
+    return;
+  }
+
+  QMessageBox::information(this, "Batch Conversion", summary);
 }
 
 void PakTab::undo() {
@@ -2443,6 +4238,21 @@ void PakTab::show_context_menu(QWidget* view, const QPoint& pos) {
   rename_action->setIcon(UiIcons::icon(UiIcons::Id::Rename, style()));
   rename_action->setShortcut(QKeySequence(Qt::Key_F2));
   connect(rename_action, &QAction::triggered, this, [this]() { rename_selected(); });
+
+  menu.addSeparator();
+
+  auto* extract_selected_action = menu.addAction("Extract Selected...");
+  extract_selected_action->setIcon(UiIcons::icon(UiIcons::Id::OpenFolder, style()));
+  connect(extract_selected_action, &QAction::triggered, this, [this]() { extract_selected(); });
+
+  auto* extract_all_action = menu.addAction("Extract All...");
+  extract_all_action->setIcon(UiIcons::icon(UiIcons::Id::OpenFolder, style()));
+  extract_all_action->setEnabled(can_extract_all());
+  connect(extract_all_action, &QAction::triggered, this, [this]() { extract_all(); });
+
+  auto* convert_action = menu.addAction("Convert Selected Assets...");
+  convert_action->setIcon(UiIcons::icon(UiIcons::Id::Configure, style()));
+  connect(convert_action, &QAction::triggered, this, [this]() { convert_selected_assets(); });
 
   menu.addSeparator();
   if (add_files_action_) {
@@ -3421,7 +5231,8 @@ QString PakTab::ensure_export_root() {
 
 bool PakTab::export_dir_prefix_to_fs(const QString& dir_prefix_in, const QString& dest_dir, QString* error) {
   const QString prefix = normalize_pak_path(dir_prefix_in);
-  if (prefix.isEmpty() || !prefix.endsWith('/')) {
+  const bool filter_by_prefix = !prefix.isEmpty();
+  if (filter_by_prefix && !prefix.endsWith('/')) {
     if (error) {
       *error = "Invalid directory prefix.";
     }
@@ -3439,10 +5250,10 @@ bool PakTab::export_dir_prefix_to_fs(const QString& dir_prefix_in, const QString
   // Create any empty virtual directories (best-effort).
   for (const QString& vdir_in : virtual_dirs_) {
     const QString vdir = normalize_pak_path(vdir_in);
-    if (!vdir.startsWith(prefix) || is_deleted_path(vdir)) {
+    if ((filter_by_prefix && !vdir.startsWith(prefix)) || is_deleted_path(vdir)) {
       continue;
     }
-    const QString rel = vdir.mid(prefix.size());
+    const QString rel = filter_by_prefix ? vdir.mid(prefix.size()) : vdir;
     if (rel.isEmpty()) {
       continue;
     }
@@ -3455,13 +5266,13 @@ bool PakTab::export_dir_prefix_to_fs(const QString& dir_prefix_in, const QString
   if (archive_.is_loaded()) {
     for (const ArchiveEntry& e : archive_.entries()) {
       const QString name = normalize_pak_path(e.name);
-      if (!name.startsWith(prefix) || is_deleted_path(name)) {
+      if ((filter_by_prefix && !name.startsWith(prefix)) || is_deleted_path(name)) {
         continue;
       }
       if (added_index_by_name_.contains(name)) {
         continue;  // overridden by added file
       }
-      const QString rel = name.mid(prefix.size());
+      const QString rel = filter_by_prefix ? name.mid(prefix.size()) : name;
       if (rel.isEmpty()) {
         continue;
       }
@@ -3480,10 +5291,10 @@ bool PakTab::export_dir_prefix_to_fs(const QString& dir_prefix_in, const QString
   // Added/overridden files.
   for (const AddedFile& f : added_files_) {
     const QString name = normalize_pak_path(f.pak_name);
-    if (!name.startsWith(prefix) || is_deleted_path(name)) {
+    if ((filter_by_prefix && !name.startsWith(prefix)) || is_deleted_path(name)) {
       continue;
     }
-    const QString rel = name.mid(prefix.size());
+    const QString rel = filter_by_prefix ? name.mid(prefix.size()) : name;
     if (rel.isEmpty()) {
       continue;
     }

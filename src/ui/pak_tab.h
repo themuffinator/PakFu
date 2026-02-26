@@ -104,6 +104,10 @@ public:
   void copy();
   void paste();
   void rename();
+  void extract_selected();
+  void extract_all();
+  void convert_selected_assets();
+  [[nodiscard]] bool can_extract_all() const;
   void undo();
   void redo();
   // Drop helpers used by tab views and main-window tab-bar integration.
