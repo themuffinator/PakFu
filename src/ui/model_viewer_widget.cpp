@@ -780,6 +780,17 @@ QString grid_fragment_shader_source(const QSurfaceFormat& fmt) {
     }
   )GLSL";
 }
+
+float default_animation_fps_for_format(const QString& format) {
+  const QString lower = format.toLower();
+  if (lower == "mdl" || lower == "md2" || lower == "md3" || lower == "mdc" || lower == "tan") {
+    return 10.0f;
+  }
+  if (lower == "md4" || lower == "mdr") {
+    return 20.0f;
+  }
+  return 12.0f;
+}
 }  // namespace
 
 ModelViewerWidget::ModelViewerWidget(QWidget* parent) : QOpenGLWidget(parent) {
@@ -788,6 +799,9 @@ ModelViewerWidget::ModelViewerWidget(QWidget* parent) : QOpenGLWidget(parent) {
   fly_timer_.setInterval(16);
   fly_timer_.setTimerType(Qt::PreciseTimer);
   connect(&fly_timer_, &QTimer::timeout, this, &ModelViewerWidget::on_fly_tick);
+  animation_timer_.setInterval(16);
+  animation_timer_.setTimerType(Qt::PreciseTimer);
+  connect(&animation_timer_, &QTimer::timeout, this, &ModelViewerWidget::on_animation_tick);
   setToolTip(
     "3D Controls:\n"
     "- Orbit: Middle-drag (Alt+Left-drag)\n"
@@ -901,6 +915,92 @@ void ModelViewerWidget::set_fov_degrees(int degrees) {
   fov_y_deg_ = clamped;
   ground_extent_ = 0.0f;
   update();
+}
+
+void ModelViewerWidget::set_animation_playing(bool playing) {
+  if (animation_playing_ == playing) {
+    return;
+  }
+  animation_playing_ = playing;
+  update_animation_timer_state();
+  update();
+}
+
+void ModelViewerWidget::set_animation_loop_enabled(bool enabled) {
+  if (animation_loop_enabled_ == enabled) {
+    return;
+  }
+  animation_loop_enabled_ = enabled;
+  update_animation_timer_state();
+  update();
+}
+
+void ModelViewerWidget::set_animation_speed_multiplier(float speed) {
+  const float clamped = std::clamp(speed, 0.1f, 8.0f);
+  if (std::abs(animation_speed_multiplier_ - clamped) < 0.0001f) {
+    return;
+  }
+  animation_speed_multiplier_ = clamped;
+  update();
+}
+
+void ModelViewerWidget::set_animation_frame(int frame_index) {
+  const int frame_count = model_ ? std::max(1, static_cast<int>(model_->animation_frames.size())) : 1;
+  const int clamped = std::clamp(frame_index, 0, frame_count - 1);
+  animation_time_frames_ = static_cast<float>(clamped);
+  animation_current_frame_ = clamped;
+  apply_animation_state(true);
+  update();
+}
+
+void ModelViewerWidget::set_skeleton_overlay_enabled(bool enabled) {
+  if (skeleton_overlay_enabled_ == enabled) {
+    return;
+  }
+  skeleton_overlay_enabled_ = enabled;
+  update();
+}
+
+int ModelViewerWidget::animation_frame_count() const {
+  if (!model_) {
+    return 0;
+  }
+  return std::max(1, static_cast<int>(model_->animation_frames.size()));
+}
+
+int ModelViewerWidget::animation_current_frame() const {
+  return std::clamp(animation_current_frame_, 0, std::max(0, animation_frame_count() - 1));
+}
+
+bool ModelViewerWidget::animation_playing() const {
+  return animation_playing_;
+}
+
+bool ModelViewerWidget::animation_loop_enabled() const {
+  return animation_loop_enabled_;
+}
+
+float ModelViewerWidget::animation_speed_multiplier() const {
+  return animation_speed_multiplier_;
+}
+
+bool ModelViewerWidget::skeleton_overlay_enabled() const {
+  return skeleton_overlay_enabled_;
+}
+
+bool ModelViewerWidget::has_native_animation() const {
+  return model_ && model_->has_native_animation;
+}
+
+bool ModelViewerWidget::has_native_skeleton() const {
+  return model_ && model_->has_native_skeleton;
+}
+
+int ModelViewerWidget::skeleton_joint_count() const {
+  if (!model_ || model_->skeleton_parents.isEmpty()) {
+    return 0;
+  }
+  return model_->skeleton_parents.size();
 }
 
 PreviewCameraState ModelViewerWidget::camera_state() const {
@@ -1410,6 +1510,16 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
     }
   }
 
+  animation_base_fps_ = default_animation_fps_for_format(model_->format);
+  animation_playing_ = (model_->animation_frames.size() > 1);
+  const int last_frame = std::max(0, static_cast<int>(model_->animation_frames.size()) - 1);
+  animation_time_frames_ = static_cast<float>(std::clamp(animation_current_frame_, 0, last_frame));
+  applied_anim_frame_a_ = -1;
+  applied_anim_frame_b_ = -1;
+  applied_anim_blend_ = -1.0f;
+  apply_animation_state(true);
+  update_animation_timer_state();
+
   reset_camera_from_mesh();
   pending_upload_ = true;
   upload_mesh_if_possible();
@@ -1418,6 +1528,15 @@ bool ModelViewerWidget::load_file(const QString& file_path, const QString& skin_
 }
 
 void ModelViewerWidget::unload() {
+  animation_timer_.stop();
+  animation_elapsed_.invalidate();
+  animation_last_nsecs_ = 0;
+  animation_time_frames_ = 0.0f;
+  animation_current_frame_ = 0;
+  applied_anim_frame_a_ = -1;
+  applied_anim_frame_b_ = -1;
+  applied_anim_blend_ = -1.0f;
+  animation_playing_ = false;
   model_.reset();
   last_model_path_.clear();
   last_skin_path_.clear();
@@ -1469,6 +1588,7 @@ void ModelViewerWidget::paintGL() {
     return;
   }
 
+  apply_animation_state(false);
   update_background_mesh_if_needed();
 
   QVector3D bg_top;
@@ -1505,6 +1625,9 @@ void ModelViewerWidget::paintGL() {
   }
   glEnable(GL_DEPTH_TEST);
 
+  if (pending_upload_) {
+    upload_mesh_if_possible();
+  }
   if ((!vbo_.isCreated() || !ibo_.isCreated()) && model_ && !pending_upload_) {
     pending_upload_ = true;
     upload_mesh_if_possible();
@@ -1689,6 +1812,42 @@ void ModelViewerWidget::paintGL() {
 
     const uintptr_t offs = static_cast<uintptr_t>(s.first_index) * static_cast<uintptr_t>(index_size);
     glDrawElements(GL_TRIANGLES, s.index_count, index_type_, reinterpret_cast<const void*>(offs));
+  }
+
+  if (skeleton_overlay_enabled_) {
+    QVector<GridLineVertex> skeleton_lines;
+    build_skeleton_overlay_lines(&skeleton_lines);
+    if (!skeleton_lines.isEmpty()) {
+      ensure_grid_program();
+      if (grid_program_.isLinked()) {
+        if (!skeleton_vbo_.isCreated()) {
+          skeleton_vbo_.create();
+        }
+        skeleton_vbo_.bind();
+        skeleton_vbo_.allocate(skeleton_lines.constData(), static_cast<int>(skeleton_lines.size() * sizeof(GridLineVertex)));
+        skeleton_vertex_count_ = skeleton_lines.size();
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);
+        grid_program_.bind();
+        grid_program_.setUniformValue("uMvp", mvp);
+        const int pos_loc = grid_program_.attributeLocation("aPos");
+        const int col_loc = grid_program_.attributeLocation("aColor");
+        grid_program_.enableAttributeArray(pos_loc);
+        grid_program_.enableAttributeArray(col_loc);
+        grid_program_.setAttributeBuffer(pos_loc, GL_FLOAT, offsetof(GridLineVertex, px), 3, sizeof(GridLineVertex));
+        grid_program_.setAttributeBuffer(col_loc, GL_FLOAT, offsetof(GridLineVertex, r), 4, sizeof(GridLineVertex));
+        glDrawArrays(GL_LINES, 0, skeleton_vertex_count_);
+        skeleton_vbo_.release();
+        grid_program_.release();
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+        program_.bind();
+      }
+    }
+  } else {
+    skeleton_vertex_count_ = 0;
   }
 
   glActiveTexture(GL_TEXTURE1);
@@ -2064,6 +2223,221 @@ void ModelViewerWidget::set_fly_key(int key, bool down) {
   }
 }
 
+void ModelViewerWidget::on_animation_tick() {
+  if (!model_ || model_->animation_frames.size() <= 1 || !animation_playing_) {
+    animation_timer_.stop();
+    return;
+  }
+  update();
+}
+
+void ModelViewerWidget::update_animation_timer_state() {
+  const bool should_run = model_ && model_->animation_frames.size() > 1 && animation_playing_;
+  if (should_run) {
+    if (!animation_elapsed_.isValid()) {
+      animation_elapsed_.start();
+    }
+    animation_last_nsecs_ = animation_elapsed_.nsecsElapsed();
+    if (!animation_timer_.isActive()) {
+      animation_timer_.start();
+    }
+    return;
+  }
+  animation_timer_.stop();
+  if (animation_elapsed_.isValid()) {
+    animation_last_nsecs_ = animation_elapsed_.nsecsElapsed();
+  }
+}
+
+void ModelViewerWidget::apply_animation_state(bool force) {
+  if (!model_ || model_->animation_frames.isEmpty()) {
+    return;
+  }
+
+  const int frame_count = model_->animation_frames.size();
+  if (!animation_elapsed_.isValid()) {
+    animation_elapsed_.start();
+    animation_last_nsecs_ = animation_elapsed_.nsecsElapsed();
+  }
+
+  qint64 now_nsecs = animation_elapsed_.nsecsElapsed();
+  if (animation_playing_ && frame_count > 1) {
+    const qint64 delta_nsecs = now_nsecs - animation_last_nsecs_;
+    animation_last_nsecs_ = now_nsecs;
+    float dt = static_cast<float>(delta_nsecs) * 1e-9f;
+    dt = std::clamp(dt, 0.0f, 0.1f);
+    const float fps = std::max(0.1f, animation_base_fps_ * animation_speed_multiplier_);
+    animation_time_frames_ += dt * fps;
+
+    const float max_frame = static_cast<float>(frame_count - 1);
+    if (animation_loop_enabled_) {
+      const float span = static_cast<float>(frame_count);
+      if (span > 0.0f) {
+        animation_time_frames_ = std::fmod(animation_time_frames_, span);
+        if (animation_time_frames_ < 0.0f) {
+          animation_time_frames_ += span;
+        }
+      }
+    } else if (animation_time_frames_ >= max_frame) {
+      animation_time_frames_ = max_frame;
+      animation_playing_ = false;
+      update_animation_timer_state();
+    }
+  } else {
+    animation_last_nsecs_ = now_nsecs;
+  }
+
+  const float max_frame = static_cast<float>(frame_count - 1);
+  const float clamped_time = std::clamp(animation_time_frames_, 0.0f, max_frame);
+  animation_time_frames_ = clamped_time;
+  int frame_a = std::clamp(static_cast<int>(std::floor(clamped_time)), 0, frame_count - 1);
+  int frame_b = frame_a;
+  float blend = 0.0f;
+
+  if (animation_interpolate_ && frame_count > 1) {
+    blend = clamped_time - static_cast<float>(frame_a);
+    if (blend > 0.0f) {
+      if (animation_loop_enabled_ && (frame_a + 1) >= frame_count) {
+        frame_b = 0;
+      } else {
+        frame_b = std::min(frame_a + 1, frame_count - 1);
+      }
+    }
+  }
+
+  animation_current_frame_ = frame_a;
+  if (!force &&
+      frame_a == applied_anim_frame_a_ &&
+      frame_b == applied_anim_frame_b_ &&
+      std::abs(blend - applied_anim_blend_) < 1e-4f) {
+    return;
+  }
+
+  const ModelMesh& mesh_a = model_->animation_frames[frame_a];
+  const ModelMesh& mesh_b = model_->animation_frames[frame_b];
+
+  if (model_->mesh.vertices.size() != mesh_a.vertices.size()) {
+    model_->mesh.vertices.resize(mesh_a.vertices.size());
+  }
+  if (model_->mesh.indices != mesh_a.indices) {
+    model_->mesh.indices = mesh_a.indices;
+  }
+
+  const bool blend_frames = (frame_b != frame_a && blend > 0.0f && mesh_a.vertices.size() == mesh_b.vertices.size());
+  if (!blend_frames) {
+    model_->mesh.vertices = mesh_a.vertices;
+  } else {
+    for (int i = 0; i < mesh_a.vertices.size(); ++i) {
+      const ModelVertex& a = mesh_a.vertices[i];
+      const ModelVertex& b = mesh_b.vertices[i];
+      ModelVertex out = a;
+      out.px = std::lerp(a.px, b.px, blend);
+      out.py = std::lerp(a.py, b.py, blend);
+      out.pz = std::lerp(a.pz, b.pz, blend);
+      QVector3D n(std::lerp(a.nx, b.nx, blend), std::lerp(a.ny, b.ny, blend), std::lerp(a.nz, b.nz, blend));
+      if (n.lengthSquared() < 1e-12f) {
+        n = QVector3D(0.0f, 0.0f, 1.0f);
+      } else {
+        n.normalize();
+      }
+      out.nx = n.x();
+      out.ny = n.y();
+      out.nz = n.z();
+      out.u = std::lerp(a.u, b.u, blend);
+      out.v = std::lerp(a.v, b.v, blend);
+      model_->mesh.vertices[i] = out;
+    }
+  }
+
+  // Keep animated models centered on frame 0 to avoid large per-frame translation
+  // pushing the mesh out of view in preview.
+  const QVector3D base_center = (model_->animation_frames[0].mins + model_->animation_frames[0].maxs) * 0.5f;
+  const QVector3D center_a = (mesh_a.mins + mesh_a.maxs) * 0.5f;
+  QVector3D center = center_a;
+  if (blend_frames) {
+    const QVector3D center_b = (mesh_b.mins + mesh_b.maxs) * 0.5f;
+    center = center_a + (center_b - center_a) * blend;
+  }
+  const QVector3D recenter_delta = center - base_center;
+  if (recenter_delta.lengthSquared() > 1e-8f) {
+    for (ModelVertex& v : model_->mesh.vertices) {
+      v.px -= recenter_delta.x();
+      v.py -= recenter_delta.y();
+      v.pz -= recenter_delta.z();
+    }
+  }
+
+  applied_anim_frame_a_ = frame_a;
+  applied_anim_frame_b_ = frame_b;
+  applied_anim_blend_ = blend;
+  pending_upload_ = true;
+}
+
+void ModelViewerWidget::build_skeleton_overlay_lines(QVector<GridLineVertex>* lines) const {
+  if (!lines) {
+    return;
+  }
+  lines->clear();
+  if (!model_ || !skeleton_overlay_enabled_ || model_->skeleton_frames.isEmpty() || model_->skeleton_parents.isEmpty()) {
+    return;
+  }
+
+  const int frame_count = model_->skeleton_frames.size();
+  if (frame_count <= 0) {
+    return;
+  }
+
+  const int frame_a = std::clamp(applied_anim_frame_a_ >= 0 ? applied_anim_frame_a_ : animation_current_frame_, 0, frame_count - 1);
+  const int frame_b = std::clamp(applied_anim_frame_b_ >= 0 ? applied_anim_frame_b_ : frame_a, 0, frame_count - 1);
+  const float blend = std::clamp(applied_anim_blend_, 0.0f, 1.0f);
+  const int anim_frame_count = model_->animation_frames.size();
+  const int anim_a = std::clamp(frame_a, 0, std::max(0, anim_frame_count - 1));
+  const int anim_b = std::clamp(frame_b, 0, std::max(0, anim_frame_count - 1));
+  const QVector<QVector3D>& joints_a = model_->skeleton_frames[frame_a].joints;
+  const QVector<QVector3D>& joints_b = model_->skeleton_frames[frame_b].joints;
+  const int joint_count = std::min(model_->skeleton_parents.size(), joints_a.size());
+  if (joint_count <= 0) {
+    return;
+  }
+
+  QVector3D recenter_delta;
+  if (anim_frame_count > 0) {
+    const QVector3D base_center = (model_->animation_frames[0].mins + model_->animation_frames[0].maxs) * 0.5f;
+    const QVector3D center_a = (model_->animation_frames[anim_a].mins + model_->animation_frames[anim_a].maxs) * 0.5f;
+    QVector3D center = center_a;
+    if (blend > 0.0f && anim_a != anim_b) {
+      const QVector3D center_b = (model_->animation_frames[anim_b].mins + model_->animation_frames[anim_b].maxs) * 0.5f;
+      center = center_a + (center_b - center_a) * blend;
+    }
+    recenter_delta = center - base_center;
+  }
+
+  const QVector3D line_color = model_->has_native_skeleton ? QVector3D(0.20f, 0.86f, 0.98f) : QVector3D(1.00f, 0.68f, 0.26f);
+  const float alpha = 0.95f;
+  lines->reserve(joint_count * 2);
+
+  auto sample_joint = [&](int idx) -> QVector3D {
+    if (idx < 0 || idx >= joints_a.size()) {
+      return QVector3D();
+    }
+    if (blend <= 0.0f || joints_b.size() != joints_a.size()) {
+      return joints_a[idx];
+    }
+    return joints_a[idx] + (joints_b[idx] - joints_a[idx]) * blend;
+  };
+
+  for (int j = 0; j < joint_count; ++j) {
+    const int parent = model_->skeleton_parents[j];
+    if (parent < 0 || parent >= joint_count || parent == j) {
+      continue;
+    }
+    const QVector3D p = sample_joint(parent) - recenter_delta;
+    const QVector3D c = sample_joint(j) - recenter_delta;
+    lines->push_back(GridLineVertex{p.x(), p.y(), p.z(), line_color.x(), line_color.y(), line_color.z(), alpha});
+    lines->push_back(GridLineVertex{c.x(), c.y(), c.z(), line_color.x(), line_color.y(), line_color.z(), alpha});
+  }
+}
+
 void ModelViewerWidget::ensure_program() {
   if (program_.isLinked()) {
     return;
@@ -2141,7 +2515,11 @@ void ModelViewerWidget::destroy_gl_resources() {
   if (grid_vbo_.isCreated()) {
     grid_vbo_.destroy();
   }
+  if (skeleton_vbo_.isCreated()) {
+    skeleton_vbo_.destroy();
+  }
   ground_index_count_ = 0;
+  skeleton_vertex_count_ = 0;
   for (DrawSurface& s : surfaces_) {
     if (s.texture_id != 0) {
       glDeleteTextures(1, &s.texture_id);
@@ -2438,7 +2816,13 @@ void ModelViewerWidget::upload_mesh_if_possible() {
     return;
   }
 
-  makeCurrent();
+  const bool context_already_current = (QOpenGLContext::currentContext() == context());
+  if (!context_already_current) {
+    makeCurrent();
+    if (QOpenGLContext::currentContext() != context()) {
+      return;
+    }
+  }
   ensure_program();
 
   // GLES2 does not support GL_UNSIGNED_INT indices.
@@ -2457,7 +2841,9 @@ void ModelViewerWidget::upload_mesh_if_possible() {
       qWarning() << "ModelViewerWidget: model has" << max_index << "index which exceeds GLES2 limits.";
       index_count_ = 0;
       pending_upload_ = false;
-      doneCurrent();
+      if (!context_already_current) {
+        doneCurrent();
+      }
       return;
     }
   }
@@ -2519,7 +2905,9 @@ void ModelViewerWidget::upload_mesh_if_possible() {
   index_count_ = model_->mesh.indices.size();
   pending_upload_ = false;
   upload_textures_if_possible();
-  doneCurrent();
+  if (!context_already_current) {
+    doneCurrent();
+  }
 }
 
 void ModelViewerWidget::upload_textures_if_possible() {

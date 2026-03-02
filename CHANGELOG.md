@@ -1,6 +1,10 @@
 # Changelog
 
 All notable changes to PakFu are documented here.
+## [Unreleased]
+### Fixed
+- Fix stale folder listings when navigating newly added folders in a new PAK tab by using canonical archive paths for navigation/listing.
+
 ## [0.1.18.1] - 2026-02-19
 ### Other
 - Add file association icons & viewer windows

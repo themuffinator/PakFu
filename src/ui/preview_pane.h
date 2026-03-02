@@ -27,6 +27,7 @@ class QMediaPlayer;
 class QSlider;
 class QScrollBar;
 class QToolButton;
+class QMenu;
 class QTimer;
 class QTemporaryFile;
 class CinematicPlayerWidget;
@@ -136,6 +137,9 @@ private:
 	void rebuild_bsp_widget();
 	void rebuild_model_widget();
 	void apply_3d_settings();
+	void apply_model_animation_settings();
+	void sync_model_animation_controls(bool from_timer = false);
+	void refresh_model_overview();
 	void update_3d_bg_button();
 	void apply_3d_bg_color_button_state();
 	void update_3d_fullscreen_button();
@@ -275,6 +279,13 @@ private:
 	QToolButton* three_d_bg_color_button_ = nullptr;
 	QToolButton* three_d_wireframe_button_ = nullptr;
 	QToolButton* three_d_textured_button_ = nullptr;
+	QToolButton* model_anim_play_button_ = nullptr;
+	QToolButton* model_anim_options_button_ = nullptr;
+	QToolButton* model_anim_loop_button_ = nullptr;
+	QToolButton* model_skeleton_button_ = nullptr;
+	QComboBox* model_anim_speed_combo_ = nullptr;
+	QSlider* model_anim_slider_ = nullptr;
+	QLabel* model_anim_frame_label_ = nullptr;
 	QToolButton* three_d_fullscreen_button_ = nullptr;
 	QToolButton* bsp_lightmap_button_ = nullptr;
 	bool bsp_lightmapping_enabled_ = true;
@@ -285,6 +296,12 @@ private:
 	bool three_d_textured_enabled_ = true;
 	int three_d_fov_degrees_ = 100;
 	bool glow_enabled_ = false;
+	bool model_anim_playing_ = true;
+	bool model_anim_loop_enabled_ = true;
+	bool model_skeleton_enabled_ = false;
+	float model_anim_speed_multiplier_ = 1.0f;
+	bool model_anim_user_scrubbing_ = false;
+	QTimer* model_anim_ui_timer_ = nullptr;
 
 	QWidget* model_page_ = nullptr;
 	QWidget* model_widget_ = nullptr;

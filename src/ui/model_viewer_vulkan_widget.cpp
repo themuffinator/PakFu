@@ -177,6 +177,17 @@ quint32 aligned_uniform_stride(QRhi* rhi, quint32 size) {
 	const quint32 align = rhi ? rhi->ubufAlignment() : 256u;
 	return (size + align - 1u) & ~(align - 1u);
 }
+
+float default_animation_fps_for_format(const QString& format) {
+	const QString lower = format.toLower();
+	if (lower == "mdl" || lower == "md2" || lower == "md3" || lower == "mdc" || lower == "tan") {
+		return 10.0f;
+	}
+	if (lower == "md4" || lower == "mdr") {
+		return 20.0f;
+	}
+	return 12.0f;
+}
 }  // namespace
 
 ModelViewerVulkanWidget::ModelViewerVulkanWidget(QWidget* parent) : QRhiWidget(parent) {
@@ -186,6 +197,9 @@ ModelViewerVulkanWidget::ModelViewerVulkanWidget(QWidget* parent) : QRhiWidget(p
 	fly_timer_.setInterval(16);
 	fly_timer_.setTimerType(Qt::PreciseTimer);
 	connect(&fly_timer_, &QTimer::timeout, this, &ModelViewerVulkanWidget::on_fly_tick);
+	animation_timer_.setInterval(16);
+	animation_timer_.setTimerType(Qt::PreciseTimer);
+	connect(&animation_timer_, &QTimer::timeout, this, &ModelViewerVulkanWidget::on_animation_tick);
 	setToolTip(
 		"3D Controls:\n"
 		"- Orbit: Middle-drag (Alt+Left-drag)\n"
@@ -274,6 +288,92 @@ void ModelViewerVulkanWidget::set_fov_degrees(int degrees) {
 	fov_y_deg_ = clamped;
 	pending_ground_upload_ = true;
 	update();
+}
+
+void ModelViewerVulkanWidget::set_animation_playing(bool playing) {
+	if (animation_playing_ == playing) {
+		return;
+	}
+	animation_playing_ = playing;
+	update_animation_timer_state();
+	update();
+}
+
+void ModelViewerVulkanWidget::set_animation_loop_enabled(bool enabled) {
+	if (animation_loop_enabled_ == enabled) {
+		return;
+	}
+	animation_loop_enabled_ = enabled;
+	update_animation_timer_state();
+	update();
+}
+
+void ModelViewerVulkanWidget::set_animation_speed_multiplier(float speed) {
+	const float clamped = std::clamp(speed, 0.1f, 8.0f);
+	if (std::abs(animation_speed_multiplier_ - clamped) < 0.0001f) {
+		return;
+	}
+	animation_speed_multiplier_ = clamped;
+	update();
+}
+
+void ModelViewerVulkanWidget::set_animation_frame(int frame_index) {
+	const int frame_count = model_ ? std::max(1, static_cast<int>(model_->animation_frames.size())) : 1;
+	const int clamped = std::clamp(frame_index, 0, frame_count - 1);
+	animation_time_frames_ = static_cast<float>(clamped);
+	animation_current_frame_ = clamped;
+	apply_animation_state(true);
+	update();
+}
+
+void ModelViewerVulkanWidget::set_skeleton_overlay_enabled(bool enabled) {
+	if (skeleton_overlay_enabled_ == enabled) {
+		return;
+	}
+	skeleton_overlay_enabled_ = enabled;
+	update();
+}
+
+int ModelViewerVulkanWidget::animation_frame_count() const {
+	if (!model_) {
+		return 0;
+	}
+	return std::max(1, static_cast<int>(model_->animation_frames.size()));
+}
+
+int ModelViewerVulkanWidget::animation_current_frame() const {
+	return std::clamp(animation_current_frame_, 0, std::max(0, animation_frame_count() - 1));
+}
+
+bool ModelViewerVulkanWidget::animation_playing() const {
+	return animation_playing_;
+}
+
+bool ModelViewerVulkanWidget::animation_loop_enabled() const {
+	return animation_loop_enabled_;
+}
+
+float ModelViewerVulkanWidget::animation_speed_multiplier() const {
+	return animation_speed_multiplier_;
+}
+
+bool ModelViewerVulkanWidget::skeleton_overlay_enabled() const {
+	return skeleton_overlay_enabled_;
+}
+
+bool ModelViewerVulkanWidget::has_native_animation() const {
+	return model_ && model_->has_native_animation;
+}
+
+bool ModelViewerVulkanWidget::has_native_skeleton() const {
+	return model_ && model_->has_native_skeleton;
+}
+
+int ModelViewerVulkanWidget::skeleton_joint_count() const {
+	if (!model_ || model_->skeleton_parents.isEmpty()) {
+		return 0;
+	}
+	return model_->skeleton_parents.size();
 }
 
 PreviewCameraState ModelViewerVulkanWidget::camera_state() const {
@@ -778,12 +878,30 @@ bool ModelViewerVulkanWidget::load_file(const QString& file_path, const QString&
 
 	pending_upload_ = true;
 	pending_texture_upload_ = true;
+	animation_base_fps_ = default_animation_fps_for_format(model_->format);
+	animation_playing_ = (model_->animation_frames.size() > 1);
+	const int last_frame = std::max(0, static_cast<int>(model_->animation_frames.size()) - 1);
+	animation_time_frames_ = static_cast<float>(std::clamp(animation_current_frame_, 0, last_frame));
+	applied_anim_frame_a_ = -1;
+	applied_anim_frame_b_ = -1;
+	applied_anim_blend_ = -1.0f;
+	apply_animation_state(true);
+	update_animation_timer_state();
 	reset_camera_from_mesh();
 	update();
 	return true;
 }
 
 void ModelViewerVulkanWidget::unload() {
+	animation_timer_.stop();
+	animation_elapsed_.invalidate();
+	animation_last_nsecs_ = 0;
+	animation_time_frames_ = 0.0f;
+	animation_current_frame_ = 0;
+	applied_anim_frame_a_ = -1;
+	applied_anim_frame_b_ = -1;
+	applied_anim_blend_ = -1.0f;
+	animation_playing_ = false;
 	model_.reset();
 	last_model_path_.clear();
 	last_skin_path_.clear();
@@ -824,6 +942,8 @@ void ModelViewerVulkanWidget::render(QRhiCommandBuffer* cb) {
 	const QRhiDepthStencilClearValue ds_clear = {1.0f, 0};
 	QRhiResourceUpdateBatch* updates = rhi()->nextResourceUpdateBatch();
 
+	apply_animation_state(false);
+
 	if (pending_upload_) {
 		upload_mesh(updates);
 		pending_upload_ = false;
@@ -836,6 +956,7 @@ void ModelViewerVulkanWidget::render(QRhiCommandBuffer* cb) {
 		update_ground_mesh_if_needed(updates);
 	}
 	update_background_mesh_if_needed(updates);
+	update_skeleton_lines_if_needed(updates);
 
 	if (pipeline_dirty_) {
 		ensure_pipeline();
@@ -895,7 +1016,8 @@ void ModelViewerVulkanWidget::render(QRhiCommandBuffer* cb) {
 	}
 
 	const bool draw_grid = (grid_mode_ == PreviewGridMode::Grid && grid_vbuf_ && grid_vertex_count_ > 0);
-	const int draw_count = 1 + (draw_ground ? 1 : 0) + (draw_grid ? 1 : 0) + surface_count;
+	const bool draw_skeleton = (skeleton_overlay_enabled_ && skeleton_vbuf_ && skeleton_vertex_count_ > 0);
+	const int draw_count = 1 + (draw_ground ? 1 : 0) + (draw_grid ? 1 : 0) + (draw_skeleton ? 1 : 0) + surface_count;
 	ensure_uniform_buffer(draw_count);
 	if (pipeline_dirty_) {
 		ensure_pipeline();
@@ -932,6 +1054,9 @@ void ModelViewerVulkanWidget::render(QRhiCommandBuffer* cb) {
 		write_uniform(uidx++, false, false, true, false);
 	}
 	if (draw_grid) {
+		write_uniform(uidx++, false, false, false, false);
+	}
+	if (draw_skeleton) {
 		write_uniform(uidx++, false, false, false, false);
 	}
 
@@ -997,12 +1122,27 @@ void ModelViewerVulkanWidget::render(QRhiCommandBuffer* cb) {
 		cb->setViewport(QRhiViewport(0, 0, float(width()), float(height())));
 	}
 
+	if (draw_skeleton && grid_pipeline_ && grid_srb_ && skeleton_vbuf_) {
+		cb->setGraphicsPipeline(grid_pipeline_);
+		cb->setViewport(QRhiViewport(0, 0, float(width()), float(height())));
+		const QRhiCommandBuffer::VertexInput bindings[] = {
+			{skeleton_vbuf_, 0},
+		};
+		const quint32 offset = ubuf_stride_ * static_cast<quint32>(1 + (draw_ground ? 1 : 0) + (draw_grid ? 1 : 0));
+		QRhiCommandBuffer::DynamicOffset dyn = {0, offset};
+		cb->setVertexInput(0, 1, bindings);
+		cb->setShaderResources(grid_srb_, 1, &dyn);
+		cb->draw(static_cast<quint32>(skeleton_vertex_count_));
+		cb->setGraphicsPipeline(pipeline_);
+		cb->setViewport(QRhiViewport(0, 0, float(width()), float(height())));
+	}
+
 	const QRhiCommandBuffer::VertexInput bindings[] = {
 		{vbuf_, 0},
 	};
 	cb->setVertexInput(0, 1, bindings, ibuf_, 0, QRhiCommandBuffer::IndexUInt32);
 
-	const int base_offset = 1 + (draw_ground ? 1 : 0) + (draw_grid ? 1 : 0);
+	const int base_offset = 1 + (draw_ground ? 1 : 0) + (draw_grid ? 1 : 0) + (draw_skeleton ? 1 : 0);
 	if (surfaces_.isEmpty()) {
 		const quint32 offset = ubuf_stride_ * static_cast<quint32>(base_offset);
 		QRhiCommandBuffer::DynamicOffset dyn = {0, offset};
@@ -1429,6 +1569,250 @@ void ModelViewerVulkanWidget::set_fly_key(int key, bool down) {
 	}
 }
 
+void ModelViewerVulkanWidget::on_animation_tick() {
+	if (!model_ || model_->animation_frames.size() <= 1 || !animation_playing_) {
+		animation_timer_.stop();
+		return;
+	}
+	update();
+}
+
+void ModelViewerVulkanWidget::update_animation_timer_state() {
+	const bool should_run = model_ && model_->animation_frames.size() > 1 && animation_playing_;
+	if (should_run) {
+		if (!animation_elapsed_.isValid()) {
+			animation_elapsed_.start();
+		}
+		animation_last_nsecs_ = animation_elapsed_.nsecsElapsed();
+		if (!animation_timer_.isActive()) {
+			animation_timer_.start();
+		}
+		return;
+	}
+	animation_timer_.stop();
+	if (animation_elapsed_.isValid()) {
+		animation_last_nsecs_ = animation_elapsed_.nsecsElapsed();
+	}
+}
+
+void ModelViewerVulkanWidget::apply_animation_state(bool force) {
+	if (!model_ || model_->animation_frames.isEmpty()) {
+		return;
+	}
+
+	const int frame_count = model_->animation_frames.size();
+	if (!animation_elapsed_.isValid()) {
+		animation_elapsed_.start();
+		animation_last_nsecs_ = animation_elapsed_.nsecsElapsed();
+	}
+
+	const qint64 now_nsecs = animation_elapsed_.nsecsElapsed();
+	if (animation_playing_ && frame_count > 1) {
+		const qint64 delta_nsecs = now_nsecs - animation_last_nsecs_;
+		animation_last_nsecs_ = now_nsecs;
+		float dt = static_cast<float>(delta_nsecs) * 1e-9f;
+		dt = std::clamp(dt, 0.0f, 0.1f);
+		const float fps = std::max(0.1f, animation_base_fps_ * animation_speed_multiplier_);
+		animation_time_frames_ += dt * fps;
+
+		const float max_frame = static_cast<float>(frame_count - 1);
+		if (animation_loop_enabled_) {
+			const float span = static_cast<float>(frame_count);
+			if (span > 0.0f) {
+				animation_time_frames_ = std::fmod(animation_time_frames_, span);
+				if (animation_time_frames_ < 0.0f) {
+					animation_time_frames_ += span;
+				}
+			}
+		} else if (animation_time_frames_ >= max_frame) {
+			animation_time_frames_ = max_frame;
+			animation_playing_ = false;
+			update_animation_timer_state();
+		}
+	} else {
+		animation_last_nsecs_ = now_nsecs;
+	}
+
+	const float max_frame = static_cast<float>(frame_count - 1);
+	const float clamped_time = std::clamp(animation_time_frames_, 0.0f, max_frame);
+	animation_time_frames_ = clamped_time;
+	int frame_a = std::clamp(static_cast<int>(std::floor(clamped_time)), 0, frame_count - 1);
+	int frame_b = frame_a;
+	float blend = 0.0f;
+
+	if (animation_interpolate_ && frame_count > 1) {
+		blend = clamped_time - static_cast<float>(frame_a);
+		if (blend > 0.0f) {
+			if (animation_loop_enabled_ && (frame_a + 1) >= frame_count) {
+				frame_b = 0;
+			} else {
+				frame_b = std::min(frame_a + 1, frame_count - 1);
+			}
+		}
+	}
+
+	animation_current_frame_ = frame_a;
+	if (!force &&
+		frame_a == applied_anim_frame_a_ &&
+		frame_b == applied_anim_frame_b_ &&
+		std::abs(blend - applied_anim_blend_) < 1e-4f) {
+		return;
+	}
+
+	const ModelMesh& mesh_a = model_->animation_frames[frame_a];
+	const ModelMesh& mesh_b = model_->animation_frames[frame_b];
+	if (model_->mesh.vertices.size() != mesh_a.vertices.size()) {
+		model_->mesh.vertices.resize(mesh_a.vertices.size());
+	}
+	if (model_->mesh.indices != mesh_a.indices) {
+		model_->mesh.indices = mesh_a.indices;
+	}
+
+	const bool blend_frames = (frame_b != frame_a && blend > 0.0f && mesh_a.vertices.size() == mesh_b.vertices.size());
+	if (!blend_frames) {
+		model_->mesh.vertices = mesh_a.vertices;
+	} else {
+		for (int i = 0; i < mesh_a.vertices.size(); ++i) {
+			const ModelVertex& a = mesh_a.vertices[i];
+			const ModelVertex& b = mesh_b.vertices[i];
+			ModelVertex out = a;
+			out.px = std::lerp(a.px, b.px, blend);
+			out.py = std::lerp(a.py, b.py, blend);
+			out.pz = std::lerp(a.pz, b.pz, blend);
+			QVector3D n(std::lerp(a.nx, b.nx, blend), std::lerp(a.ny, b.ny, blend), std::lerp(a.nz, b.nz, blend));
+			if (n.lengthSquared() < 1e-12f) {
+				n = QVector3D(0.0f, 0.0f, 1.0f);
+			} else {
+				n.normalize();
+			}
+			out.nx = n.x();
+			out.ny = n.y();
+			out.nz = n.z();
+			out.u = std::lerp(a.u, b.u, blend);
+			out.v = std::lerp(a.v, b.v, blend);
+			model_->mesh.vertices[i] = out;
+		}
+	}
+
+	// Keep animated models centered on frame 0 to avoid large per-frame translation
+	// pushing the mesh out of view in preview.
+	const QVector3D base_center = (model_->animation_frames[0].mins + model_->animation_frames[0].maxs) * 0.5f;
+	const QVector3D center_a = (mesh_a.mins + mesh_a.maxs) * 0.5f;
+	QVector3D center = center_a;
+	if (blend_frames) {
+		const QVector3D center_b = (mesh_b.mins + mesh_b.maxs) * 0.5f;
+		center = center_a + (center_b - center_a) * blend;
+	}
+	const QVector3D recenter_delta = center - base_center;
+	if (recenter_delta.lengthSquared() > 1e-8f) {
+		for (ModelVertex& v : model_->mesh.vertices) {
+			v.px -= recenter_delta.x();
+			v.py -= recenter_delta.y();
+			v.pz -= recenter_delta.z();
+		}
+	}
+
+	applied_anim_frame_a_ = frame_a;
+	applied_anim_frame_b_ = frame_b;
+	applied_anim_blend_ = blend;
+	pending_upload_ = true;
+}
+
+void ModelViewerVulkanWidget::build_skeleton_overlay_lines(QVector<GridLineVertex>* lines) const {
+	if (!lines) {
+		return;
+	}
+	lines->clear();
+	if (!model_ || !skeleton_overlay_enabled_ || model_->skeleton_frames.isEmpty() || model_->skeleton_parents.isEmpty()) {
+		return;
+	}
+
+	const int frame_count = model_->skeleton_frames.size();
+	if (frame_count <= 0) {
+		return;
+	}
+
+	const int frame_a = std::clamp(applied_anim_frame_a_ >= 0 ? applied_anim_frame_a_ : animation_current_frame_, 0, frame_count - 1);
+	const int frame_b = std::clamp(applied_anim_frame_b_ >= 0 ? applied_anim_frame_b_ : frame_a, 0, frame_count - 1);
+	const float blend = std::clamp(applied_anim_blend_, 0.0f, 1.0f);
+	const int anim_frame_count = model_->animation_frames.size();
+	const int anim_a = std::clamp(frame_a, 0, std::max(0, anim_frame_count - 1));
+	const int anim_b = std::clamp(frame_b, 0, std::max(0, anim_frame_count - 1));
+	const QVector<QVector3D>& joints_a = model_->skeleton_frames[frame_a].joints;
+	const QVector<QVector3D>& joints_b = model_->skeleton_frames[frame_b].joints;
+	const int joint_count = std::min(model_->skeleton_parents.size(), joints_a.size());
+	if (joint_count <= 0) {
+		return;
+	}
+
+	QVector3D recenter_delta;
+	if (anim_frame_count > 0) {
+		const QVector3D base_center = (model_->animation_frames[0].mins + model_->animation_frames[0].maxs) * 0.5f;
+		const QVector3D center_a = (model_->animation_frames[anim_a].mins + model_->animation_frames[anim_a].maxs) * 0.5f;
+		QVector3D center = center_a;
+		if (blend > 0.0f && anim_a != anim_b) {
+			const QVector3D center_b = (model_->animation_frames[anim_b].mins + model_->animation_frames[anim_b].maxs) * 0.5f;
+			center = center_a + (center_b - center_a) * blend;
+		}
+		recenter_delta = center - base_center;
+	}
+
+	const QVector3D line_color = model_->has_native_skeleton ? QVector3D(0.20f, 0.86f, 0.98f) : QVector3D(1.00f, 0.68f, 0.26f);
+	const float alpha = 0.95f;
+	lines->reserve(joint_count * 2);
+
+	auto sample_joint = [&](int idx) -> QVector3D {
+		if (idx < 0 || idx >= joints_a.size()) {
+			return QVector3D();
+		}
+		if (blend <= 0.0f || joints_b.size() != joints_a.size()) {
+			return joints_a[idx];
+		}
+		return joints_a[idx] + (joints_b[idx] - joints_a[idx]) * blend;
+	};
+
+	for (int j = 0; j < joint_count; ++j) {
+		const int parent = model_->skeleton_parents[j];
+		if (parent < 0 || parent >= joint_count || parent == j) {
+			continue;
+		}
+		const QVector3D p = sample_joint(parent) - recenter_delta;
+		const QVector3D c = sample_joint(j) - recenter_delta;
+		lines->push_back(GridLineVertex{p.x(), p.y(), p.z(), line_color.x(), line_color.y(), line_color.z(), alpha});
+		lines->push_back(GridLineVertex{c.x(), c.y(), c.z(), line_color.x(), line_color.y(), line_color.z(), alpha});
+	}
+}
+
+void ModelViewerVulkanWidget::update_skeleton_lines_if_needed(QRhiResourceUpdateBatch* updates) {
+	if (!updates || !rhi()) {
+		return;
+	}
+
+	QVector<GridLineVertex> lines;
+	build_skeleton_overlay_lines(&lines);
+	if (lines.isEmpty()) {
+		skeleton_vertex_count_ = 0;
+		if (skeleton_vbuf_) {
+			delete skeleton_vbuf_;
+			skeleton_vbuf_ = nullptr;
+		}
+		return;
+	}
+
+	const int bytes = lines.size() * static_cast<int>(sizeof(GridLineVertex));
+	if (!skeleton_vbuf_ || skeleton_vbuf_->size() < bytes) {
+		if (skeleton_vbuf_) {
+			delete skeleton_vbuf_;
+			skeleton_vbuf_ = nullptr;
+		}
+		skeleton_vbuf_ = rhi()->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer, bytes);
+		skeleton_vbuf_->create();
+	}
+
+	updates->updateDynamicBuffer(skeleton_vbuf_, 0, bytes, lines.constData());
+	skeleton_vertex_count_ = lines.size();
+}
+
 void ModelViewerVulkanWidget::upload_mesh(QRhiResourceUpdateBatch* updates) {
 	if (!updates || !rhi() || !model_) {
 		return;
@@ -1441,24 +1825,32 @@ void ModelViewerVulkanWidget::upload_mesh(QRhiResourceUpdateBatch* updates) {
 		gpu[i] = GpuVertex{v.px, v.py, v.pz, v.nx, v.ny, v.nz, v.u, v.v};
 	}
 
-	if (vbuf_) {
-		delete vbuf_;
-		vbuf_ = nullptr;
+	const int vertex_bytes = gpu.size() * static_cast<int>(sizeof(GpuVertex));
+	const int index_bytes = model_->mesh.indices.size() * static_cast<int>(sizeof(std::uint32_t));
+
+	if (!vbuf_ || vbuf_->size() != vertex_bytes) {
+		if (vbuf_) {
+			delete vbuf_;
+			vbuf_ = nullptr;
+		}
+		vbuf_ = rhi()->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer, std::max(vertex_bytes, 1));
+		vbuf_->create();
 	}
-	if (ibuf_) {
-		delete ibuf_;
-		ibuf_ = nullptr;
+	if (!ibuf_ || ibuf_->size() != index_bytes) {
+		if (ibuf_) {
+			delete ibuf_;
+			ibuf_ = nullptr;
+		}
+		ibuf_ = rhi()->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::IndexBuffer, std::max(index_bytes, 1));
+		ibuf_->create();
 	}
 
-	vbuf_ = rhi()->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer,
-							  gpu.size() * sizeof(GpuVertex));
-	vbuf_->create();
-	ibuf_ = rhi()->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::IndexBuffer,
-							  model_->mesh.indices.size() * sizeof(std::uint32_t));
-	ibuf_->create();
-
-	updates->uploadStaticBuffer(vbuf_, gpu.constData());
-	updates->uploadStaticBuffer(ibuf_, model_->mesh.indices.constData());
+	if (vertex_bytes > 0) {
+		updates->updateDynamicBuffer(vbuf_, 0, vertex_bytes, gpu.constData());
+	}
+	if (index_bytes > 0) {
+		updates->updateDynamicBuffer(ibuf_, 0, index_bytes, model_->mesh.indices.constData());
+	}
 
 	index_count_ = model_->mesh.indices.size();
 }
@@ -1745,6 +2137,10 @@ void ModelViewerVulkanWidget::update_grid_lines_if_needed(QRhiResourceUpdateBatc
 		delete grid_vbuf_;
 		grid_vbuf_ = nullptr;
 	}
+	if (skeleton_vbuf_) {
+		delete skeleton_vbuf_;
+		skeleton_vbuf_ = nullptr;
+	}
 	grid_vertex_count_ = 0;
 	if (verts.isEmpty()) {
 		return;
@@ -1908,6 +2304,7 @@ void ModelViewerVulkanWidget::destroy_mesh_resources() {
 	index_count_ = 0;
 	ground_index_count_ = 0;
 	grid_vertex_count_ = 0;
+	skeleton_vertex_count_ = 0;
 	grid_line_step_ = 0.0f;
 	grid_line_center_i_ = 0;
 	grid_line_center_j_ = 0;

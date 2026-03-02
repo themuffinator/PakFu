@@ -40,12 +40,25 @@ struct EmbeddedTexture {
   int height = 0;
 };
 
+struct ModelSkeletonFrame {
+  QVector<QVector3D> joints;
+};
+
 struct LoadedModel {
   QString format;  // "mdl", "md2", "md3", "mdc", "md4", "mdr", "skb", "skd", "mdm", "glm", "iqm", "md5mesh", "tan", "lwo", "obj"
   int frame_count = 1;
   int surface_count = 1;
   ModelMesh mesh;
   QVector<ModelSurface> surfaces;
+  // Optional animation meshes. Frame 0 should match `mesh` when present.
+  QVector<ModelMesh> animation_frames;
+  // Optional skeleton joint positions for each animation frame.
+  QVector<ModelSkeletonFrame> skeleton_frames;
+  // Parent links for skeleton joints (`-1` for roots), shared by all skeleton frames.
+  QVector<int> skeleton_parents;
+  // Whether animation/skeleton data originated from native format data (not generated fallback guides).
+  bool has_native_animation = false;
+  bool has_native_skeleton = false;
   // Optional per-surface embedded textures (used by formats like GoldSrc MDL).
   QVector<EmbeddedTexture> embedded_textures;
   // Optional embedded indexed skin (used by formats like Quake MDL).

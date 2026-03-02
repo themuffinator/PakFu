@@ -1,6 +1,7 @@
 #include "preview_pane.h"
 
 #include <algorithm>
+#include <limits>
 
 #include <QAudioOutput>
 #include <QColorDialog>
@@ -21,6 +22,7 @@
 #include <QLabel>
 #include <QMediaMetaData>
 #include <QMediaPlayer>
+#include <QMenu>
 #include <QPalette>
 #include <QIcon>
 #include <QLayoutItem>
@@ -32,6 +34,7 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSlider>
+#include <QSizePolicy>
 #include <QStackedWidget>
 #include <QStringList>
 #include <QTemporaryFile>
@@ -40,6 +43,7 @@
 #include <QTextOption>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QWidgetAction>
 
 #include "formats/idwav_audio.h"
 #include "formats/image_loader.h"
@@ -305,6 +309,73 @@ void apply_3d_visual_settings(QWidget* widget,
 		vk->set_glow_enabled(glow_enabled);
 	}
 }
+
+struct ModelAnimationState {
+	bool valid = false;
+	int frame_count = 0;
+	int current_frame = 0;
+	bool playing = false;
+	bool loop_enabled = true;
+	float speed_multiplier = 1.0f;
+	bool skeleton_enabled = false;
+	bool has_native_animation = false;
+	bool has_native_skeleton = false;
+	int skeleton_joint_count = 0;
+};
+
+ModelAnimationState model_animation_state_for_widget(QWidget* widget) {
+	ModelAnimationState st;
+	if (auto* gl = as_gl_model_widget(widget)) {
+		st.valid = gl->has_model();
+		st.frame_count = gl->animation_frame_count();
+		st.current_frame = gl->animation_current_frame();
+		st.playing = gl->animation_playing();
+		st.loop_enabled = gl->animation_loop_enabled();
+		st.speed_multiplier = gl->animation_speed_multiplier();
+		st.skeleton_enabled = gl->skeleton_overlay_enabled();
+		st.has_native_animation = gl->has_native_animation();
+		st.has_native_skeleton = gl->has_native_skeleton();
+		st.skeleton_joint_count = gl->skeleton_joint_count();
+		return st;
+	}
+	if (auto* vk = as_vk_model_widget(widget)) {
+		st.valid = vk->has_model();
+		st.frame_count = vk->animation_frame_count();
+		st.current_frame = vk->animation_current_frame();
+		st.playing = vk->animation_playing();
+		st.loop_enabled = vk->animation_loop_enabled();
+		st.speed_multiplier = vk->animation_speed_multiplier();
+		st.skeleton_enabled = vk->skeleton_overlay_enabled();
+		st.has_native_animation = vk->has_native_animation();
+		st.has_native_skeleton = vk->has_native_skeleton();
+		st.skeleton_joint_count = vk->skeleton_joint_count();
+		return st;
+	}
+	return st;
+}
+
+void apply_model_animation_settings(QWidget* widget, const ModelAnimationState& st) {
+	if (!widget) {
+		return;
+	}
+	const int clamped_frame = std::max(0, st.current_frame);
+	const float speed = std::clamp(st.speed_multiplier, 0.1f, 8.0f);
+	if (auto* gl = as_gl_model_widget(widget)) {
+		gl->set_animation_loop_enabled(st.loop_enabled);
+		gl->set_animation_speed_multiplier(speed);
+		gl->set_skeleton_overlay_enabled(st.skeleton_enabled);
+		gl->set_animation_frame(clamped_frame);
+		gl->set_animation_playing(st.playing);
+		return;
+	}
+	if (auto* vk = as_vk_model_widget(widget)) {
+		vk->set_animation_loop_enabled(st.loop_enabled);
+		vk->set_animation_speed_multiplier(speed);
+		vk->set_skeleton_overlay_enabled(st.skeleton_enabled);
+		vk->set_animation_frame(clamped_frame);
+		vk->set_animation_playing(st.playing);
+	}
+}
 }  // namespace
 
 /*
@@ -405,6 +476,7 @@ void PreviewPane::enter_3d_fullscreen() {
 	QWidget* page = active_3d_page();
 	QWidget* source_widget = active_3d_widget();
 	const PreviewCameraState source_camera = camera_state_for_widget(source_widget);
+	const ModelAnimationState source_anim = model_animation_state_for_widget(source_widget);
 	if (!page) {
 		update_3d_fullscreen_button();
 		return;
@@ -503,6 +575,16 @@ void PreviewPane::enter_3d_fullscreen() {
 				qWarning() << "PreviewPane: fullscreen model reload failed:" << err;
 			}
 		}
+		ModelAnimationState apply_anim = source_anim;
+		if (!apply_anim.valid) {
+			apply_anim.valid = true;
+			apply_anim.current_frame = 0;
+			apply_anim.playing = model_anim_playing_;
+			apply_anim.loop_enabled = model_anim_loop_enabled_;
+			apply_anim.speed_multiplier = model_anim_speed_multiplier_;
+			apply_anim.skeleton_enabled = model_skeleton_enabled_;
+		}
+		::apply_model_animation_settings(fullscreen_widget, apply_anim);
 	} else {
 		window->deleteLater();
 		update_3d_fullscreen_button();
@@ -527,6 +609,7 @@ void PreviewPane::enter_3d_fullscreen() {
 			fullscreen_widget->setFocus(Qt::OtherFocusReason);
 		}
 	});
+	sync_model_animation_controls();
 	update_3d_fullscreen_button();
 }
 
@@ -543,6 +626,7 @@ void PreviewPane::exit_3d_fullscreen() {
 	QWidget* widget = three_d_fullscreen_widget_;
 	QWidget* page = three_d_fullscreen_page_;
 	const PreviewCameraState fs_camera = camera_state_for_widget(widget);
+	const ModelAnimationState fs_anim = model_animation_state_for_widget(widget);
 
 	three_d_fullscreen_window_ = nullptr;
 	three_d_fullscreen_widget_ = nullptr;
@@ -553,10 +637,16 @@ void PreviewPane::exit_3d_fullscreen() {
 		apply_camera_state(bsp_widget_, fs_camera);
 	} else if (page == model_page_) {
 		apply_camera_state(model_widget_, fs_camera);
+		if (fs_anim.valid) {
+			::apply_model_animation_settings(model_widget_, fs_anim);
+			sync_model_animation_controls();
+			refresh_model_overview();
+		}
 	}
 
 	window->hide();
 	window->deleteLater();
+	sync_model_animation_controls();
 	update_3d_fullscreen_button();
 }
 
@@ -782,38 +872,62 @@ void PreviewPane::build_ui() {
 	three_d_layout->setContentsMargins(6, 4, 6, 4);
 	three_d_layout->setSpacing(8);
 
-	auto* grid_label = new QLabel("Grid", three_d_controls_);
-	grid_label->setStyleSheet("color: rgba(190, 190, 190, 220);");
-	three_d_layout->addWidget(grid_label);
+	auto* three_d_scene_button = new QToolButton(three_d_controls_);
+	three_d_scene_button->setText("Scene");
+	three_d_scene_button->setIcon(UiIcons::icon(UiIcons::Id::Configure, style()));
+	three_d_scene_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+	three_d_scene_button->setPopupMode(QToolButton::InstantPopup);
+	three_d_scene_button->setAutoRaise(true);
+	three_d_scene_button->setCursor(Qt::PointingHandCursor);
+	three_d_scene_button->setToolTip("Scene options (grid, background, lighting).");
+	three_d_layout->addWidget(three_d_scene_button);
 
-	three_d_grid_combo_ = new QComboBox(three_d_controls_);
+	auto* three_d_scene_menu = new QMenu(three_d_scene_button);
+	auto* three_d_scene_root = new QWidget(three_d_scene_menu);
+	auto* three_d_scene_layout = new QVBoxLayout(three_d_scene_root);
+	three_d_scene_layout->setContentsMargins(8, 8, 8, 8);
+	three_d_scene_layout->setSpacing(8);
+
+	auto* grid_row = new QHBoxLayout();
+	grid_row->setContentsMargins(0, 0, 0, 0);
+	grid_row->setSpacing(6);
+	auto* grid_label = new QLabel("Grid", three_d_scene_root);
+	grid_label->setStyleSheet("color: rgba(190, 190, 190, 220);");
+	grid_row->addWidget(grid_label);
+
+	three_d_grid_combo_ = new QComboBox(three_d_scene_root);
 	three_d_grid_combo_->addItem("Floor + Shadow", "floor");
 	three_d_grid_combo_->addItem("Grid + Axis", "grid");
 	three_d_grid_combo_->addItem("None", "none");
 	three_d_grid_combo_->setToolTip("Choose the XY grid or ground treatment for 3D previews.");
-	three_d_layout->addWidget(three_d_grid_combo_);
+	grid_row->addWidget(three_d_grid_combo_);
+	three_d_scene_layout->addLayout(grid_row);
 
-	auto* three_d_bg_label = new QLabel("Background", three_d_controls_);
+	auto* bg_row = new QHBoxLayout();
+	bg_row->setContentsMargins(0, 0, 0, 0);
+	bg_row->setSpacing(6);
+	auto* three_d_bg_label = new QLabel("Background", three_d_scene_root);
 	three_d_bg_label->setStyleSheet("color: rgba(190, 190, 190, 220);");
-	three_d_layout->addWidget(three_d_bg_label);
+	bg_row->addWidget(three_d_bg_label);
 
-	three_d_bg_combo_ = new QComboBox(three_d_controls_);
+	three_d_bg_combo_ = new QComboBox(three_d_scene_root);
 	three_d_bg_combo_->addItem("Themed", "themed");
 	three_d_bg_combo_->addItem("Grey", "grey");
 	three_d_bg_combo_->addItem("Custom", "custom");
 	three_d_bg_combo_->setToolTip("Choose the background style for 3D previews.");
-	three_d_layout->addWidget(three_d_bg_combo_);
+	bg_row->addWidget(three_d_bg_combo_);
+	three_d_scene_layout->addLayout(bg_row);
 
-	three_d_bg_color_button_ = new QToolButton(three_d_controls_);
+	three_d_bg_color_button_ = new QToolButton(three_d_scene_root);
 	three_d_bg_color_button_->setText("Color…");
 	three_d_bg_color_button_->setToolTip("Choose the custom background color for 3D previews.");
-	three_d_layout->addWidget(three_d_bg_color_button_);
+	three_d_scene_layout->addWidget(three_d_bg_color_button_);
 
-	auto* lighting_label = new QLabel("Lighting", three_d_controls_);
+	auto* lighting_label = new QLabel("Lighting", three_d_scene_root);
 	lighting_label->setStyleSheet("color: rgba(190, 190, 190, 220);");
-	three_d_layout->addWidget(lighting_label);
+	three_d_scene_layout->addWidget(lighting_label);
 
-	bsp_lightmap_button_ = new QToolButton(three_d_controls_);
+	bsp_lightmap_button_ = new QToolButton(three_d_scene_root);
 	bsp_lightmap_button_->setText("Lightmaps");
 	bsp_lightmap_button_->setIcon(UiIcons::icon(UiIcons::Id::Lightmaps, style()));
 	bsp_lightmap_button_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -821,7 +935,12 @@ void PreviewPane::build_ui() {
 	bsp_lightmap_button_->setAutoRaise(true);
 	bsp_lightmap_button_->setCursor(Qt::PointingHandCursor);
 	bsp_lightmap_button_->setToolTip("Toggle internal BSP lightmap rendering.");
-	three_d_layout->addWidget(bsp_lightmap_button_);
+	three_d_scene_layout->addWidget(bsp_lightmap_button_);
+
+	auto* three_d_scene_action = new QWidgetAction(three_d_scene_menu);
+	three_d_scene_action->setDefaultWidget(three_d_scene_root);
+	three_d_scene_menu->addAction(three_d_scene_action);
+	three_d_scene_button->setMenu(three_d_scene_menu);
 
 	three_d_layout->addStretch();
 
@@ -844,6 +963,92 @@ void PreviewPane::build_ui() {
 	three_d_wireframe_button_->setCursor(Qt::PointingHandCursor);
 	three_d_wireframe_button_->setToolTip("Toggle wireframe rendering for 3D previews.");
 	three_d_layout->addWidget(three_d_wireframe_button_);
+
+	auto* anim_label = new QLabel("Anim", three_d_controls_);
+	anim_label->setStyleSheet("color: rgba(190, 190, 190, 220);");
+	three_d_layout->addWidget(anim_label);
+
+	model_anim_play_button_ = new QToolButton(three_d_controls_);
+	model_anim_play_button_->setText("Play");
+	model_anim_play_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaPlay, style()));
+	model_anim_play_button_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+	model_anim_play_button_->setCheckable(true);
+	model_anim_play_button_->setAutoRaise(true);
+	model_anim_play_button_->setCursor(Qt::PointingHandCursor);
+	model_anim_play_button_->setToolTip("Play or pause model animation preview.");
+	three_d_layout->addWidget(model_anim_play_button_);
+
+	model_anim_options_button_ = new QToolButton(three_d_controls_);
+	model_anim_options_button_->setText("Options");
+	model_anim_options_button_->setIcon(UiIcons::icon(UiIcons::Id::Configure, style()));
+	model_anim_options_button_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+	model_anim_options_button_->setPopupMode(QToolButton::InstantPopup);
+	model_anim_options_button_->setAutoRaise(true);
+	model_anim_options_button_->setCursor(Qt::PointingHandCursor);
+	model_anim_options_button_->setToolTip("Animation options.");
+	three_d_layout->addWidget(model_anim_options_button_);
+
+	auto* model_anim_options_menu = new QMenu(model_anim_options_button_);
+	auto* model_anim_options_root = new QWidget(model_anim_options_menu);
+	auto* model_anim_options_layout = new QVBoxLayout(model_anim_options_root);
+	model_anim_options_layout->setContentsMargins(8, 8, 8, 8);
+	model_anim_options_layout->setSpacing(8);
+
+	model_anim_loop_button_ = new QToolButton(model_anim_options_root);
+	model_anim_loop_button_->setText("Loop");
+	model_anim_loop_button_->setCheckable(true);
+	model_anim_loop_button_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+	model_anim_loop_button_->setAutoRaise(false);
+	model_anim_loop_button_->setCursor(Qt::PointingHandCursor);
+	model_anim_loop_button_->setToolTip("Loop model animation playback.");
+	model_anim_options_layout->addWidget(model_anim_loop_button_);
+
+	model_skeleton_button_ = new QToolButton(model_anim_options_root);
+	model_skeleton_button_->setText("Skeleton");
+	model_skeleton_button_->setCheckable(true);
+	model_skeleton_button_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+	model_skeleton_button_->setAutoRaise(false);
+	model_skeleton_button_->setCursor(Qt::PointingHandCursor);
+	model_skeleton_button_->setToolTip("Toggle skeleton overlay in model preview.");
+	model_anim_options_layout->addWidget(model_skeleton_button_);
+
+	auto* model_anim_speed_row = new QHBoxLayout();
+	model_anim_speed_row->setContentsMargins(0, 0, 0, 0);
+	model_anim_speed_row->setSpacing(6);
+	auto* model_anim_speed_label = new QLabel("Speed", model_anim_options_root);
+	model_anim_speed_label->setStyleSheet("color: rgba(190, 190, 190, 220);");
+	model_anim_speed_row->addWidget(model_anim_speed_label);
+
+	model_anim_speed_combo_ = new QComboBox(model_anim_options_root);
+	model_anim_speed_combo_->setToolTip("Animation playback speed.");
+	model_anim_speed_combo_->addItem("0.25x", 0.25);
+	model_anim_speed_combo_->addItem("0.5x", 0.5);
+	model_anim_speed_combo_->addItem("1.0x", 1.0);
+	model_anim_speed_combo_->addItem("1.5x", 1.5);
+	model_anim_speed_combo_->addItem("2.0x", 2.0);
+	model_anim_speed_combo_->addItem("3.0x", 3.0);
+	model_anim_speed_combo_->addItem("4.0x", 4.0);
+	model_anim_speed_row->addWidget(model_anim_speed_combo_);
+	model_anim_options_layout->addLayout(model_anim_speed_row);
+
+	auto* model_anim_options_action = new QWidgetAction(model_anim_options_menu);
+	model_anim_options_action->setDefaultWidget(model_anim_options_root);
+	model_anim_options_menu->addAction(model_anim_options_action);
+	model_anim_options_button_->setMenu(model_anim_options_menu);
+
+	model_anim_slider_ = new QSlider(Qt::Horizontal, three_d_controls_);
+	model_anim_slider_->setRange(0, 0);
+	model_anim_slider_->setSingleStep(1);
+	model_anim_slider_->setPageStep(1);
+	model_anim_slider_->setMinimumWidth(110);
+	model_anim_slider_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+	model_anim_slider_->setToolTip("Scrub model animation frame.");
+	three_d_layout->addWidget(model_anim_slider_);
+
+	model_anim_frame_label_ = new QLabel("0/0", three_d_controls_);
+	model_anim_frame_label_->setStyleSheet("color: rgba(190, 190, 190, 220);");
+	model_anim_frame_label_->setMinimumWidth(48);
+	three_d_layout->addWidget(model_anim_frame_label_);
 
 	three_d_fullscreen_button_ = new QToolButton(three_d_controls_);
 	three_d_fullscreen_button_->setText("Fullscreen");
@@ -1241,6 +1446,11 @@ void PreviewPane::build_ui() {
 	three_d_wireframe_enabled_ = settings.value("preview/3d/wireframe", false).toBool();
 	three_d_textured_enabled_ = settings.value("preview/3d/textured", true).toBool();
 	three_d_fov_degrees_ = std::clamp(settings.value("preview/3d/fov", 100).toInt(), 40, 120);
+	model_anim_playing_ = settings.value("preview/model/animPlaying", true).toBool();
+	model_anim_loop_enabled_ = settings.value("preview/model/animLoop", true).toBool();
+	model_skeleton_enabled_ = settings.value("preview/model/skeletonOverlay", false).toBool();
+	model_anim_speed_multiplier_ =
+		std::clamp(static_cast<float>(settings.value("preview/model/animSpeed", 1.0).toDouble()), 0.1f, 8.0f);
 
 	{
 		QVariant bg = settings.value("preview/image/backgroundColor");
@@ -1461,6 +1671,96 @@ void PreviewPane::build_ui() {
 		});
 	}
 
+	if (model_anim_play_button_) {
+		model_anim_play_button_->setChecked(model_anim_playing_);
+		model_anim_play_button_->setText(model_anim_playing_ ? "Pause" : "Play");
+		model_anim_play_button_->setIcon(UiIcons::icon(model_anim_playing_ ? UiIcons::Id::MediaPause : UiIcons::Id::MediaPlay, style()));
+		connect(model_anim_play_button_, &QToolButton::toggled, this, [this](bool checked) {
+			model_anim_playing_ = checked;
+			QSettings s;
+			s.setValue("preview/model/animPlaying", model_anim_playing_);
+			apply_model_animation_settings();
+			sync_model_animation_controls();
+		});
+	}
+
+	if (model_anim_loop_button_) {
+		model_anim_loop_button_->setChecked(model_anim_loop_enabled_);
+		connect(model_anim_loop_button_, &QToolButton::toggled, this, [this](bool checked) {
+			model_anim_loop_enabled_ = checked;
+			QSettings s;
+			s.setValue("preview/model/animLoop", model_anim_loop_enabled_);
+			apply_model_animation_settings();
+			sync_model_animation_controls();
+		});
+	}
+
+	if (model_skeleton_button_) {
+		model_skeleton_button_->setChecked(model_skeleton_enabled_);
+		connect(model_skeleton_button_, &QToolButton::toggled, this, [this](bool checked) {
+			model_skeleton_enabled_ = checked;
+			QSettings s;
+			s.setValue("preview/model/skeletonOverlay", model_skeleton_enabled_);
+			apply_model_animation_settings();
+			sync_model_animation_controls();
+			refresh_model_overview();
+		});
+	}
+
+	if (model_anim_speed_combo_) {
+		int best_index = 0;
+		float best_delta = std::numeric_limits<float>::max();
+		for (int i = 0; i < model_anim_speed_combo_->count(); ++i) {
+			const float v = static_cast<float>(model_anim_speed_combo_->itemData(i).toDouble());
+			const float d = std::abs(v - model_anim_speed_multiplier_);
+			if (d < best_delta) {
+				best_delta = d;
+				best_index = i;
+			}
+		}
+		model_anim_speed_combo_->setCurrentIndex(best_index);
+		connect(model_anim_speed_combo_, &QComboBox::currentIndexChanged, this, [this](int index) {
+			if (!model_anim_speed_combo_) {
+				return;
+			}
+			const float speed = static_cast<float>(model_anim_speed_combo_->itemData(index).toDouble());
+			model_anim_speed_multiplier_ = std::clamp(speed, 0.1f, 8.0f);
+			QSettings s;
+			s.setValue("preview/model/animSpeed", model_anim_speed_multiplier_);
+			apply_model_animation_settings();
+			sync_model_animation_controls();
+		});
+	}
+
+	if (model_anim_slider_) {
+		connect(model_anim_slider_, &QSlider::sliderPressed, this, [this]() {
+			model_anim_user_scrubbing_ = true;
+		});
+		connect(model_anim_slider_, &QSlider::sliderReleased, this, [this]() {
+			model_anim_user_scrubbing_ = false;
+			apply_model_animation_settings();
+			sync_model_animation_controls();
+		});
+		connect(model_anim_slider_, &QSlider::sliderMoved, this, [this](int value) {
+			if (!model_anim_user_scrubbing_) {
+				return;
+			}
+			ModelAnimationState st;
+			st.valid = true;
+			st.current_frame = value;
+			st.playing = model_anim_playing_;
+			st.loop_enabled = model_anim_loop_enabled_;
+			st.speed_multiplier = model_anim_speed_multiplier_;
+			st.skeleton_enabled = model_skeleton_enabled_;
+			::apply_model_animation_settings(model_widget_, st);
+			::apply_model_animation_settings(three_d_fullscreen_widget_, st);
+			if (model_anim_frame_label_) {
+				const int max_frame = std::max(1, model_anim_slider_->maximum() + 1);
+				model_anim_frame_label_->setText(QString("%1/%2").arg(value + 1).arg(max_frame));
+			}
+		});
+	}
+
 	if (three_d_fullscreen_button_) {
 		three_d_fullscreen_button_->setChecked(false);
 		connect(three_d_fullscreen_button_, &QToolButton::clicked, this, [this]() {
@@ -1498,7 +1798,15 @@ void PreviewPane::build_ui() {
 		schedule_next_sprite_frame();
 	});
 
+	model_anim_ui_timer_ = new QTimer(this);
+	model_anim_ui_timer_->setInterval(33);
+	connect(model_anim_ui_timer_, &QTimer::timeout, this, [this]() {
+		sync_model_animation_controls(true);
+	});
+
 	apply_3d_settings();
+	apply_model_animation_settings();
+	sync_model_animation_controls();
 	apply_image_background();
 	apply_text_wrap_mode();
 	update_shader_viewport_width();
@@ -1579,6 +1887,8 @@ void PreviewPane::rebuild_bsp_widget() {
 		}
 	}
 	apply_3d_settings();
+	apply_model_animation_settings();
+	sync_model_animation_controls();
 	update_3d_fullscreen_button();
 }
 
@@ -2180,6 +2490,27 @@ void PreviewPane::show_bsp(const QString& title, const QString& subtitle, BspMes
 	if (bsp_lightmap_button_) {
 		bsp_lightmap_button_->setVisible(true);
 	}
+	if (model_anim_play_button_) {
+		model_anim_play_button_->setVisible(false);
+	}
+	if (model_anim_options_button_) {
+		model_anim_options_button_->setVisible(false);
+	}
+	if (model_anim_loop_button_) {
+		model_anim_loop_button_->setVisible(false);
+	}
+	if (model_skeleton_button_) {
+		model_skeleton_button_->setVisible(false);
+	}
+	if (model_anim_speed_combo_) {
+		model_anim_speed_combo_->setVisible(false);
+	}
+	if (model_anim_slider_) {
+		model_anim_slider_->setVisible(false);
+	}
+	if (model_anim_frame_label_) {
+		model_anim_frame_label_->setVisible(false);
+	}
 	if (bsp_widget_) {
 		if (auto* gl = as_gl_bsp_widget(bsp_widget_)) {
 			gl->set_lightmap_enabled(bsp_lightmapping_enabled_);
@@ -2297,6 +2628,12 @@ void PreviewPane::show_content_block(const QString& title, QWidget* page) {
 	if (stack_ && page) {
 		stack_->setCurrentWidget(page);
 	}
+	if (page == model_page_) {
+		sync_model_animation_controls();
+	}
+	if (model_anim_ui_timer_ && page != model_page_) {
+		model_anim_ui_timer_->stop();
+	}
 	update_3d_fullscreen_button();
 }
 
@@ -2310,6 +2647,9 @@ void PreviewPane::hide_content_block() {
 	}
 	if (text_controls_) {
 		text_controls_->setVisible(false);
+	}
+	if (model_anim_ui_timer_) {
+		model_anim_ui_timer_->stop();
 	}
 	update_3d_fullscreen_button();
 }
@@ -2879,6 +3219,27 @@ void PreviewPane::show_model_from_file(const QString& title,
 	if (bsp_lightmap_button_) {
 		bsp_lightmap_button_->setVisible(false);
 	}
+	if (model_anim_play_button_) {
+		model_anim_play_button_->setVisible(true);
+	}
+	if (model_anim_options_button_) {
+		model_anim_options_button_->setVisible(true);
+	}
+	if (model_anim_loop_button_) {
+		model_anim_loop_button_->setVisible(true);
+	}
+	if (model_skeleton_button_) {
+		model_skeleton_button_->setVisible(true);
+	}
+	if (model_anim_speed_combo_) {
+		model_anim_speed_combo_->setVisible(true);
+	}
+	if (model_anim_slider_) {
+		model_anim_slider_->setVisible(true);
+	}
+	if (model_anim_frame_label_) {
+		model_anim_frame_label_->setVisible(true);
+	}
 
 	QString err;
 	bool ok = false;
@@ -2912,6 +3273,9 @@ void PreviewPane::show_model_from_file(const QString& title,
 		}
 	}
 
+	apply_model_animation_settings();
+	sync_model_animation_controls();
+
 	QString fmt;
 	ModelMesh mesh;
 	if (auto* gl = as_gl_model_widget(model_widget_)) {
@@ -2926,6 +3290,7 @@ void PreviewPane::show_model_from_file(const QString& title,
 	}
 	set_overview_value("Vertices", QString::number(mesh.vertices.size()));
 	set_overview_value("Triangles", QString::number(mesh.indices.size() / 3));
+	refresh_model_overview();
 }
 
 void PreviewPane::set_model_texture_smoothing(bool enabled) {
@@ -3004,6 +3369,147 @@ void PreviewPane::set_glow_enabled(bool enabled) {
 	} else if (auto* vk = as_vk_model_widget(three_d_fullscreen_widget_)) {
 		vk->set_glow_enabled(enabled);
 	}
+	apply_model_animation_settings();
+	sync_model_animation_controls();
+}
+
+void PreviewPane::apply_model_animation_settings() {
+	ModelAnimationState state;
+	state.valid = true;
+	state.current_frame = model_anim_slider_ ? model_anim_slider_->value() : 0;
+	state.playing = model_anim_playing_;
+	state.loop_enabled = model_anim_loop_enabled_;
+	state.speed_multiplier = model_anim_speed_multiplier_;
+	state.skeleton_enabled = model_skeleton_enabled_;
+
+	const ModelAnimationState current = model_animation_state_for_widget(model_widget_);
+	if (current.valid && !model_anim_user_scrubbing_) {
+		state.current_frame = current.current_frame;
+	}
+
+	::apply_model_animation_settings(model_widget_, state);
+	if (three_d_fullscreen_window_ && three_d_fullscreen_page_ == model_page_) {
+		::apply_model_animation_settings(three_d_fullscreen_widget_, state);
+	}
+}
+
+void PreviewPane::sync_model_animation_controls(bool from_timer) {
+	ModelAnimationState state;
+	if (three_d_fullscreen_window_ && three_d_fullscreen_page_ == model_page_ && three_d_fullscreen_widget_) {
+		state = model_animation_state_for_widget(three_d_fullscreen_widget_);
+	} else {
+		state = model_animation_state_for_widget(model_widget_);
+	}
+
+	const bool has_anim = state.valid && state.frame_count > 1;
+	const bool has_model = state.valid && state.frame_count > 0;
+
+	if (state.valid) {
+		model_anim_playing_ = state.playing;
+		model_anim_loop_enabled_ = state.loop_enabled;
+		model_anim_speed_multiplier_ = std::clamp(state.speed_multiplier, 0.1f, 8.0f);
+		model_skeleton_enabled_ = state.skeleton_enabled;
+	}
+
+	if (model_anim_play_button_) {
+		const bool blocked = model_anim_play_button_->blockSignals(true);
+		model_anim_play_button_->setEnabled(has_anim);
+		model_anim_play_button_->setChecked(has_anim && model_anim_playing_);
+		model_anim_play_button_->setText((has_anim && model_anim_playing_) ? "Pause" : "Play");
+		model_anim_play_button_->setIcon(UiIcons::icon((has_anim && model_anim_playing_) ? UiIcons::Id::MediaPause
+		                                                                          : UiIcons::Id::MediaPlay, style()));
+		model_anim_play_button_->blockSignals(blocked);
+	}
+	if (model_anim_options_button_) {
+		model_anim_options_button_->setEnabled(has_model);
+	}
+	if (model_anim_loop_button_) {
+		const bool blocked = model_anim_loop_button_->blockSignals(true);
+		model_anim_loop_button_->setEnabled(has_anim);
+		model_anim_loop_button_->setChecked(model_anim_loop_enabled_);
+		model_anim_loop_button_->blockSignals(blocked);
+	}
+	if (model_skeleton_button_) {
+		const bool blocked = model_skeleton_button_->blockSignals(true);
+		model_skeleton_button_->setEnabled(has_model && state.skeleton_joint_count > 0);
+		model_skeleton_button_->setChecked(model_skeleton_enabled_);
+		model_skeleton_button_->blockSignals(blocked);
+	}
+	if (model_anim_speed_combo_) {
+		const bool blocked = model_anim_speed_combo_->blockSignals(true);
+		model_anim_speed_combo_->setEnabled(has_anim);
+		int best_index = model_anim_speed_combo_->currentIndex();
+		float best_delta = std::numeric_limits<float>::max();
+		for (int i = 0; i < model_anim_speed_combo_->count(); ++i) {
+			const float v = static_cast<float>(model_anim_speed_combo_->itemData(i).toDouble());
+			const float d = std::abs(v - model_anim_speed_multiplier_);
+			if (d < best_delta) {
+				best_delta = d;
+				best_index = i;
+			}
+		}
+		if (best_index >= 0) {
+			model_anim_speed_combo_->setCurrentIndex(best_index);
+		}
+		model_anim_speed_combo_->blockSignals(blocked);
+	}
+	if (model_anim_slider_) {
+		const bool blocked = model_anim_slider_->blockSignals(true);
+		model_anim_slider_->setEnabled(has_anim);
+		model_anim_slider_->setRange(0, std::max(0, state.frame_count - 1));
+		if (!model_anim_user_scrubbing_) {
+			model_anim_slider_->setValue(std::clamp(state.current_frame, 0, std::max(0, state.frame_count - 1)));
+		}
+		model_anim_slider_->blockSignals(blocked);
+	}
+	if (model_anim_frame_label_) {
+		const int total = std::max(1, state.frame_count);
+		const int frame = std::clamp(state.current_frame + 1, 1, total);
+		model_anim_frame_label_->setText(has_model ? QString("%1/%2").arg(frame).arg(total) : "0/0");
+	}
+
+	if (model_anim_ui_timer_) {
+		const bool should_tick = (current_content_kind_ == ContentKind::Model) && has_anim && model_anim_playing_;
+		if (should_tick) {
+			model_anim_ui_timer_->start();
+		} else {
+			model_anim_ui_timer_->stop();
+		}
+	}
+
+	if (!from_timer) {
+		refresh_model_overview();
+	}
+}
+
+void PreviewPane::refresh_model_overview() {
+	if (current_content_kind_ != ContentKind::Model) {
+		return;
+	}
+
+	const ModelAnimationState state = model_animation_state_for_widget(model_widget_);
+	if (!state.valid) {
+		return;
+	}
+
+	set_overview_value("Frames", QString::number(std::max(1, state.frame_count)));
+	if (state.frame_count > 1) {
+		set_overview_value("Frame", QString("%1/%2").arg(state.current_frame + 1).arg(state.frame_count));
+		set_overview_value("Animation", state.has_native_animation ? "Native" : "Guide");
+	} else {
+		set_overview_value("Animation", "Static");
+	}
+
+	if (state.skeleton_joint_count > 0) {
+		set_overview_value("Joints", QString::number(state.skeleton_joint_count));
+		if (model_skeleton_enabled_) {
+			set_overview_value("Skeleton", state.has_native_skeleton ? "Native (Shown)" : "Guide (Shown)");
+		} else {
+			set_overview_value("Skeleton", state.has_native_skeleton ? "Native (Hidden)" : "Guide (Hidden)");
+		}
+	} else {
+		set_overview_value("Skeleton", "None");
+	}
 }
 
 void PreviewPane::apply_3d_settings() {
@@ -3021,6 +3527,7 @@ void PreviewPane::apply_3d_settings() {
 	apply(bsp_widget_);
 	apply(model_widget_);
 	apply(three_d_fullscreen_widget_);
+	apply_model_animation_settings();
 }
 
 void PreviewPane::start_playback_from_beginning() {
@@ -3044,6 +3551,21 @@ void PreviewPane::start_playback_from_beginning() {
 		if (video_widget_) {
 			video_widget_->play_from_start();
 		}
+		return;
+	}
+
+	if (current_content_kind_ == ContentKind::Model) {
+		ModelAnimationState st;
+		st.valid = true;
+		st.current_frame = 0;
+		st.playing = true;
+		st.loop_enabled = model_anim_loop_enabled_;
+		st.speed_multiplier = model_anim_speed_multiplier_;
+		st.skeleton_enabled = model_skeleton_enabled_;
+		model_anim_playing_ = true;
+		::apply_model_animation_settings(model_widget_, st);
+		::apply_model_animation_settings(three_d_fullscreen_widget_, st);
+		sync_model_animation_controls();
 		return;
 	}
 
@@ -3094,6 +3616,10 @@ void PreviewPane::stop_video_playback() {
 
 void PreviewPane::stop_model_preview() {
 	stop_sprite_animation();
+	if (model_anim_ui_timer_) {
+		model_anim_ui_timer_->stop();
+	}
+	model_anim_user_scrubbing_ = false;
 	if (three_d_fullscreen_window_ && three_d_fullscreen_page_ == model_page_) {
 		exit_3d_fullscreen();
 	}
@@ -3102,6 +3628,7 @@ void PreviewPane::stop_model_preview() {
 	} else if (auto* vk = as_vk_model_widget(model_widget_)) {
 		vk->unload();
 	}
+	sync_model_animation_controls();
 }
 
 /*

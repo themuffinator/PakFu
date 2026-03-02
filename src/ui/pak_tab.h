@@ -212,6 +212,7 @@ private:
   bool open_entry_with_associated_app(const QString& pak_path, const QString& display_name);
   void activate_entry(const QString& item_name, bool is_dir, const QString& pak_path);
 
+  void enter_directory_path(const QString& pak_path);
   void enter_directory(const QString& name);
   void activate_crumb(int index);
 

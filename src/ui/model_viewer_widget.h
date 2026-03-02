@@ -37,6 +37,20 @@ class ModelViewerWidget final : public QOpenGLWidget, protected QOpenGLFunctions
   void set_textured_enabled(bool enabled);
   void set_glow_enabled(bool enabled);
   void set_fov_degrees(int degrees);
+  void set_animation_playing(bool playing);
+  void set_animation_loop_enabled(bool enabled);
+  void set_animation_speed_multiplier(float speed);
+  void set_animation_frame(int frame_index);
+  void set_skeleton_overlay_enabled(bool enabled);
+  [[nodiscard]] int animation_frame_count() const;
+  [[nodiscard]] int animation_current_frame() const;
+  [[nodiscard]] bool animation_playing() const;
+  [[nodiscard]] bool animation_loop_enabled() const;
+  [[nodiscard]] float animation_speed_multiplier() const;
+  [[nodiscard]] bool skeleton_overlay_enabled() const;
+  [[nodiscard]] bool has_native_animation() const;
+  [[nodiscard]] bool has_native_skeleton() const;
+  [[nodiscard]] int skeleton_joint_count() const;
   [[nodiscard]] PreviewCameraState camera_state() const;
   void set_camera_state(const PreviewCameraState& state);
 
@@ -88,7 +102,11 @@ protected:
   void pan_by_pixels(const QPoint& delta);
   void dolly_by_pixels(const QPoint& delta);
   void on_fly_tick();
+  void on_animation_tick();
   void set_fly_key(int key, bool down);
+  void update_animation_timer_state();
+  void apply_animation_state(bool force);
+  void build_skeleton_overlay_lines(QVector<GridLineVertex>* lines) const;
   void upload_mesh_if_possible();
   void upload_textures_if_possible();
   void destroy_gl_resources();
@@ -123,6 +141,7 @@ protected:
   QOpenGLBuffer ground_ibo_{QOpenGLBuffer::IndexBuffer};
   QOpenGLBuffer bg_vbo_{QOpenGLBuffer::VertexBuffer};
   QOpenGLBuffer grid_vbo_{QOpenGLBuffer::VertexBuffer};
+  QOpenGLBuffer skeleton_vbo_{QOpenGLBuffer::VertexBuffer};
   QOpenGLVertexArrayObject vao_;
   QOpenGLVertexArrayObject bg_vao_;
   bool gl_ready_ = false;
@@ -130,6 +149,7 @@ protected:
   GLenum index_type_ = GL_UNSIGNED_INT;
   int ground_index_count_ = 0;
   int grid_vertex_count_ = 0;
+  int skeleton_vertex_count_ = 0;
   float ground_extent_ = 0.0f;
   float ground_z_ = 0.0f;
   float grid_scale_ = 1.0f;
@@ -161,6 +181,16 @@ protected:
   qint64 fly_last_nsecs_ = 0;
   float fly_speed_ = 640.0f;
   int fly_move_mask_ = 0;
+  QTimer animation_timer_;
+  QElapsedTimer animation_elapsed_;
+  qint64 animation_last_nsecs_ = 0;
+  float animation_time_frames_ = 0.0f;
+  float animation_speed_multiplier_ = 1.0f;
+  float animation_base_fps_ = 10.0f;
+  int animation_current_frame_ = 0;
+  int applied_anim_frame_a_ = -1;
+  int applied_anim_frame_b_ = -1;
+  float applied_anim_blend_ = -1.0f;
 
   QPoint last_mouse_pos_;
   DragMode drag_mode_ = DragMode::None;
@@ -176,4 +206,8 @@ protected:
   bool wireframe_enabled_ = false;
   bool textured_enabled_ = true;
   bool glow_enabled_ = false;
+  bool animation_playing_ = true;
+  bool animation_loop_enabled_ = true;
+  bool animation_interpolate_ = true;
+  bool skeleton_overlay_enabled_ = false;
 };

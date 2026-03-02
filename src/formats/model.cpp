@@ -213,6 +213,142 @@ void compute_smooth_normals(ModelMesh* mesh) {
   }
 }
 
+[[nodiscard]] ModelSkeletonFrame build_guide_skeleton_frame(const ModelMesh& mesh) {
+  ModelSkeletonFrame frame;
+
+  QVector3D mins = mesh.mins;
+  QVector3D maxs = mesh.maxs;
+  if (mesh.vertices.isEmpty()) {
+    mins = QVector3D(-8.0f, -8.0f, -8.0f);
+    maxs = QVector3D(8.0f, 8.0f, 8.0f);
+  }
+
+  const QVector3D center = (mins + maxs) * 0.5f;
+  QVector3D ext = (maxs - mins) * 0.5f;
+  const float fallback = 8.0f;
+  if (ext.lengthSquared() < 1e-6f) {
+    ext = QVector3D(fallback, fallback, fallback);
+  }
+
+  frame.joints.reserve(7);
+  frame.joints.push_back(center);                                 // root
+  frame.joints.push_back(center + QVector3D(ext.x(), 0.0f, 0.0f));   // +X
+  frame.joints.push_back(center + QVector3D(-ext.x(), 0.0f, 0.0f));  // -X
+  frame.joints.push_back(center + QVector3D(0.0f, ext.y(), 0.0f));   // +Y
+  frame.joints.push_back(center + QVector3D(0.0f, -ext.y(), 0.0f));  // -Y
+  frame.joints.push_back(center + QVector3D(0.0f, 0.0f, ext.z()));   // +Z
+  frame.joints.push_back(center + QVector3D(0.0f, 0.0f, -ext.z()));  // -Z
+  return frame;
+}
+
+void apply_fallback_guide_skeleton(LoadedModel* model) {
+  if (!model) {
+    return;
+  }
+
+  static const QVector<int> kGuideParents = {-1, 0, 0, 0, 0, 0, 0};
+  model->skeleton_parents = kGuideParents;
+  model->skeleton_frames.clear();
+  model->skeleton_frames.reserve(model->animation_frames.size());
+  for (const ModelMesh& frame_mesh : model->animation_frames) {
+    model->skeleton_frames.push_back(build_guide_skeleton_frame(frame_mesh));
+  }
+  model->has_native_skeleton = false;
+}
+
+void finalize_loaded_model(LoadedModel* model) {
+  if (!model) {
+    return;
+  }
+
+  if (model->animation_frames.isEmpty()) {
+    model->animation_frames.push_back(model->mesh);
+  }
+
+  for (ModelMesh& frame_mesh : model->animation_frames) {
+    if (frame_mesh.indices.isEmpty() && !model->mesh.indices.isEmpty()) {
+      frame_mesh.indices = model->mesh.indices;
+    }
+    compute_bounds(&frame_mesh);
+  }
+
+  model->mesh = model->animation_frames[0];
+  QVector3D global_mins = model->animation_frames[0].mins;
+  QVector3D global_maxs = model->animation_frames[0].maxs;
+  for (const ModelMesh& frame_mesh : model->animation_frames) {
+    global_mins.setX(std::min(global_mins.x(), frame_mesh.mins.x()));
+    global_mins.setY(std::min(global_mins.y(), frame_mesh.mins.y()));
+    global_mins.setZ(std::min(global_mins.z(), frame_mesh.mins.z()));
+    global_maxs.setX(std::max(global_maxs.x(), frame_mesh.maxs.x()));
+    global_maxs.setY(std::max(global_maxs.y(), frame_mesh.maxs.y()));
+    global_maxs.setZ(std::max(global_maxs.z(), frame_mesh.maxs.z()));
+  }
+  model->mesh.mins = global_mins;
+  model->mesh.maxs = global_maxs;
+
+  model->frame_count = std::max(1, static_cast<int>(model->animation_frames.size()));
+  model->surface_count = std::max(1, model->surface_count);
+  if (model->frame_count > 1) {
+    model->has_native_animation = true;
+  }
+
+  if (model->skeleton_frames.isEmpty() || model->skeleton_parents.isEmpty()) {
+    apply_fallback_guide_skeleton(model);
+    return;
+  }
+
+  const int joint_count = model->skeleton_parents.size();
+  bool skeleton_valid = (joint_count > 0);
+  for (int i = 0; i < joint_count; ++i) {
+    int& parent = model->skeleton_parents[i];
+    if (parent < 0) {
+      parent = -1;
+      continue;
+    }
+    if (parent == i || parent >= joint_count) {
+      skeleton_valid = false;
+      break;
+    }
+  }
+
+  if (skeleton_valid && model->skeleton_frames.size() < model->animation_frames.size()) {
+    if (model->skeleton_frames.size() == 1) {
+      const ModelSkeletonFrame first = model->skeleton_frames[0];
+      while (model->skeleton_frames.size() < model->animation_frames.size()) {
+        model->skeleton_frames.push_back(first);
+      }
+    } else {
+      skeleton_valid = false;
+    }
+  }
+  if (model->skeleton_frames.size() > model->animation_frames.size()) {
+    model->skeleton_frames.resize(model->animation_frames.size());
+  }
+
+  if (skeleton_valid) {
+    for (const ModelSkeletonFrame& frame : model->skeleton_frames) {
+      if (frame.joints.size() != joint_count) {
+        skeleton_valid = false;
+        break;
+      }
+    }
+  }
+
+  if (!skeleton_valid) {
+    apply_fallback_guide_skeleton(model);
+    return;
+  }
+
+  model->has_native_skeleton = true;
+}
+
+[[nodiscard]] std::optional<LoadedModel> finalize_loaded(std::optional<LoadedModel>&& model) {
+  if (model) {
+    finalize_loaded_model(&*model);
+  }
+  return std::move(model);
+}
+
 std::optional<LoadedModel> load_quake_mdl(const QString& file_path, QString* error) {
   if (error) {
     error->clear();
@@ -430,15 +566,6 @@ std::optional<LoadedModel> load_quake_mdl(const QString& file_path, QString* err
     tris.push_back(tri);
   }
 
-  // Read the first frame's vertex positions.
-  qint32 frame_type = 0;
-  if (!cur.read_i32(&frame_type)) {
-    if (error) {
-      *error = "MDL frames are incomplete.";
-    }
-    return std::nullopt;
-  }
-
   auto read_trivert = [&](quint8 v[3]) -> bool {
     quint8 x = 0, y = 0, z = 0, ni = 0;
     if (!cur.read_u8(&x) || !cur.read_u8(&y) || !cur.read_u8(&z) || !cur.read_u8(&ni)) {
@@ -476,51 +603,64 @@ std::optional<LoadedModel> load_quake_mdl(const QString& file_path, QString* err
     return true;
   };
 
-  QVector<ModelVertex> base_verts;
-  if (frame_type == 0) {
-    if (!read_frame_vertices(&base_verts)) {
+  auto read_mdl_frame = [&](QVector<ModelVertex>* out_verts) -> bool {
+    if (!out_verts) {
+      return false;
+    }
+    out_verts->clear();
+
+    qint32 frame_type = 0;
+    if (!cur.read_i32(&frame_type)) {
+      return false;
+    }
+
+    if (frame_type == 0) {
+      return read_frame_vertices(out_verts);
+    }
+
+    if (frame_type == 1) {
+      qint32 group = 0;
+      quint8 bboxmin[3]{};
+      quint8 bboxmax[3]{};
+      if (!cur.read_i32(&group) || group <= 0 || group > 10000) {
+        return false;
+      }
+      if (!read_trivert(bboxmin) || !read_trivert(bboxmax)) {
+        return false;
+      }
+      if (!cur.skip(group * 4)) {
+        return false;
+      }
+
+      for (int sub = 0; sub < group; ++sub) {
+        QVector<ModelVertex> subframe;
+        if (!read_frame_vertices(&subframe)) {
+          return false;
+        }
+        if (sub == 0) {
+          *out_verts = std::move(subframe);
+        }
+      }
+      return !out_verts->isEmpty();
+    }
+
+    return false;
+  };
+
+  QVector<QVector<ModelVertex>> frame_base_vertices;
+  frame_base_vertices.reserve(numframes);
+  for (int fi = 0; fi < numframes; ++fi) {
+    QVector<ModelVertex> frame;
+    if (!read_mdl_frame(&frame)) {
       if (error) {
-        *error = "MDL frame is incomplete.";
+        *error = QString("MDL frame %1 is incomplete or invalid.").arg(fi);
       }
       return std::nullopt;
     }
-  } else if (frame_type == 1) {
-    qint32 group = 0;
-    quint8 bboxmin[3]{};
-    quint8 bboxmax[3]{};
-    if (!cur.read_i32(&group) || group <= 0) {
-      if (error) {
-        *error = "MDL frame group is invalid.";
-      }
-      return std::nullopt;
-    }
-    if (!read_trivert(bboxmin) || !read_trivert(bboxmax)) {
-      if (error) {
-        *error = "MDL frame group is incomplete.";
-      }
-      return std::nullopt;
-    }
-    (void)bboxmin;
-    (void)bboxmax;
-    if (!cur.skip(group * 4)) {
-      if (error) {
-        *error = "MDL frame group is incomplete.";
-      }
-      return std::nullopt;
-    }
-    // Read only the first subframe.
-    if (!read_frame_vertices(&base_verts)) {
-      if (error) {
-        *error = "MDL frame group is incomplete.";
-      }
-      return std::nullopt;
-    }
-  } else {
-    if (error) {
-      *error = QString("MDL has unknown frame type: %1").arg(frame_type);
-    }
-    return std::nullopt;
+    frame_base_vertices.push_back(std::move(frame));
   }
+
+  const QVector<ModelVertex>& base_verts = frame_base_vertices[0];
 
   if (tris.isEmpty()) {
     if (error) {
@@ -533,6 +673,8 @@ std::optional<LoadedModel> load_quake_mdl(const QString& file_path, QString* err
   QVector<std::uint32_t> indices;
   verts.reserve(tris.size() * 3);
   indices.reserve(tris.size() * 3);
+  QVector<int> out_vertex_source_indices;
+  out_vertex_source_indices.reserve(tris.size() * 3);
 
   const float inv_skinw = 1.0f / static_cast<float>(skinwidth);
   const float inv_skinh = 1.0f / static_cast<float>(skinheight);
@@ -713,6 +855,7 @@ std::optional<LoadedModel> load_quake_mdl(const QString& file_path, QString* err
       v.v = 1.0f - ((static_cast<float>(st[vi].t) + 0.5f) * inv_skinh);
 
       cmd_indices.push_back(static_cast<std::uint32_t>(verts.size()));
+      out_vertex_source_indices.push_back(vi);
       verts.push_back(v);
     }
 
@@ -747,16 +890,33 @@ std::optional<LoadedModel> load_quake_mdl(const QString& file_path, QString* err
   out.format = "mdl";
   out.frame_count = numframes;
   out.surface_count = 1;
-  out.mesh.vertices = std::move(verts);
-  out.mesh.indices = std::move(indices);
-  out.surfaces = {ModelSurface{QString("model"), QString(), 0, static_cast<int>(out.mesh.indices.size())}};
+  out.surfaces = {ModelSurface{QString("model"), QString(), 0, static_cast<int>(indices.size())}};
+  out.animation_frames.reserve(frame_base_vertices.size());
+
+  for (const QVector<ModelVertex>& frame_base : frame_base_vertices) {
+    ModelMesh frame_mesh;
+    frame_mesh.vertices = verts;
+    frame_mesh.indices = indices;
+    for (int i = 0; i < frame_mesh.vertices.size(); ++i) {
+      const int source = out_vertex_source_indices[i];
+      if (source < 0 || source >= frame_base.size()) {
+        continue;
+      }
+      frame_mesh.vertices[i].px = frame_base[source].px;
+      frame_mesh.vertices[i].py = frame_base[source].py;
+      frame_mesh.vertices[i].pz = frame_base[source].pz;
+    }
+    compute_smooth_normals(&frame_mesh);
+    compute_bounds(&frame_mesh);
+    out.animation_frames.push_back(std::move(frame_mesh));
+  }
+  out.mesh = out.animation_frames[0];
+  out.has_native_animation = (out.animation_frames.size() > 1);
   if (embedded_skin_indices.size() == skin_bytes) {
     out.embedded_skin_indices = std::move(embedded_skin_indices);
     out.embedded_skin_width = skinwidth;
     out.embedded_skin_height = skinheight;
   }
-  compute_smooth_normals(&out.mesh);
-  compute_bounds(&out.mesh);
   return out;
 }
 
@@ -1566,6 +1726,18 @@ std::optional<LoadedModel> load_goldsrc_mdl(const QString& file_path, QString* e
     out.surfaces = std::move(surfaces);
   }
 
+  if (!bones.isEmpty() && bone_world.size() == bones.size()) {
+    out.skeleton_parents.resize(bones.size());
+    ModelSkeletonFrame skeleton_frame;
+    skeleton_frame.joints.resize(bones.size());
+    for (int i = 0; i < bones.size(); ++i) {
+      out.skeleton_parents[i] = bones[i].parent;
+      skeleton_frame.joints[i] = QVector3D(bone_world[i].m[0][3], bone_world[i].m[1][3], bone_world[i].m[2][3]);
+    }
+    out.skeleton_frames = {std::move(skeleton_frame)};
+    out.has_native_skeleton = true;
+  }
+
   out.embedded_textures.clear();
   out.embedded_textures.resize(textures.size());
   int first_valid_tex_slot = -1;
@@ -1800,53 +1972,62 @@ std::optional<LoadedModel> load_md2(const QString& file_path, QString* error) {
     tris.push_back(tri);
   }
 
-  if (!cur.seek(ofs_frames)) {
-    if (error) {
-      *error = "MD2 frames offset is invalid.";
+  auto read_md2_frame = [&](int frame_index, QVector<ModelVertex>* out_verts) -> bool {
+    if (!out_verts) {
+      return false;
     }
-    return std::nullopt;
-  }
+    out_verts->clear();
+    if (frame_index < 0 || frame_index >= num_frames) {
+      return false;
+    }
+    const qint64 frame_off = static_cast<qint64>(ofs_frames) + static_cast<qint64>(frame_index) * framesize;
+    if (frame_off < 0 || frame_off > std::numeric_limits<int>::max() || !cur.seek(static_cast<int>(frame_off))) {
+      return false;
+    }
 
-  float scale[3]{};
-  float translate[3]{};
-  for (int i = 0; i < 3; ++i) {
-    if (!cur.read_f32(&scale[i])) {
-      if (error) {
-        *error = "MD2 frame is incomplete.";
+    float scale[3]{};
+    float translate[3]{};
+    for (int i = 0; i < 3; ++i) {
+      if (!cur.read_f32(&scale[i])) {
+        return false;
       }
-      return std::nullopt;
     }
-  }
-  for (int i = 0; i < 3; ++i) {
-    if (!cur.read_f32(&translate[i])) {
-      if (error) {
-        *error = "MD2 frame is incomplete.";
+    for (int i = 0; i < 3; ++i) {
+      if (!cur.read_f32(&translate[i])) {
+        return false;
       }
-      return std::nullopt;
     }
-  }
-  if (!cur.skip(16)) {
-    if (error) {
-      *error = "MD2 frame is incomplete.";
+    if (!cur.skip(16)) {
+      return false;
     }
-    return std::nullopt;
-  }
 
-  QVector<ModelVertex> base_verts;
-  base_verts.resize(num_xyz);
-  for (int i = 0; i < num_xyz; ++i) {
-    quint8 vx = 0, vy = 0, vz = 0, ni = 0;
-    if (!cur.read_u8(&vx) || !cur.read_u8(&vy) || !cur.read_u8(&vz) || !cur.read_u8(&ni)) {
+    out_verts->resize(num_xyz);
+    for (int i = 0; i < num_xyz; ++i) {
+      quint8 vx = 0, vy = 0, vz = 0, ni = 0;
+      if (!cur.read_u8(&vx) || !cur.read_u8(&vy) || !cur.read_u8(&vz) || !cur.read_u8(&ni)) {
+        return false;
+      }
+      (void)ni;
+      (*out_verts)[i].px = static_cast<float>(vx) * scale[0] + translate[0];
+      (*out_verts)[i].py = static_cast<float>(vy) * scale[1] + translate[1];
+      (*out_verts)[i].pz = static_cast<float>(vz) * scale[2] + translate[2];
+    }
+    return true;
+  };
+
+  QVector<QVector<ModelVertex>> frame_base_vertices;
+  frame_base_vertices.reserve(num_frames);
+  for (int fi = 0; fi < num_frames; ++fi) {
+    QVector<ModelVertex> frame;
+    if (!read_md2_frame(fi, &frame)) {
       if (error) {
-        *error = "MD2 vertices are incomplete.";
+        *error = QString("MD2 frame %1 is incomplete.").arg(fi);
       }
       return std::nullopt;
     }
-    (void)ni;
-    base_verts[i].px = static_cast<float>(vx) * scale[0] + translate[0];
-    base_verts[i].py = static_cast<float>(vy) * scale[1] + translate[1];
-    base_verts[i].pz = static_cast<float>(vz) * scale[2] + translate[2];
+    frame_base_vertices.push_back(std::move(frame));
   }
+  const QVector<ModelVertex>& base_verts = frame_base_vertices[0];
 
   if (tris.isEmpty()) {
     if (error) {
@@ -1859,6 +2040,8 @@ std::optional<LoadedModel> load_md2(const QString& file_path, QString* error) {
   QVector<std::uint32_t> indices;
   verts.reserve(tris.size() * 3);
   indices.reserve(tris.size() * 3);
+  QVector<int> out_vertex_source_indices;
+  out_vertex_source_indices.reserve(tris.size() * 3);
 
   QHash<quint64, std::uint32_t> remap;
   remap.reserve(tris.size() * 3);
@@ -1885,6 +2068,7 @@ std::optional<LoadedModel> load_md2(const QString& file_path, QString* error) {
         v.u = static_cast<float>(st[static_cast<int>(ti)].s) * inv_skinw;
         v.v = 1.0f - (static_cast<float>(st[static_cast<int>(ti)].t) * inv_skinh);
         verts.push_back(v);
+        out_vertex_source_indices.push_back(static_cast<int>(vi));
         indices.push_back(new_index);
       } else {
         indices.push_back(*it);
@@ -1896,11 +2080,27 @@ std::optional<LoadedModel> load_md2(const QString& file_path, QString* error) {
   out.format = "md2";
   out.frame_count = num_frames;
   out.surface_count = 1;
-  out.mesh.vertices = std::move(verts);
-  out.mesh.indices = std::move(indices);
-  out.surfaces = {ModelSurface{QString("model"), QString(), 0, static_cast<int>(out.mesh.indices.size())}};
-  compute_smooth_normals(&out.mesh);
-  compute_bounds(&out.mesh);
+  out.surfaces = {ModelSurface{QString("model"), QString(), 0, static_cast<int>(indices.size())}};
+  out.animation_frames.reserve(frame_base_vertices.size());
+  for (const QVector<ModelVertex>& frame_base : frame_base_vertices) {
+    ModelMesh frame_mesh;
+    frame_mesh.vertices = verts;
+    frame_mesh.indices = indices;
+    for (int i = 0; i < frame_mesh.vertices.size(); ++i) {
+      const int source = out_vertex_source_indices[i];
+      if (source < 0 || source >= frame_base.size()) {
+        continue;
+      }
+      frame_mesh.vertices[i].px = frame_base[source].px;
+      frame_mesh.vertices[i].py = frame_base[source].py;
+      frame_mesh.vertices[i].pz = frame_base[source].pz;
+    }
+    compute_smooth_normals(&frame_mesh);
+    compute_bounds(&frame_mesh);
+    out.animation_frames.push_back(std::move(frame_mesh));
+  }
+  out.mesh = out.animation_frames[0];
+  out.has_native_animation = (out.animation_frames.size() > 1);
   return out;
 }
 
@@ -1981,10 +2181,60 @@ std::optional<LoadedModel> load_md3(const QString& file_path, QString* error) {
     return std::nullopt;
   }
 
+  struct Md3FrameMeta {
+    QVector3D bbox_center;
+    QVector3D local_origin;
+  };
+  QVector<Md3FrameMeta> frame_meta;
+  frame_meta.resize(num_frames);
+  constexpr int kMd3FrameSize = 56;
+  auto read_f32_le_at = [&](int off, float* out_val) -> bool {
+    if (!out_val || off < 0 || off + 4 > file_size) {
+      return false;
+    }
+    const auto* p = reinterpret_cast<const unsigned char*>(bytes.constData() + off);
+    const quint32 u = static_cast<quint32>(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24));
+    float fval = 0.0f;
+    memcpy(&fval, &u, sizeof(float));
+    *out_val = fval;
+    return true;
+  };
+  if (ofs_frames < 0 || static_cast<qint64>(ofs_frames) + static_cast<qint64>(num_frames) * kMd3FrameSize > file_size) {
+    if (error) {
+      *error = "MD3 frame block is out of bounds.";
+    }
+    return std::nullopt;
+  }
+  for (int fi = 0; fi < num_frames; ++fi) {
+    const int fo = ofs_frames + fi * kMd3FrameSize;
+    float minx = 0.0f, miny = 0.0f, minz = 0.0f;
+    float maxx = 0.0f, maxy = 0.0f, maxz = 0.0f;
+    float ox = 0.0f, oy = 0.0f, oz = 0.0f;
+    if (!read_f32_le_at(fo + 0, &minx) || !read_f32_le_at(fo + 4, &miny) || !read_f32_le_at(fo + 8, &minz) ||
+        !read_f32_le_at(fo + 12, &maxx) || !read_f32_le_at(fo + 16, &maxy) || !read_f32_le_at(fo + 20, &maxz) ||
+        !read_f32_le_at(fo + 24, &ox) || !read_f32_le_at(fo + 28, &oy) || !read_f32_le_at(fo + 32, &oz)) {
+      if (error) {
+        *error = "MD3 frame block is incomplete.";
+      }
+      return std::nullopt;
+    }
+    frame_meta[fi].bbox_center = QVector3D((minx + maxx) * 0.5f, (miny + maxy) * 0.5f, (minz + maxz) * 0.5f);
+    frame_meta[fi].local_origin = QVector3D(ox, oy, oz);
+  }
+
   QVector<ModelVertex> vertices;
   QVector<std::uint32_t> indices;
   QVector<ModelSurface> surfaces;
+  struct Md3SurfaceFrameSource {
+    int base_vertex = 0;
+    int num_verts = 0;
+    int surf_off = 0;
+    int ofs_xyz = 0;
+    int surf_num_frames = 0;
+  };
+  QVector<Md3SurfaceFrameSource> frame_sources;
   surfaces.reserve(num_surfaces);
+  frame_sources.reserve(num_surfaces);
 
   int surf_off = ofs_surfaces;
   for (int s = 0; s < num_surfaces; ++s) {
@@ -2042,15 +2292,36 @@ std::optional<LoadedModel> load_md3(const QString& file_path, QString* error) {
       }
     }
 
-    if (surf_num_verts <= 0 || surf_num_verts > 200000 || surf_num_tris < 0 || surf_num_tris > 200000 || ofs_surf_end <= 0) {
+    if (surf_num_frames <= 0 || surf_num_frames > 100000 || surf_num_verts <= 0 || surf_num_verts > 200000 || surf_num_tris < 0 ||
+        surf_num_tris > 200000 || ofs_surf_end <= 0) {
       if (error) {
         *error = "MD3 surface values are invalid.";
+      }
+      return std::nullopt;
+    }
+    const int surf_end = surf_off + ofs_surf_end;
+    if (surf_end <= surf_off || surf_end > file_size || surf_end > ofs_end) {
+      if (error) {
+        *error = "MD3 surface offsets are invalid.";
+      }
+      return std::nullopt;
+    }
+    const qint64 xyz_bytes = static_cast<qint64>(surf_num_frames) * static_cast<qint64>(surf_num_verts) * 8;
+    const qint64 st_bytes = static_cast<qint64>(surf_num_verts) * 8;
+    const qint64 tri_bytes = static_cast<qint64>(surf_num_tris) * 12;
+    if (ofs_xyz < 0 || ofs_st < 0 || ofs_tris < 0 ||
+        static_cast<qint64>(surf_off) + ofs_xyz + xyz_bytes > surf_end ||
+        static_cast<qint64>(surf_off) + ofs_st + st_bytes > surf_end ||
+        static_cast<qint64>(surf_off) + ofs_tris + tri_bytes > surf_end) {
+      if (error) {
+        *error = "MD3 surface data is out of bounds.";
       }
       return std::nullopt;
     }
 
     const int base_vertex = vertices.size();
     vertices.resize(base_vertex + surf_num_verts);
+    frame_sources.push_back(Md3SurfaceFrameSource{base_vertex, surf_num_verts, surf_off, ofs_xyz, surf_num_frames});
 
     // Frame 0 vertex array (xyz/normal).
     const int xyz_off = surf_off + ofs_xyz;
@@ -2157,8 +2428,108 @@ std::optional<LoadedModel> load_md3(const QString& file_path, QString* error) {
   out.mesh.vertices = std::move(vertices);
   out.mesh.indices = std::move(indices);
   out.surfaces = std::move(surfaces);
-  compute_smooth_normals(&out.mesh);
-  compute_bounds(&out.mesh);
+  auto read_i16_le_at = [&](qint64 off, qint16* out_val) -> bool {
+    if (!out_val || off < 0 || off + 2 > bytes.size()) {
+      return false;
+    }
+    const auto* p = reinterpret_cast<const unsigned char*>(bytes.constData() + off);
+    const quint16 u = static_cast<quint16>(p[0] | (p[1] << 8));
+    *out_val = static_cast<qint16>(u);
+    return true;
+  };
+  out.animation_frames.reserve(num_frames);
+  for (int fi = 0; fi < num_frames; ++fi) {
+    ModelMesh frame_mesh;
+    frame_mesh.vertices = out.mesh.vertices;
+    frame_mesh.indices = out.mesh.indices;
+
+    bool frame_ok = true;
+    for (const Md3SurfaceFrameSource& src : frame_sources) {
+      const int local_frame = std::clamp(fi, 0, src.surf_num_frames - 1);
+      const qint64 frame_xyz_off = static_cast<qint64>(src.surf_off) + static_cast<qint64>(src.ofs_xyz) +
+                                   static_cast<qint64>(local_frame) * static_cast<qint64>(src.num_verts) * 8;
+      for (int v = 0; v < src.num_verts; ++v) {
+        const qint64 vo = frame_xyz_off + static_cast<qint64>(v) * 8;
+        qint16 x = 0, y = 0, z = 0, n = 0;
+        if (!read_i16_le_at(vo + 0, &x) || !read_i16_le_at(vo + 2, &y) || !read_i16_le_at(vo + 4, &z) || !read_i16_le_at(vo + 6, &n)) {
+          frame_ok = false;
+          break;
+        }
+        (void)n;
+        ModelVertex& dst = frame_mesh.vertices[src.base_vertex + v];
+        dst.px = static_cast<float>(x) / 64.0f;
+        dst.py = static_cast<float>(y) / 64.0f;
+        dst.pz = static_cast<float>(z) / 64.0f;
+      }
+      if (!frame_ok) {
+        break;
+      }
+    }
+
+    if (!frame_ok) {
+      if (error) {
+        *error = QString("MD3 frame %1 is incomplete.").arg(fi);
+      }
+      return std::nullopt;
+    }
+
+    compute_smooth_normals(&frame_mesh);
+    compute_bounds(&frame_mesh);
+    out.animation_frames.push_back(std::move(frame_mesh));
+  }
+
+  enum class Md3OriginMode {
+    Raw,
+    AddOrigin,
+    SubtractOrigin,
+  };
+
+  auto mode_error = [&](Md3OriginMode mode) -> double {
+    double err = 0.0;
+    const int frame_count = std::min(out.animation_frames.size(), frame_meta.size());
+    for (int fi = 0; fi < frame_count; ++fi) {
+      const ModelMesh& fm = out.animation_frames[fi];
+      QVector3D c = (fm.mins + fm.maxs) * 0.5f;
+      if (mode == Md3OriginMode::AddOrigin) {
+        c += frame_meta[fi].local_origin;
+      } else if (mode == Md3OriginMode::SubtractOrigin) {
+        c -= frame_meta[fi].local_origin;
+      }
+      const QVector3D d = c - frame_meta[fi].bbox_center;
+      err += static_cast<double>(d.lengthSquared());
+    }
+    return err;
+  };
+
+  const double err_raw = mode_error(Md3OriginMode::Raw);
+  const double err_add = mode_error(Md3OriginMode::AddOrigin);
+  const double err_sub = mode_error(Md3OriginMode::SubtractOrigin);
+  Md3OriginMode selected_mode = Md3OriginMode::Raw;
+  if (err_add < err_sub && err_add < err_raw * 0.5) {
+    selected_mode = Md3OriginMode::AddOrigin;
+  } else if (err_sub < err_add && err_sub < err_raw * 0.5) {
+    selected_mode = Md3OriginMode::SubtractOrigin;
+  }
+
+  if (selected_mode != Md3OriginMode::Raw) {
+    const int frame_count = std::min(out.animation_frames.size(), frame_meta.size());
+    for (int fi = 0; fi < frame_count; ++fi) {
+      const QVector3D shift = (selected_mode == Md3OriginMode::AddOrigin) ? frame_meta[fi].local_origin : -frame_meta[fi].local_origin;
+      if (shift.lengthSquared() <= 1e-8f) {
+        continue;
+      }
+      ModelMesh& fm = out.animation_frames[fi];
+      for (ModelVertex& v : fm.vertices) {
+        v.px += shift.x();
+        v.py += shift.y();
+        v.pz += shift.z();
+      }
+      compute_bounds(&fm);
+    }
+  }
+
+  out.mesh = out.animation_frames[0];
+  out.has_native_animation = (out.animation_frames.size() > 1);
   return out;
 }
 
@@ -2272,21 +2643,38 @@ std::optional<LoadedModel> load_tan(const QString& file_path, QString* error) {
     return std::nullopt;
   }
 
-  float frame_scale[3]{};
-  float frame_offset[3]{};
-  if (!cur.seek(ofs_frames + 24) ||
-      !cur.read_f32(&frame_scale[0]) || !cur.read_f32(&frame_scale[1]) || !cur.read_f32(&frame_scale[2]) ||
-      !cur.read_f32(&frame_offset[0]) || !cur.read_f32(&frame_offset[1]) || !cur.read_f32(&frame_offset[2])) {
-    if (error) {
-      *error = "Unable to parse TAN frame data.";
+  struct TanFrameParams {
+    float scale[3]{};
+    float offset[3]{};
+  };
+  QVector<TanFrameParams> frame_params;
+  frame_params.resize(num_frames);
+  for (int fi = 0; fi < num_frames; ++fi) {
+    const qint64 frame_off = static_cast<qint64>(ofs_frames) + static_cast<qint64>(fi) * 48;
+    if (frame_off < 0 || frame_off + 48 > file_size || !cur.seek(static_cast<int>(frame_off + 24)) ||
+        !cur.read_f32(&frame_params[fi].scale[0]) || !cur.read_f32(&frame_params[fi].scale[1]) ||
+        !cur.read_f32(&frame_params[fi].scale[2]) || !cur.read_f32(&frame_params[fi].offset[0]) ||
+        !cur.read_f32(&frame_params[fi].offset[1]) || !cur.read_f32(&frame_params[fi].offset[2])) {
+      if (error) {
+        *error = QString("Unable to parse TAN frame data for frame %1.").arg(fi);
+      }
+      return std::nullopt;
     }
-    return std::nullopt;
   }
 
   QVector<ModelVertex> vertices;
   QVector<std::uint32_t> indices;
   QVector<ModelSurface> surfaces;
+  struct TanSurfaceFrameSource {
+    int base_vertex = 0;
+    int num_verts = 0;
+    int surf_off = 0;
+    int ofs_xyznormal = 0;
+    int surf_num_frames = 0;
+  };
+  QVector<TanSurfaceFrameSource> frame_sources;
   surfaces.reserve(num_surfaces);
+  frame_sources.reserve(num_surfaces);
 
   int surf_off = ofs_surfaces;
   for (int s = 0; s < num_surfaces; ++s) {
@@ -2380,6 +2768,7 @@ std::optional<LoadedModel> load_tan(const QString& file_path, QString* error) {
       return std::nullopt;
     }
     vertices.resize(base_vertex + surf_num_verts);
+    frame_sources.push_back(TanSurfaceFrameSource{base_vertex, surf_num_verts, surf_off, ofs_xyznormal, surf_num_frames});
 
     if (!cur.seek(surf_off + ofs_xyznormal)) {
       if (error) {
@@ -2401,9 +2790,9 @@ std::optional<LoadedModel> load_tan(const QString& file_path, QString* error) {
       Q_UNUSED(n);
 
       ModelVertex mv;
-      mv.px = static_cast<float>(static_cast<quint16>(x)) * frame_scale[0] + frame_offset[0];
-      mv.py = static_cast<float>(static_cast<quint16>(y)) * frame_scale[1] + frame_offset[1];
-      mv.pz = static_cast<float>(static_cast<quint16>(z)) * frame_scale[2] + frame_offset[2];
+      mv.px = static_cast<float>(static_cast<quint16>(x)) * frame_params[0].scale[0] + frame_params[0].offset[0];
+      mv.py = static_cast<float>(static_cast<quint16>(y)) * frame_params[0].scale[1] + frame_params[0].offset[1];
+      mv.pz = static_cast<float>(static_cast<quint16>(z)) * frame_params[0].scale[2] + frame_params[0].offset[2];
       vertices[base_vertex + v] = mv;
     }
 
@@ -2496,6 +2885,61 @@ std::optional<LoadedModel> load_tan(const QString& file_path, QString* error) {
   out.surfaces = std::move(surfaces);
   compute_smooth_normals(&out.mesh);
   compute_bounds(&out.mesh);
+
+  auto read_i16_le_at = [&](qint64 off, qint16* out_val) -> bool {
+    if (!out_val || off < 0 || off + 2 > bytes.size()) {
+      return false;
+    }
+    const auto* p = reinterpret_cast<const unsigned char*>(bytes.constData() + off);
+    const quint16 u = static_cast<quint16>(p[0] | (p[1] << 8));
+    *out_val = static_cast<qint16>(u);
+    return true;
+  };
+
+  out.animation_frames.reserve(num_frames);
+  const int frame_params_last = std::max(0, static_cast<int>(frame_params.size()) - 1);
+  for (int fi = 0; fi < num_frames; ++fi) {
+    ModelMesh frame_mesh;
+    frame_mesh.vertices = out.mesh.vertices;
+    frame_mesh.indices = out.mesh.indices;
+
+    bool frame_ok = true;
+    for (const TanSurfaceFrameSource& src : frame_sources) {
+      const int local_frame = std::clamp(fi, 0, src.surf_num_frames - 1);
+      const TanFrameParams& fp = frame_params[std::clamp(local_frame, 0, frame_params_last)];
+      const qint64 frame_xyz_off = static_cast<qint64>(src.surf_off) + static_cast<qint64>(src.ofs_xyznormal) +
+                                   static_cast<qint64>(local_frame) * static_cast<qint64>(src.num_verts) * 8;
+      for (int v = 0; v < src.num_verts; ++v) {
+        const qint64 vo = frame_xyz_off + static_cast<qint64>(v) * 8;
+        qint16 x = 0, y = 0, z = 0, n = 0;
+        if (!read_i16_le_at(vo + 0, &x) || !read_i16_le_at(vo + 2, &y) || !read_i16_le_at(vo + 4, &z) || !read_i16_le_at(vo + 6, &n)) {
+          frame_ok = false;
+          break;
+        }
+        (void)n;
+        ModelVertex& dst = frame_mesh.vertices[src.base_vertex + v];
+        dst.px = static_cast<float>(static_cast<quint16>(x)) * fp.scale[0] + fp.offset[0];
+        dst.py = static_cast<float>(static_cast<quint16>(y)) * fp.scale[1] + fp.offset[1];
+        dst.pz = static_cast<float>(static_cast<quint16>(z)) * fp.scale[2] + fp.offset[2];
+      }
+      if (!frame_ok) {
+        break;
+      }
+    }
+
+    if (!frame_ok) {
+      if (error) {
+        *error = QString("TAN frame %1 is incomplete.").arg(fi);
+      }
+      return std::nullopt;
+    }
+
+    compute_smooth_normals(&frame_mesh);
+    compute_bounds(&frame_mesh);
+    out.animation_frames.push_back(std::move(frame_mesh));
+  }
+  out.mesh = out.animation_frames[0];
+  out.has_native_animation = (out.animation_frames.size() > 1);
   return out;
 }
 
@@ -2582,7 +3026,17 @@ std::optional<LoadedModel> load_mdc(const QString& file_path, QString* error) {
   QVector<ModelVertex> vertices;
   QVector<std::uint32_t> indices;
   QVector<ModelSurface> surfaces;
+  struct MdcSurfaceFrameSource {
+    int base_vertex = 0;
+    int num_verts = 0;
+    int surf_off = 0;
+    int ofs_xyz = 0;
+    int ofs_frame_base = 0;
+    int surf_num_base_frames = 0;
+  };
+  QVector<MdcSurfaceFrameSource> frame_sources;
   surfaces.reserve(num_surfaces);
+  frame_sources.reserve(num_surfaces);
 
   int surf_off = ofs_surfaces;
   for (int s = 0; s < num_surfaces; ++s) {
@@ -2669,6 +3123,8 @@ std::optional<LoadedModel> load_mdc(const QString& file_path, QString* error) {
 
     const int base_vertex = vertices.size();
     vertices.resize(base_vertex + surf_num_verts);
+    frame_sources.push_back(
+        MdcSurfaceFrameSource{base_vertex, surf_num_verts, surf_off, ofs_xyz, ofs_frame_base, surf_num_base_frames});
 
     const int xyz_off = surf_off + ofs_xyz + frame_base_index * surf_num_verts * 8;
     if (!cur.seek(xyz_off)) {
@@ -2775,6 +3231,68 @@ std::optional<LoadedModel> load_mdc(const QString& file_path, QString* error) {
   out.surfaces = std::move(surfaces);
   compute_smooth_normals(&out.mesh);
   compute_bounds(&out.mesh);
+  auto read_i16_le_at = [&](qint64 off, qint16* out_val) -> bool {
+    if (!out_val || off < 0 || off + 2 > bytes.size()) {
+      return false;
+    }
+    const auto* p = reinterpret_cast<const unsigned char*>(bytes.constData() + off);
+    const quint16 u = static_cast<quint16>(p[0] | (p[1] << 8));
+    *out_val = static_cast<qint16>(u);
+    return true;
+  };
+
+  out.animation_frames.reserve(num_frames);
+  for (int fi = 0; fi < num_frames; ++fi) {
+    ModelMesh frame_mesh;
+    frame_mesh.vertices = out.mesh.vertices;
+    frame_mesh.indices = out.mesh.indices;
+
+    bool frame_ok = true;
+    for (const MdcSurfaceFrameSource& src : frame_sources) {
+      int base_frame_index = 0;
+      if (src.ofs_frame_base > 0 && src.surf_num_base_frames > 0) {
+        qint16 mapped_base = 0;
+        const qint64 map_entry =
+            static_cast<qint64>(src.surf_off) + static_cast<qint64>(src.ofs_frame_base) + static_cast<qint64>(fi) * 2;
+        if (read_i16_le_at(map_entry, &mapped_base)) {
+          base_frame_index = std::clamp(static_cast<int>(mapped_base), 0, src.surf_num_base_frames - 1);
+        }
+      }
+
+      const qint64 frame_xyz_off = static_cast<qint64>(src.surf_off) + static_cast<qint64>(src.ofs_xyz) +
+                                   static_cast<qint64>(base_frame_index) * static_cast<qint64>(src.num_verts) * 8;
+      for (int v = 0; v < src.num_verts; ++v) {
+        const qint64 vo = frame_xyz_off + static_cast<qint64>(v) * 8;
+        qint16 x = 0, y = 0, z = 0, n = 0;
+        if (!read_i16_le_at(vo + 0, &x) || !read_i16_le_at(vo + 2, &y) || !read_i16_le_at(vo + 4, &z) ||
+            !read_i16_le_at(vo + 6, &n)) {
+          frame_ok = false;
+          break;
+        }
+        (void)n;
+        ModelVertex& dst = frame_mesh.vertices[src.base_vertex + v];
+        dst.px = static_cast<float>(x) / 64.0f;
+        dst.py = static_cast<float>(y) / 64.0f;
+        dst.pz = static_cast<float>(z) / 64.0f;
+      }
+      if (!frame_ok) {
+        break;
+      }
+    }
+
+    if (!frame_ok) {
+      if (error) {
+        *error = QString("MDC frame %1 is incomplete.").arg(fi);
+      }
+      return std::nullopt;
+    }
+
+    compute_smooth_normals(&frame_mesh);
+    compute_bounds(&frame_mesh);
+    out.animation_frames.push_back(std::move(frame_mesh));
+  }
+  out.mesh = out.animation_frames[0];
+  out.has_native_animation = (out.animation_frames.size() > 1);
   return out;
 }
 
@@ -6909,51 +7427,51 @@ std::optional<LoadedModel> load_model_file(const QString& file_path, QString* er
   const QString ext = file_ext_lower(info.fileName());
 
   if (ext == "mdl") {
-    return load_mdl(info.absoluteFilePath(), error);
+    return finalize_loaded(load_mdl(info.absoluteFilePath(), error));
   }
   if (ext == "md2") {
-    return load_md2(info.absoluteFilePath(), error);
+    return finalize_loaded(load_md2(info.absoluteFilePath(), error));
   }
   if (ext == "md3") {
-    return load_md3(info.absoluteFilePath(), error);
+    return finalize_loaded(load_md3(info.absoluteFilePath(), error));
   }
   if (ext == "mdc") {
-    return load_mdc(info.absoluteFilePath(), error);
+    return finalize_loaded(load_mdc(info.absoluteFilePath(), error));
   }
   if (ext == "md4") {
-    return load_md4(info.absoluteFilePath(), error);
+    return finalize_loaded(load_md4(info.absoluteFilePath(), error));
   }
   if (ext == "mdr") {
-    return load_mdr(info.absoluteFilePath(), error);
+    return finalize_loaded(load_mdr(info.absoluteFilePath(), error));
   }
   if (ext == "skb") {
-    return load_skb(info.absoluteFilePath(), error);
+    return finalize_loaded(load_skb(info.absoluteFilePath(), error));
   }
   if (ext == "skd") {
-    return load_skd(info.absoluteFilePath(), error);
+    return finalize_loaded(load_skd(info.absoluteFilePath(), error));
   }
   if (ext == "mdm") {
-    return load_mdm(info.absoluteFilePath(), error);
+    return finalize_loaded(load_mdm(info.absoluteFilePath(), error));
   }
   if (ext == "glm") {
-    return load_glm(info.absoluteFilePath(), error);
+    return finalize_loaded(load_glm(info.absoluteFilePath(), error));
   }
   if (ext == "iqm") {
-    return load_iqm(info.absoluteFilePath(), error);
+    return finalize_loaded(load_iqm(info.absoluteFilePath(), error));
   }
   if (ext == "md5mesh") {
-    return load_md5mesh(info.absoluteFilePath(), error);
+    return finalize_loaded(load_md5mesh(info.absoluteFilePath(), error));
   }
   if (ext == "tan") {
-    return load_tan(info.absoluteFilePath(), error);
+    return finalize_loaded(load_tan(info.absoluteFilePath(), error));
   }
   if (ext == "obj") {
     // Wavefront OBJ
-    return load_obj(info.absoluteFilePath(), error);
+    return finalize_loaded(load_obj(info.absoluteFilePath(), error));
   }
   if (ext == "lwo") {
     // LightWave Object (LWO2/LWO3)
-    return load_lwo(info.absoluteFilePath(), error);
+    return finalize_loaded(load_lwo(info.absoluteFilePath(), error));
   }
 
   if (error) {
