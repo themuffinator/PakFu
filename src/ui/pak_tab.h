@@ -170,6 +170,7 @@ private:
                             QProgressDialog* progress = nullptr);
   bool import_urls(const QList<QUrl>& urls,
                    const QString& dest_prefix,
+                   QVector<bool>* imported,
                    QStringList* failures,
                    QProgressDialog* progress = nullptr);
   void import_urls_with_undo(const QList<QUrl>& urls,

@@ -108,6 +108,8 @@ struct ChildListing {
 };
 
 QString normalize_pak_path(QString path);
+bool pak_path_starts_with(const QString& path, const QString& prefix);
+QString normalize_dir_prefix_path(const QString& path_in);
 bool is_wad_archive_ext(const QString& ext);
 bool is_mountable_archive_ext(const QString& ext);
 bool is_mountable_archive_file_name(const QString& name);
@@ -251,11 +253,7 @@ QString join_prefix(const QStringList& parts) {
 }
 
 QString normalized_dir_prefix(const QStringList& parts) {
-  QString prefix = normalize_pak_path(join_prefix(parts));
-  if (!prefix.isEmpty() && !prefix.endsWith('/')) {
-    prefix += '/';
-  }
-  return prefix;
+  return normalize_dir_prefix_path(join_prefix(parts));
 }
 
 QStringList dir_parts_from_path(QString path) {
@@ -291,12 +289,9 @@ QVector<ChildListing> list_children(const QVector<ArchiveEntry>& entries,
   QVector<QString> deleted_dir_prefixes_normalized;
   deleted_dir_prefixes_normalized.reserve(deleted_dirs.size());
   for (const QString& dir_name : deleted_dirs) {
-    QString normalized = normalize_pak_path(dir_name);
+    const QString normalized = normalize_dir_prefix_path(dir_name);
     if (normalized.isEmpty()) {
       continue;
-    }
-    if (!normalized.endsWith('/')) {
-      normalized += '/';
     }
     deleted_dir_prefixes_normalized.push_back(std::move(normalized));
   }
@@ -310,12 +305,13 @@ QVector<ChildListing> list_children(const QVector<ArchiveEntry>& entries,
       return true;
     }
     for (const QString& deleted_prefix : deleted_dir_prefixes_normalized) {
-      if (full_name.startsWith(deleted_prefix)) {
+      if (pak_path_starts_with(full_name, deleted_prefix)) {
         return true;
       }
     }
     return false;
   };
+
 
   QSet<QString> dirs;
   QHash<QString, ChildListing> files;
@@ -328,7 +324,7 @@ QVector<ChildListing> list_children(const QVector<ArchiveEntry>& entries,
     if (is_deleted(full_name)) {
       continue;
     }
-    if (!prefix.isEmpty() && !full_name.startsWith(prefix)) {
+    if (!prefix.isEmpty() && !pak_path_starts_with(full_name, prefix)) {
       continue;
     }
     const QString rest = prefix.isEmpty() ? full_name : full_name.mid(prefix.size());
@@ -360,7 +356,7 @@ QVector<ChildListing> list_children(const QVector<ArchiveEntry>& entries,
     if (is_deleted(full_name)) {
       continue;
     }
-    if (!prefix.isEmpty() && !full_name.startsWith(prefix)) {
+    if (!prefix.isEmpty() && !pak_path_starts_with(full_name, prefix)) {
       continue;
     }
     const QString rest = prefix.isEmpty() ? full_name : full_name.mid(prefix.size());
@@ -406,7 +402,7 @@ QVector<ChildListing> list_children(const QVector<ArchiveEntry>& entries,
     if (is_deleted(vdir)) {
       continue;
     }
-    if (!prefix.isEmpty() && !vdir.startsWith(prefix)) {
+    if (!prefix.isEmpty() && !pak_path_starts_with(vdir, prefix)) {
       continue;
     }
     const QString rest = prefix.isEmpty() ? vdir : vdir.mid(prefix.size());
@@ -570,6 +566,25 @@ void write_u32_le(QByteArray* bytes, int offset, quint32 value) {
 
 QString normalize_pak_path(QString path) {
   return normalize_archive_entry_name(std::move(path));
+}
+
+bool pak_path_starts_with(const QString& path, const QString& prefix) {
+  if (path.isEmpty() || prefix.isEmpty()) {
+    return false;
+  }
+#if defined(Q_OS_WIN)
+  return path.startsWith(prefix, Qt::CaseInsensitive);
+#else
+  return path.startsWith(prefix);
+#endif
+}
+
+QString normalize_dir_prefix_path(const QString& path_in) {
+  QString path = normalize_pak_path(path_in);
+  if (!path.isEmpty() && !path.endsWith('/')) {
+    path += '/';
+  }
+  return path;
 }
 
 bool is_safe_entry_name(const QString& name) {
@@ -1714,7 +1729,8 @@ ReducedSelection reduce_selected_items(const QVector<QPair<QString, bool>>& raw)
   for (const QString& d : dirs) {
     bool covered = false;
     for (const QString& keep : reduced_dirs_set) {
-      if (!keep.isEmpty() && d.startsWith(keep)) {
+      const QString normalized_keep = normalize_dir_prefix_path(keep);
+      if (!normalized_keep.isEmpty() && pak_path_starts_with(d, normalized_keep)) {
         covered = true;
         break;
       }
@@ -1729,7 +1745,8 @@ ReducedSelection reduce_selected_items(const QVector<QPair<QString, bool>>& raw)
   for (const QString& f : files) {
     bool covered = false;
     for (const QString& d : reduced_dirs_set) {
-      if (!d.isEmpty() && f.startsWith(d)) {
+      const QString normalized = normalize_dir_prefix_path(d);
+      if (!normalized.isEmpty() && pak_path_starts_with(f, normalized)) {
         covered = true;
         break;
       }
@@ -1863,7 +1880,7 @@ bool extract_archive_prefix_to_directory(const Archive& archive,
     if (name.isEmpty()) {
       continue;
     }
-    if (!prefix.isEmpty() && !name.startsWith(prefix)) {
+    if (!prefix.isEmpty() && !pak_path_starts_with(name, prefix)) {
       continue;
     }
     if (!is_safe_entry_name(name)) {
@@ -3401,7 +3418,7 @@ void PakTab::convert_selected_assets() {
         if (name.isEmpty() || name.endsWith('/')) {
           continue;
         }
-        if (!name.startsWith(dir_prefix)) {
+        if (!pak_path_starts_with(name, dir_prefix)) {
           continue;
         }
         const QString rel = name.mid(dir_prefix.size());
@@ -4770,7 +4787,7 @@ void PakTab::queue_thumbnail(const QString& pak_path,
             };
 
             add_candidate(ref);
-            if (!sprite_dir_prefix.isEmpty() && !ref.startsWith(sprite_dir_prefix)) {
+            if (!sprite_dir_prefix.isEmpty() && !pak_path_starts_with(ref, sprite_dir_prefix)) {
               add_candidate(sprite_dir_prefix + ref);
             }
             if (!leaf_name.isEmpty()) {
@@ -5170,7 +5187,8 @@ bool PakTab::is_deleted_path(const QString& pak_name_in) const {
     return true;
   }
   for (const QString& d : deleted_dir_prefixes_) {
-    if (!d.isEmpty() && pak_name.startsWith(d)) {
+    const QString normalized = normalize_dir_prefix_path(d);
+    if (!normalized.isEmpty() && pak_path_starts_with(pak_name, normalized)) {
       return true;
     }
   }
@@ -5188,7 +5206,8 @@ void PakTab::clear_deletions_under(const QString& pak_name_in) {
     if (d.isEmpty()) {
       continue;
     }
-    if (!pak_name.startsWith(d)) {
+    const QString normalized = normalize_dir_prefix_path(d);
+    if (!pak_path_starts_with(pak_name, normalized)) {
       keep.insert(d);
     }
   }
@@ -5292,7 +5311,7 @@ bool PakTab::export_dir_prefix_to_fs(const QString& dir_prefix_in, const QString
   // Create any empty virtual directories (best-effort).
   for (const QString& vdir_in : virtual_dirs_) {
     const QString vdir = normalize_pak_path(vdir_in);
-    if ((filter_by_prefix && !vdir.startsWith(prefix)) || is_deleted_path(vdir)) {
+    if ((filter_by_prefix && !pak_path_starts_with(vdir, prefix)) || is_deleted_path(vdir)) {
       continue;
     }
     const QString rel = filter_by_prefix ? vdir.mid(prefix.size()) : vdir;
@@ -5308,7 +5327,7 @@ bool PakTab::export_dir_prefix_to_fs(const QString& dir_prefix_in, const QString
   if (archive_.is_loaded()) {
     for (const ArchiveEntry& e : archive_.entries()) {
       const QString name = normalize_pak_path(e.name);
-      if ((filter_by_prefix && !name.startsWith(prefix)) || is_deleted_path(name)) {
+      if ((filter_by_prefix && !pak_path_starts_with(name, prefix)) || is_deleted_path(name)) {
         continue;
       }
       if (added_index_by_name_.contains(name)) {
@@ -5333,7 +5352,7 @@ bool PakTab::export_dir_prefix_to_fs(const QString& dir_prefix_in, const QString
   // Added/overridden files.
   for (const AddedFile& f : added_files_) {
     const QString name = normalize_pak_path(f.pak_name);
-    if ((filter_by_prefix && !name.startsWith(prefix)) || is_deleted_path(name)) {
+    if ((filter_by_prefix && !pak_path_starts_with(name, prefix)) || is_deleted_path(name)) {
       continue;
     }
     const QString rel = filter_by_prefix ? name.mid(prefix.size()) : name;
@@ -5557,7 +5576,8 @@ void PakTab::delete_selected(bool skip_confirmation) {
   for (const QString& d : dirs) {
     bool covered = false;
     for (const QString& keep : reduced_dirs) {
-      if (!keep.isEmpty() && d.startsWith(keep)) {
+      const QString normalized_keep = normalize_dir_prefix_path(keep);
+      if (!normalized_keep.isEmpty() && pak_path_starts_with(d, normalized_keep)) {
         covered = true;
         break;
       }
@@ -5572,7 +5592,8 @@ void PakTab::delete_selected(bool skip_confirmation) {
   for (const QString& f : files) {
     bool covered = false;
     for (const QString& d : reduced_dirs) {
-      if (!d.isEmpty() && f.startsWith(d)) {
+      const QString normalized = normalize_dir_prefix_path(d);
+      if (!normalized.isEmpty() && pak_path_starts_with(f, normalized)) {
         covered = true;
         break;
       }
@@ -5595,7 +5616,8 @@ void PakTab::delete_selected(bool skip_confirmation) {
         continue;
       }
       for (const QString& d : reduced_dirs) {
-        if (!d.isEmpty() && name.startsWith(d)) {
+        const QString normalized = normalize_dir_prefix_path(d);
+        if (!normalized.isEmpty() && pak_path_starts_with(name, normalized)) {
           ++affected_files;
           break;
         }
@@ -5611,7 +5633,8 @@ void PakTab::delete_selected(bool skip_confirmation) {
         continue;
       }
       for (const QString& d : reduced_dirs) {
-        if (!d.isEmpty() && name.startsWith(d)) {
+        const QString normalized = normalize_dir_prefix_path(d);
+        if (!normalized.isEmpty() && pak_path_starts_with(name, normalized)) {
           ++affected_files;
           break;
         }
@@ -5662,7 +5685,8 @@ void PakTab::delete_selected(bool skip_confirmation) {
       const QString name = normalize_pak_path(added_files_[i].pak_name);
       bool under = false;
       for (const QString& d : reduced_dirs) {
-        if (!d.isEmpty() && name.startsWith(d)) {
+        const QString normalized = normalize_dir_prefix_path(d);
+        if (!normalized.isEmpty() && pak_path_starts_with(name, normalized)) {
           under = true;
           break;
         }
@@ -5684,7 +5708,8 @@ void PakTab::delete_selected(bool skip_confirmation) {
       const QString name = normalize_pak_path(vd);
       bool under = false;
       for (const QString& d : reduced_dirs) {
-        if (!d.isEmpty() && name.startsWith(d)) {
+        const QString normalized = normalize_dir_prefix_path(d);
+        if (!normalized.isEmpty() && pak_path_starts_with(name, normalized)) {
           under = true;
           break;
         }
@@ -5704,7 +5729,8 @@ void PakTab::delete_selected(bool skip_confirmation) {
       const QString name = normalize_pak_path(f);
       bool under = false;
       for (const QString& d : reduced_dirs) {
-        if (!d.isEmpty() && name.startsWith(d)) {
+        const QString normalized = normalize_dir_prefix_path(d);
+        if (!normalized.isEmpty() && pak_path_starts_with(name, normalized)) {
           under = true;
           break;
         }
@@ -5751,9 +5777,14 @@ void PakTab::delete_selected(bool skip_confirmation) {
 
 bool PakTab::import_urls(const QList<QUrl>& urls,
                          const QString& dest_prefix,
+                         QVector<bool>* imported,
                          QStringList* failures,
                          QProgressDialog* progress) {
   bool changed = false;
+  if (imported) {
+    imported->clear();
+    imported->reserve(urls.size());
+  }
 
   if (progress) {
     progress->setWindowModality(Qt::WindowModal);
@@ -5764,15 +5795,22 @@ bool PakTab::import_urls(const QList<QUrl>& urls,
 
   int processed = 0;
   for (const QUrl& url : urls) {
+    bool imported_item = false;
     if (progress && progress->wasCanceled()) {
       break;
     }
     if (!url.isLocalFile()) {
+      if (imported) {
+        imported->push_back(false);
+      }
       continue;
     }
     const QString local = url.toLocalFile();
     const QFileInfo info(local);
     if (!info.exists()) {
+      if (imported) {
+        imported->push_back(false);
+      }
       continue;
     }
     if (progress) {
@@ -5787,12 +5825,11 @@ bool PakTab::import_urls(const QList<QUrl>& urls,
       const bool did =
         add_folder_from_path(info.absoluteFilePath(), dest_prefix, QString(), &folder_failures, progress);
       changed = changed || did;
+      imported_item = did;
       if (failures) {
         failures->append(folder_failures);
       }
-      continue;
-    }
-    if (info.isFile()) {
+    } else if (info.isFile()) {
       const QString pak_name = dest_prefix + info.fileName();
       QString err;
       if (!add_file_mapping(pak_name, info.absoluteFilePath(), &err)) {
@@ -5801,7 +5838,14 @@ bool PakTab::import_urls(const QList<QUrl>& urls,
         }
       } else {
         changed = true;
+        imported_item = true;
       }
+    } else if (failures) {
+      failures->push_back(QString("Unsupported item type: %1").arg(local));
+    }
+
+    if (imported) {
+      imported->push_back(imported_item);
     }
   }
 
@@ -5824,7 +5868,8 @@ void PakTab::import_urls_with_undo(const QList<QUrl>& urls,
 
   QStringList failures;
   QProgressDialog progress(label, "Cancel", 0, 0, this);
-  const bool changed = import_urls(urls, dest_prefix, &failures, &progress);
+  QVector<bool> imported;
+  const bool changed = import_urls(urls, dest_prefix, &imported, &failures, &progress);
 
   if (progress.wasCanceled()) {
     added_files_ = before_added;
@@ -5837,10 +5882,14 @@ void PakTab::import_urls_with_undo(const QList<QUrl>& urls,
   }
 
   if (changed && is_cut && !cut_items.isEmpty()) {
-    for (const auto& it : cut_items) {
-      const QString p = normalize_pak_path(it.first);
-      if (it.second) {
-        deleted_dir_prefixes_.insert(p.endsWith('/') ? p : (p + "/"));
+    const int limit = qMin(imported.size(), cut_items.size());
+    for (int i = 0; i < limit; ++i) {
+      if (!imported.value(i, false)) {
+        continue;
+      }
+      const QString p = normalize_pak_path(cut_items[i].first);
+      if (cut_items[i].second) {
+        deleted_dir_prefixes_.insert(normalize_dir_prefix_path(p));
       } else {
         deleted_files_.insert(p);
         remove_added_file_by_name(p);
@@ -6260,7 +6309,8 @@ void PakTab::paste_from_clipboard() {
   const QString dest_prefix = current_prefix();
 
   QProgressDialog progress(is_cut ? "Moving items…" : "Copying items…", "Cancel", 0, 0, this);
-  changed = import_urls(urls, dest_prefix, &failures, &progress);
+  QVector<bool> imported;
+  changed = import_urls(urls, dest_prefix, &imported, &failures, &progress);
 
   if (progress.wasCanceled()) {
     added_files_ = before_added;
@@ -6274,10 +6324,14 @@ void PakTab::paste_from_clipboard() {
 
   // If this was a cut from (potentially) this tab, delete the original items after a successful paste.
   if (changed && is_cut && !cut_items.isEmpty()) {
-    for (const auto& it : cut_items) {
-      const QString p = normalize_pak_path(it.first);
-      if (it.second) {
-        deleted_dir_prefixes_.insert(p.endsWith('/') ? p : (p + "/"));
+    const int limit = qMin(imported.size(), cut_items.size());
+    for (int i = 0; i < limit; ++i) {
+      if (!imported.value(i)) {
+        continue;
+      }
+      const QString p = normalize_pak_path(cut_items.at(i).first);
+      if (cut_items.at(i).second) {
+        deleted_dir_prefixes_.insert(normalize_dir_prefix_path(p));
       } else {
         deleted_files_.insert(p);
         remove_added_file_by_name(p);
@@ -6374,7 +6428,7 @@ void PakTab::rename_selected() {
     const QString forced_folder = name;
     const bool did = add_folder_from_path(exported, current_prefix(), forced_folder, &failures);
     changed = changed || did;
-    deleted_dir_prefixes_.insert(old_path.endsWith('/') ? old_path : (old_path + "/"));
+    deleted_dir_prefixes_.insert(normalize_dir_prefix_path(old_path));
     changed = true;
   } else {
     if (!add_file_mapping(new_path, exported, &err)) {
@@ -6607,11 +6661,21 @@ bool PakTab::add_folder_from_path(const QString& folder_path_in,
 
   const QString dest_prefix = normalize_pak_path(dest_prefix_in);
   const QString pak_root = normalize_pak_path(dest_prefix + folder_name) + "/";
-  virtual_dirs_.insert(pak_root);
+  const bool root_created = !virtual_dirs_.contains(pak_root);
+  const int deleted_files_before = deleted_files_.size();
+  const int deleted_dirs_before = deleted_dir_prefixes_.size();
+  if (root_created) {
+    virtual_dirs_.insert(pak_root);
+  }
   clear_deletions_under(pak_root);
 
   QDir base(folder_path);
   bool changed = false;
+  if (root_created ||
+      deleted_files_.size() != deleted_files_before ||
+      deleted_dir_prefixes_.size() != deleted_dirs_before) {
+    changed = true;
+  }
 
   const QString label = QString("Adding folder %1…").arg(folder_name);
   int processed = 0;
@@ -9187,7 +9251,7 @@ void PakTab::update_preview() {
 
       const auto consider = [&](const QString& pak_name) {
         const QString p = normalize_pak_path(pak_name);
-        if (!dir_prefix.isEmpty() && !p.startsWith(dir_prefix)) {
+        if (!dir_prefix.isEmpty() && !pak_path_starts_with(p, dir_prefix)) {
           return;
         }
         const QString rest = dir_prefix.isEmpty() ? p : p.mid(dir_prefix.size());
@@ -9542,7 +9606,7 @@ void PakTab::update_preview() {
             const bool has_known_ext = img_exts.contains(ext_name);
             if (has_known_ext) {
               add_candidate(sh);
-              if (!model_dir_prefix.isEmpty() && !sh.startsWith(model_dir_prefix)) {
+              if (!model_dir_prefix.isEmpty() && !pak_path_starts_with(sh, model_dir_prefix)) {
                 add_candidate(model_dir_prefix + sh);
               }
 
@@ -9565,7 +9629,7 @@ void PakTab::update_preview() {
               for (const QString& e : img_exts) {
                 const QString cand = QString("%1.%2").arg(sh, e);
                 add_candidate(cand);
-                if (!model_dir_prefix.isEmpty() && !cand.startsWith(model_dir_prefix)) {
+                if (!model_dir_prefix.isEmpty() && !pak_path_starts_with(cand, model_dir_prefix)) {
                   add_candidate(model_dir_prefix + cand);
                 }
               }
@@ -9976,7 +10040,7 @@ void PakTab::update_preview() {
           };
 
           add_candidate(ref);
-          if (!sprite_dir_prefix.isEmpty() && !ref.startsWith(sprite_dir_prefix)) {
+          if (!sprite_dir_prefix.isEmpty() && !pak_path_starts_with(ref, sprite_dir_prefix)) {
             add_candidate(sprite_dir_prefix + ref);
           }
           if (!frame_leaf.isEmpty()) {
@@ -10447,7 +10511,7 @@ void PakTab::enter_directory_path(const QString& pak_path_in) {
   if (!dir_path.endsWith('/')) {
     dir_path += '/';
   }
-  if (dir_path == current_prefix()) {
+  if (pak_paths_equal(dir_path, current_prefix())) {
     return;
   }
   set_current_dir(dir_parts_from_path(dir_path));
