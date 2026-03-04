@@ -51,6 +51,7 @@
 #include "game/game_auto_detect.h"
 #include "game/game_set.h"
 #include "pakfu_config.h"
+#include "ui/about_dialog.h"
 #include "ui/file_associations_dialog.h"
 #include "ui/game_set_dialog.h"
 #include "ui/audio_viewer_window.h"
@@ -1431,38 +1432,8 @@ void MainWindow::setup_menus() {
   auto* about = help_menu->addAction("About");
   about->setIcon(UiIcons::icon(UiIcons::Id::About, style()));
   connect(about, &QAction::triggered, this, [this]() {
-    const QString repo = PAKFU_GITHUB_REPO;
-    const QString repo_url = QString("https://github.com/%1").arg(repo);
-    const QString website_url = "https://www.darkmatter-quake.com";
-    const QString credits_url = QString("https://github.com/%1/blob/main/docs/CREDITS.md").arg(repo);
-    const QString html = QString(
-      "<b>PakFu %1</b><br/>"
-      "A modern game archive manager and file viewer.<br/><br/>"
-      "<b>Disclaimer</b><br/>"
-      "Use of this software is at your own risk. No warranty is provided.<br/><br/>"
-      "<b>License</b><br/>"
-      "GNU General Public License v3 (GPLv3). See the LICENSE file.<br/><br/>"
-      "<b>Source</b><br/>"
-      "<a href=\"%2\">%3</a><br/><br/>"
-      "<b>Website</b><br/>"
-      "<a href=\"%4\">www.darkmatter-quake.com</a><br/><br/>"
-      "<b>Credits</b><br/>"
-      "Built with Qt 6 and miniz. Compatibility work follows idTech-era format lineage and open engine references.<br/>"
-      "<a href=\"%5\">View full credits and acknowledgements</a><br/><br/>"
-      "Created by themuffinator, DarkMatter Productions.")
-        .arg(PAKFU_VERSION, repo_url, repo_url, website_url, credits_url);
-
-    QMessageBox box(this);
-    box.setWindowTitle("About PakFu");
-    box.setTextFormat(Qt::RichText);
-    box.setTextInteractionFlags(Qt::TextBrowserInteraction);
-    box.setText(html);
-    box.setStandardButtons(QMessageBox::Ok);
-    for (QLabel* label : box.findChildren<QLabel*>()) {
-      label->setOpenExternalLinks(true);
-      label->setTextInteractionFlags(Qt::TextBrowserInteraction);
-    }
-    box.exec();
+    AboutDialog dialog(this);
+    dialog.exec();
   });
 
   update_action_states();

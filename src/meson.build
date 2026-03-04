@@ -88,6 +88,7 @@ sources = files(
   'zip/quakelive_pk3_crypto.cpp',
   'zip/zip_archive.cpp',
   'ui/splash_screen.cpp',
+  'ui/about_dialog.cpp',
   'ui/main_window.cpp',
   'ui/file_associations_dialog.cpp',
   'ui/game_set_dialog.cpp',

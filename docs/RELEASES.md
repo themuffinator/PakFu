@@ -61,7 +61,7 @@ Nightly automation:
 2. `build`: compile on Windows/macOS/Linux
 3. `validate`: run CLI smoke checks on each platform build (and optionally `--run-practical-qa` for UI file-ops smoke checks)
 4. `package`: build installer + portable assets per platform
-5. `release`: tag, validate completeness, publish prerelease with full changelog context
+5. `release`: tag, validate completeness, publish nightly release with full changelog context
 
 Manual release channels:
 - Workflow: `.github/workflows/auto_version.yml`

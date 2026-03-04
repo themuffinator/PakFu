@@ -427,7 +427,7 @@ jobs:
           body_path: release_notes.md
           generate_release_notes: false
           fail_on_unmatched_files: true
-          prerelease: true
+          prerelease: false
 
   no-changes:
     needs: prepare
