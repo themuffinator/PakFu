@@ -418,9 +418,38 @@ void run_tab_smoke_test(MainWindow& window) {
 
 int main(int argc, char** argv) {
   if (wants_cli(argc, argv)) {
-    QCoreApplication app(argc, argv);
+    const bool needs_gui = cli_requires_gui(argc, argv);
+    if (!needs_gui) {
+      QCoreApplication app(argc, argv);
+      set_app_metadata(app);
+      platform::install_crash_reporting();
+
+      CliOptions options;
+      QString output;
+      const CliParseResult result = parse_cli(app, options, &output);
+      if (result == CliParseResult::ExitOk) {
+        if (!output.isEmpty()) {
+          QTextStream(stdout) << output;
+        }
+        return 0;
+      }
+      if (result == CliParseResult::ExitError) {
+        if (!output.isEmpty()) {
+          QTextStream(stderr) << output;
+        }
+        return 1;
+      }
+
+      return run_cli(options);
+    }
+
+#ifdef Q_OS_WIN
+    configure_qt_plugin_paths_for_local_deploy(resolve_executable_dir_winapi());
+#endif
+    QApplication app(argc, argv);
     set_app_metadata(app);
     platform::install_crash_reporting();
+    prefer_qt_ffmpeg_backend_if_available();
 
     CliOptions options;
     QString output;
@@ -437,7 +466,6 @@ int main(int argc, char** argv) {
       }
       return 1;
     }
-
     return run_cli(options);
   }
 

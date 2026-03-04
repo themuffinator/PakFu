@@ -148,7 +148,7 @@ Windows:
 ## CLI Quick Reference
 Usage:
 ```text
-pakfu[.exe] --cli [options] <archive-or-folder>
+pakfu[.exe] --cli [options] [archive-or-folder]
 ```
 
 Core actions:
@@ -156,6 +156,7 @@ Core actions:
 - `-i, --info` : show archive summary.
 - `-x, --extract` : extract entries (`-o, --output <dir>` optional).
 - `--check-updates` : query GitHub Releases.
+- `--qa-practical` : run practical archive-ops smoke QA (selection/marquee/modifier checks).
 
 Installation profile actions:
 - `--list-game-installs`
@@ -177,6 +178,7 @@ Examples:
 ./builddir/src/pakfu --cli --list path/to/archive.wad
 ./builddir/src/pakfu --cli --extract -o out_dir path/to/archive.resources
 ./builddir/src/pakfu --cli --check-updates
+./builddir/src/pakfu --cli --qa-practical
 ./builddir/src/pakfu --cli --list-game-installs
 ./builddir/src/pakfu --cli --auto-detect-game-installs
 ./builddir/src/pakfu --cli --select-game-install quake2
@@ -197,6 +199,11 @@ Examples:
   - Fullscreen toggles with `F11`, middle mouse, or platform fullscreen shortcut.
 - Archive operations:
   - Drag-and-drop import/export across directories and tabs, plus file/folder drops from external applications.
+  - Drag modifier keys: hold `Shift` to request move; hold `Ctrl/Cmd` (or `Option` on macOS) to force copy. Cross-application drops are copy.
+  - Move semantics work across open tabs via drag or cut/paste when the source tab is editable; otherwise operations safely fall back to copy.
+  - Locked/read-only archive states (Pure PAK protector, mounted container views, folder views) disallow import drops and disable cut/paste-style modification actions.
+  - Name collisions during add/import/rename prompt for `Overwrite`, `Keep Both`, `Skip`, or `Cancel` (with apply-to-remaining support).
+  - Multi-selection follows platform conventions: `Shift` range selection, `Ctrl`/`Cmd` toggle selection, marquee/rubber-band selection in icon/list views, and `Ctrl`/`Cmd`+`A` for Select All.
   - Double-click nested container files to mount and browse in-place.
   - Multiple nested layers are supported.
   - `File` menu and context menu actions support `Extract Selected`, `Extract All` (archive views), and `Convert Selected Assets...`.
@@ -254,6 +261,7 @@ For full policy details, see `docs/RELEASES.md`.
 
 ## Documentation
 - `docs/DEPENDENCIES.md` : dependency baseline and optional libraries.
+- `docs/QA_ARCHIVE_FILE_OPS.md` : practical QA checklist for selection, drag/drop, cut/copy/paste, and modifiers.
 - `docs/RELEASES.md` : versioning, release rules, and asset contract.
 - `docs/UI_BUTTON_ICONS.md` : UI action icon inventory.
 - `docs/FILE_ASSOCIATION_ICONS.md` : file association icon mapping and implementation notes.

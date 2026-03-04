@@ -130,6 +130,13 @@ protected:
   void dropEvent(QDropEvent* event) override;
 
 private:
+  enum class CollisionChoice {
+    Overwrite,
+    KeepBoth,
+    Skip,
+    Cancel,
+  };
+
   void build_ui();
   void load_archive();
   void set_current_dir(const QStringList& parts);
@@ -173,16 +180,24 @@ private:
                    QVector<bool>* imported,
                    QStringList* failures,
                    QProgressDialog* progress = nullptr);
-  void import_urls_with_undo(const QList<QUrl>& urls,
+  bool import_urls_with_undo(const QList<QUrl>& urls,
                              const QString& dest_prefix,
                              const QString& label,
                              const QVector<QPair<QString, bool>>& cut_items = {},
-                             bool is_cut = false);
+                             bool is_cut = false,
+                             QVector<bool>* imported_out = nullptr);
   QMimeData* make_mime_data_for_items(const QVector<QPair<QString, bool>>& items,
                                       bool cut,
                                       QStringList* failures,
                                       QProgressDialog* progress = nullptr);
   bool add_file_mapping(const QString& pak_name, const QString& source_path, QString* error);
+  bool apply_external_move_deletions(const QVector<QPair<QString, bool>>& raw_items, QString* error);
+  void reset_collision_prompt_state();
+  CollisionChoice choose_collision_action(const QString& pak_path, bool is_dir);
+  bool file_exists_in_current_state(const QString& pak_path) const;
+  bool dir_exists_in_current_state(const QString& dir_prefix) const;
+  QString unique_file_copy_path(const QString& pak_path) const;
+  QString unique_dir_copy_prefix(const QString& dir_prefix) const;
   bool write_pak_file(const QString& dest_path, QString* error);
   bool write_wad2_file(const QString& dest_path, QString* error);
   bool write_zip_file(const QString& dest_path, bool quakelive_encrypt_pk3, QString* error);
@@ -193,6 +208,7 @@ private:
   void apply_auto_view(int file_count, int image_count, int video_count, int model_count, int bsp_count);
   void update_view_controls();
   void configure_icon_view();
+  void update_drag_drop_interaction_state();
   void stop_thumbnail_generation();
   void queue_thumbnail(const QString& pak_path, const QString& leaf, const QString& source_path, qint64 size, const QSize& icon_size);
   void register_sprite_icon_animation(const QString& pak_path,
@@ -288,4 +304,7 @@ private:
   bool image_texture_smoothing_ = false;
   GameId game_id_ = GameId::Quake;
   QString drag_source_uid_;
+  bool collision_apply_to_remaining_ = false;
+  bool collision_choice_is_set_ = false;
+  CollisionChoice collision_choice_ = CollisionChoice::Overwrite;
 };

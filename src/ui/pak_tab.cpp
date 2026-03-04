@@ -42,12 +42,16 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QMatrix4x4>
 #include <QPainter>
+#include <QPointer>
 #include <QPolygonF>
 #include <QProgressDialog>
 #include <QPushButton>
+#include <QRubberBand>
 #include <QRunnable>
+#include <QScrollBar>
 #include <QShortcut>
 #include <QSet>
 #include <QSize>
@@ -91,6 +95,7 @@
 #include "pak/pak_archive.h"
 #include "platform/file_associations.h"
 #include "ui/breadcrumb_bar.h"
+#include "ui/drag_drop_policy.h"
 #include "ui/preview_pane.h"
 #include "ui/preview_renderer.h"
 #include "ui/ui_icons.h"
@@ -607,6 +612,45 @@ struct PakFuMimePayload {
   QVector<QPair<QString, bool>> items;
 };
 
+QHash<QString, QPointer<PakTab>>& drag_source_registry() {
+  static QHash<QString, QPointer<PakTab>> registry;
+  return registry;
+}
+
+void register_drag_source_tab(const QString& uid, PakTab* tab) {
+  if (uid.isEmpty() || !tab) {
+    return;
+  }
+  drag_source_registry().insert(uid, tab);
+}
+
+void unregister_drag_source_tab(const QString& uid, PakTab* tab) {
+  if (uid.isEmpty() || !tab) {
+    return;
+  }
+  auto& registry = drag_source_registry();
+  const auto it = registry.find(uid);
+  if (it != registry.end() && it.value() == tab) {
+    registry.erase(it);
+  }
+}
+
+PakTab* find_drag_source_tab(const QString& uid) {
+  if (uid.isEmpty()) {
+    return nullptr;
+  }
+  auto& registry = drag_source_registry();
+  const auto it = registry.find(uid);
+  if (it == registry.end()) {
+    return nullptr;
+  }
+  if (it.value().isNull()) {
+    registry.erase(it);
+    return nullptr;
+  }
+  return it.value().data();
+}
+
 bool pak_paths_equal(const QString& a_in, const QString& b_in) {
   const QString a = normalize_pak_path(a_in);
   const QString b = normalize_pak_path(b_in);
@@ -644,6 +688,25 @@ bool pak_path_is_under(const QString& path_in, const QString& root_in) {
 #else
   return path.startsWith(root);
 #endif
+}
+
+bool is_deleted_in_state(const QString& pak_name_in,
+                         const QSet<QString>& deleted_files,
+                         const QSet<QString>& deleted_dir_prefixes) {
+  const QString pak_name = normalize_pak_path(pak_name_in);
+  if (pak_name.isEmpty()) {
+    return false;
+  }
+  if (deleted_files.contains(pak_name)) {
+    return true;
+  }
+  for (const QString& d : deleted_dir_prefixes) {
+    const QString normalized = normalize_dir_prefix_path(d);
+    if (!normalized.isEmpty() && pak_path_starts_with(pak_name, normalized)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 QString normalize_local_fs_path(QString path) {
@@ -800,38 +863,6 @@ QList<QUrl> local_urls_from_mime(const QMimeData* mime) {
 #endif
 
   return out;
-}
-
-Qt::DropAction resolve_requested_drop_action(Qt::DropAction drop_action,
-                                             Qt::DropAction proposed_action,
-                                             Qt::DropActions possible_actions,
-                                             Qt::KeyboardModifiers modifiers) {
-  auto ensure_supported = [possible_actions](Qt::DropAction wanted) -> Qt::DropAction {
-    if (wanted != Qt::IgnoreAction && (possible_actions & wanted)) {
-      return wanted;
-    }
-    if (possible_actions & Qt::CopyAction) {
-      return Qt::CopyAction;
-    }
-    if (possible_actions & Qt::MoveAction) {
-      return Qt::MoveAction;
-    }
-    if (possible_actions & Qt::LinkAction) {
-      return Qt::LinkAction;
-    }
-    return Qt::IgnoreAction;
-  };
-
-  Qt::DropAction chosen = (drop_action != Qt::IgnoreAction) ? drop_action : proposed_action;
-  if (chosen == Qt::IgnoreAction) {
-    if (modifiers & Qt::ControlModifier) {
-      chosen = Qt::CopyAction;
-    } else if (modifiers & Qt::ShiftModifier) {
-      chosen = Qt::MoveAction;
-    }
-  }
-
-  return ensure_supported(chosen);
 }
 
 bool parse_pakfu_mime(const QMimeData* mime, PakFuMimePayload* out) {
@@ -2895,8 +2926,82 @@ protected:
       }
     }
 
+    QProgressDialog progress("Preparing drag export…", "Cancel", 0, selected.size(), tab_);
     QStringList failures;
-    return tab_->make_mime_data_for_items(selected, false, &failures);
+    QMimeData* mime = tab_->make_mime_data_for_items(selected, false, &failures, &progress);
+    if (progress.wasCanceled()) {
+      return nullptr;
+    }
+    if (!failures.isEmpty()) {
+      QMessageBox::warning(tab_, "Drag Export", failures.mid(0, 12).join("\n"));
+    }
+    return mime;
+  }
+
+  void mousePressEvent(QMouseEvent* event) override {
+    if (!event) {
+      QTreeWidget::mousePressEvent(event);
+      return;
+    }
+
+    const bool left = event->button() == Qt::LeftButton;
+    const Qt::KeyboardModifiers mods = event->modifiers();
+    const bool toggle_mod = (mods & (Qt::ControlModifier | Qt::MetaModifier));
+    const bool range_mod = (mods & Qt::ShiftModifier);
+    const QPoint pos = event->position().toPoint();
+    if (left && !toggle_mod && !range_mod && !itemAt(pos)) {
+      if (!rubber_band_) {
+        rubber_band_ = new QRubberBand(QRubberBand::Rectangle, viewport());
+      }
+      rubber_selecting_ = true;
+      rubber_origin_ = pos;
+      rubber_band_->setGeometry(QRect(rubber_origin_, QSize()));
+      rubber_band_->show();
+      clearSelection();
+      setCurrentItem(nullptr);
+      event->accept();
+      return;
+    }
+
+    QTreeWidget::mousePressEvent(event);
+  }
+
+  void mouseMoveEvent(QMouseEvent* event) override {
+    if (!event || !rubber_selecting_) {
+      QTreeWidget::mouseMoveEvent(event);
+      return;
+    }
+
+    const QPoint pos = event->position().toPoint();
+    if (QScrollBar* bar = verticalScrollBar()) {
+      if (pos.y() < 0) {
+        bar->setValue(bar->value() - bar->singleStep());
+      } else if (pos.y() > viewport()->height()) {
+        bar->setValue(bar->value() + bar->singleStep());
+      }
+    }
+
+    const QRect selection_rect = QRect(rubber_origin_, pos).normalized();
+    if (rubber_band_) {
+      rubber_band_->setGeometry(selection_rect);
+    }
+    apply_rubberband_selection(selection_rect);
+    event->accept();
+  }
+
+  void mouseReleaseEvent(QMouseEvent* event) override {
+    if (event && rubber_selecting_ && event->button() == Qt::LeftButton) {
+      if (rubber_band_) {
+        rubber_band_->hide();
+      }
+      rubber_selecting_ = false;
+      if (tab_) {
+        tab_->update_preview();
+      }
+      event->accept();
+      return;
+    }
+    QTreeWidget::mouseReleaseEvent(event);
   }
 
   void dragEnterEvent(QDragEnterEvent* event) override {
@@ -2938,7 +3043,31 @@ protected:
   }
 
 private:
+  void apply_rubberband_selection(const QRect& rect) {
+    const bool prev_block = blockSignals(true);
+    QTreeWidgetItem* first_selected = nullptr;
+    for (int i = 0; i < topLevelItemCount(); ++i) {
+      QTreeWidgetItem* item = topLevelItem(i);
+      if (!item || !(item->flags() & Qt::ItemIsSelectable)) {
+        continue;
+      }
+      const QRect item_rect = visualItemRect(item);
+      const bool hit = item_rect.isValid() && item_rect.intersects(rect);
+      item->setSelected(hit);
+      if (hit && !first_selected) {
+        first_selected = item;
+      }
+    }
+    if (first_selected) {
+      setCurrentItem(first_selected);
+    }
+    blockSignals(prev_block);
+  }
+
   PakTab* tab_ = nullptr;
+  QRubberBand* rubber_band_ = nullptr;
+  bool rubber_selecting_ = false;
+  QPoint rubber_origin_;
 };
 
 class PakTabIconView : public QListWidget {
@@ -2974,8 +3103,16 @@ protected:
       }
     }
 
+    QProgressDialog progress("Preparing drag export…", "Cancel", 0, selected.size(), tab_);
     QStringList failures;
-    return tab_->make_mime_data_for_items(selected, false, &failures);
+    QMimeData* mime = tab_->make_mime_data_for_items(selected, false, &failures, &progress);
+    if (progress.wasCanceled()) {
+      return nullptr;
+    }
+    if (!failures.isEmpty()) {
+      QMessageBox::warning(tab_, "Drag Export", failures.mid(0, 12).join("\n"));
+    }
+    return mime;
   }
 
   void dragEnterEvent(QDragEnterEvent* event) override {
@@ -3024,6 +3161,7 @@ PakTab::PakTab(Mode mode, const QString& pak_path, QWidget* parent)
     : QWidget(parent), mode_(mode), pak_path_(pak_path) {
   setAcceptDrops(true);
   drag_source_uid_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
+  register_drag_source_tab(drag_source_uid_, this);
   thumbnail_pool_.setMaxThreadCount(1);
   sprite_icon_timer_ = new QTimer(this);
   sprite_icon_timer_->setInterval(60);
@@ -3041,6 +3179,7 @@ PakTab::PakTab(Mode mode, const QString& pak_path, QWidget* parent)
 }
 
 PakTab::~PakTab() {
+  unregister_drag_source_tab(drag_source_uid_, this);
   stop_thumbnail_generation();
   thumbnail_pool_.waitForDone();
 }
@@ -3124,6 +3263,9 @@ bool PakTab::can_extract_all() const {
 }
 
 void PakTab::cut() {
+  if (!ensure_editable("Cut")) {
+    return;
+  }
   copy_selected(true);
 }
 
@@ -4113,6 +4255,8 @@ void PakTab::build_ui() {
   details_view_->setUniformRowHeights(true);
   details_view_->setAlternatingRowColors(true);
   details_view_->setSelectionMode(QAbstractItemView::ExtendedSelection);
+  details_view_->setSelectionBehavior(QAbstractItemView::SelectRows);
+  details_view_->setAllColumnsShowFocus(true);
   details_view_->setEditTriggers(QAbstractItemView::NoEditTriggers);
   details_view_->setExpandsOnDoubleClick(false);
   details_view_->header()->setStretchLastSection(false);
@@ -4127,6 +4271,7 @@ void PakTab::build_ui() {
 
   icon_view_ = new PakTabIconView(this, view_stack_);
   icon_view_->setSelectionMode(QAbstractItemView::ExtendedSelection);
+  icon_view_->setSelectionRectVisible(true);
   icon_view_->setContextMenuPolicy(Qt::CustomContextMenu);
   icon_view_->setSortingEnabled(true);
   view_stack_->addWidget(icon_view_);
@@ -4190,6 +4335,18 @@ void PakTab::build_ui() {
   auto* redo_sc2 = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z), this);
   redo_sc2->setContext(Qt::WidgetWithChildrenShortcut);
   connect(redo_sc2, &QShortcut::activated, this, [this]() { redo(); });
+
+  auto* select_all_sc = new QShortcut(QKeySequence::SelectAll, this);
+  select_all_sc->setContext(Qt::WidgetWithChildrenShortcut);
+  connect(select_all_sc, &QShortcut::activated, this, [this]() {
+    if (view_stack_ && view_stack_->currentWidget() == icon_view_ && icon_view_) {
+      icon_view_->selectAll();
+      return;
+    }
+    if (details_view_) {
+      details_view_->selectAll();
+    }
+  });
 
   update_view_controls();
 }
@@ -4276,11 +4433,13 @@ void PakTab::show_context_menu(QWidget* view, const QPoint& pos) {
     return;
   }
 
+  const bool editable = is_editable();
   QMenu menu(this);
 
   auto* cut_action = menu.addAction("Cut");
   cut_action->setIcon(UiIcons::icon(UiIcons::Id::Cut, style()));
   cut_action->setShortcut(QKeySequence::Cut);
+  cut_action->setEnabled(editable);
   connect(cut_action, &QAction::triggered, this, [this]() { cut(); });
 
   auto* copy_action = menu.addAction("Copy");
@@ -4291,11 +4450,13 @@ void PakTab::show_context_menu(QWidget* view, const QPoint& pos) {
   auto* paste_action = menu.addAction("Paste");
   paste_action->setIcon(UiIcons::icon(UiIcons::Id::Paste, style()));
   paste_action->setShortcut(QKeySequence::Paste);
+  paste_action->setEnabled(editable);
   connect(paste_action, &QAction::triggered, this, [this]() { paste(); });
 
   auto* rename_action = menu.addAction("Rename");
   rename_action->setIcon(UiIcons::icon(UiIcons::Id::Rename, style()));
   rename_action->setShortcut(QKeySequence(Qt::Key_F2));
+  rename_action->setEnabled(editable);
   connect(rename_action, &QAction::triggered, this, [this]() { rename_selected(); });
 
   menu.addSeparator();
@@ -4387,6 +4548,7 @@ void PakTab::update_view_controls() {
   if (!use_details) {
     configure_icon_view();
   }
+  update_drag_drop_interaction_state();
 
   if (view_button_) {
     QIcon icon = UiIcons::icon(UiIcons::Id::ViewDetails, style());
@@ -4474,6 +4636,38 @@ void PakTab::configure_icon_view() {
   icon_view_->setFlow(flow);
   icon_view_->setSpacing(spacing);
   icon_view_->setGridSize(grid);
+  update_drag_drop_interaction_state();
+}
+
+void PakTab::update_drag_drop_interaction_state() {
+  const bool can_drop = is_editable();
+  const Qt::DropActions drag_actions = Qt::CopyAction | Qt::MoveAction;
+
+  if (details_view_) {
+    details_view_->setDragEnabled(true);
+    details_view_->setAcceptDrops(can_drop);
+    if (details_view_->viewport()) {
+      details_view_->viewport()->setAcceptDrops(can_drop);
+    }
+    details_view_->setDropIndicatorShown(can_drop);
+    details_view_->setDragDropMode(can_drop ? QAbstractItemView::DragDrop
+                                            : QAbstractItemView::DragOnly);
+    details_view_->setDefaultDropAction(Qt::CopyAction);
+    details_view_->setSupportedDragActions(drag_actions);
+  }
+
+  if (icon_view_) {
+    icon_view_->setDragEnabled(true);
+    icon_view_->setAcceptDrops(can_drop);
+    if (icon_view_->viewport()) {
+      icon_view_->viewport()->setAcceptDrops(can_drop);
+    }
+    icon_view_->setDropIndicatorShown(can_drop);
+    icon_view_->setDragDropMode(can_drop ? QAbstractItemView::DragDrop
+                                         : QAbstractItemView::DragOnly);
+    icon_view_->setDefaultDropAction(Qt::CopyAction);
+    icon_view_->setSupportedDragActions(drag_actions);
+  }
 }
 
 void PakTab::stop_thumbnail_generation() {
@@ -5214,6 +5408,292 @@ void PakTab::clear_deletions_under(const QString& pak_name_in) {
   deleted_dir_prefixes_.swap(keep);
 }
 
+void PakTab::reset_collision_prompt_state() {
+  collision_apply_to_remaining_ = false;
+  collision_choice_is_set_ = false;
+  collision_choice_ = CollisionChoice::Overwrite;
+}
+
+bool PakTab::file_exists_in_current_state(const QString& pak_path_in) const {
+  const QString pak_path = normalize_pak_path(pak_path_in);
+  if (pak_path.isEmpty() || is_deleted_in_state(pak_path, deleted_files_, deleted_dir_prefixes_)) {
+    return false;
+  }
+
+  for (const AddedFile& added : added_files_) {
+    if (pak_paths_equal(added.pak_name, pak_path)) {
+      return true;
+    }
+  }
+
+  if (view_archive().is_loaded()) {
+    for (const ArchiveEntry& e : view_archive().entries()) {
+      if (pak_paths_equal(e.name, pak_path)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool PakTab::dir_exists_in_current_state(const QString& dir_prefix_in) const {
+  QString dir_prefix = normalize_pak_path(dir_prefix_in);
+  if (dir_prefix.isEmpty()) {
+    return false;
+  }
+  if (!dir_prefix.endsWith('/')) {
+    dir_prefix += '/';
+  }
+  if (is_deleted_in_state(dir_prefix, deleted_files_, deleted_dir_prefixes_)) {
+    return false;
+  }
+
+  for (const QString& vdir : virtual_dirs_) {
+    if (pak_paths_equal(vdir, dir_prefix)) {
+      return true;
+    }
+  }
+
+  for (const AddedFile& added : added_files_) {
+    if (pak_path_starts_with(normalize_pak_path(added.pak_name), dir_prefix) &&
+        !is_deleted_in_state(added.pak_name, deleted_files_, deleted_dir_prefixes_)) {
+      return true;
+    }
+  }
+
+  if (view_archive().is_loaded()) {
+    for (const ArchiveEntry& e : view_archive().entries()) {
+      const QString name = normalize_pak_path(e.name);
+      if (pak_path_starts_with(name, dir_prefix) &&
+          !is_deleted_in_state(name, deleted_files_, deleted_dir_prefixes_)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+QString PakTab::unique_file_copy_path(const QString& pak_path_in) const {
+  const QString pak_path = normalize_pak_path(pak_path_in);
+  const int slash = pak_path.lastIndexOf('/');
+  const QString prefix = (slash >= 0) ? pak_path.left(slash + 1) : QString();
+  const QString leaf = (slash >= 0) ? pak_path.mid(slash + 1) : pak_path;
+  const int dot = leaf.lastIndexOf('.');
+  const QString base = (dot > 0) ? leaf.left(dot) : leaf;
+  const QString ext = (dot > 0) ? leaf.mid(dot) : QString();
+  if (base.isEmpty()) {
+    return pak_path;
+  }
+
+  for (int i = 2; i < 10000; ++i) {
+    const QString candidate = QString("%1%2 (%3)%4").arg(prefix, base).arg(i).arg(ext);
+    if (!file_exists_in_current_state(candidate)) {
+      return candidate;
+    }
+  }
+  return pak_path;
+}
+
+QString PakTab::unique_dir_copy_prefix(const QString& dir_prefix_in) const {
+  QString dir_prefix = normalize_pak_path(dir_prefix_in);
+  if (dir_prefix.endsWith('/')) {
+    dir_prefix.chop(1);
+  }
+  const int slash = dir_prefix.lastIndexOf('/');
+  const QString prefix = (slash >= 0) ? dir_prefix.left(slash + 1) : QString();
+  const QString leaf = (slash >= 0) ? dir_prefix.mid(slash + 1) : dir_prefix;
+  if (leaf.isEmpty()) {
+    return normalize_dir_prefix_path(dir_prefix_in);
+  }
+
+  for (int i = 2; i < 10000; ++i) {
+    const QString candidate = QString("%1%2 (%3)/").arg(prefix, leaf).arg(i);
+    if (!dir_exists_in_current_state(candidate)) {
+      return candidate;
+    }
+  }
+  return normalize_dir_prefix_path(dir_prefix_in);
+}
+
+PakTab::CollisionChoice PakTab::choose_collision_action(const QString& pak_path, bool is_dir) {
+  if (collision_apply_to_remaining_ && collision_choice_is_set_) {
+    return collision_choice_;
+  }
+
+  const QString display_name = pak_leaf_name(is_dir ? normalize_dir_prefix_path(pak_path) : pak_path);
+  const QString item_label = display_name.isEmpty() ? pak_path : display_name;
+
+  QMessageBox box(this);
+  box.setIcon(QMessageBox::Question);
+  box.setWindowTitle(is_dir ? "Folder Exists" : "File Exists");
+  box.setText(QString("%1 already exists in this archive.").arg(item_label));
+  box.setInformativeText("Choose how to handle this conflict.");
+  QPushButton* overwrite = box.addButton("Overwrite", QMessageBox::AcceptRole);
+  QPushButton* keep_both = box.addButton("Keep Both", QMessageBox::ActionRole);
+  QPushButton* skip = box.addButton("Skip", QMessageBox::RejectRole);
+  QPushButton* cancel = box.addButton("Cancel", QMessageBox::DestructiveRole);
+  box.setDefaultButton(overwrite);
+
+  QCheckBox apply_all("Apply to remaining conflicts");
+  box.setCheckBox(&apply_all);
+  box.exec();
+
+  CollisionChoice choice = CollisionChoice::Cancel;
+  if (box.clickedButton() == overwrite) {
+    choice = CollisionChoice::Overwrite;
+  } else if (box.clickedButton() == keep_both) {
+    choice = CollisionChoice::KeepBoth;
+  } else if (box.clickedButton() == skip) {
+    choice = CollisionChoice::Skip;
+  } else if (box.clickedButton() == cancel) {
+    choice = CollisionChoice::Cancel;
+  }
+
+  if (apply_all.isChecked() && choice != CollisionChoice::Cancel) {
+    collision_apply_to_remaining_ = true;
+    collision_choice_is_set_ = true;
+    collision_choice_ = choice;
+  }
+  return choice;
+}
+
+bool PakTab::apply_external_move_deletions(const QVector<QPair<QString, bool>>& raw_items, QString* error) {
+  if (error) {
+    error->clear();
+  }
+  if (raw_items.isEmpty()) {
+    return true;
+  }
+  if (!is_editable()) {
+    if (error) {
+      *error = "Source archive is read-only, so moved items could not be removed from it.";
+    }
+    return false;
+  }
+
+  const ReducedSelection selection = reduce_selected_items(raw_items);
+  if (selection.dirs.isEmpty() && selection.files.isEmpty()) {
+    return true;
+  }
+
+  const QVector<AddedFile> before_added = added_files_;
+  const QSet<QString> before_virtual = virtual_dirs_;
+  const QSet<QString> before_deleted_files = deleted_files_;
+  const QSet<QString> before_deleted_dirs = deleted_dir_prefixes_;
+
+  bool changed = false;
+  QSet<QString> reduced_dirs;
+  reduced_dirs.reserve(selection.dirs.size());
+  for (const QString& d : selection.dirs) {
+    reduced_dirs.insert(d);
+  }
+  QSet<QString> reduced_files;
+  reduced_files.reserve(selection.files.size());
+  for (const QString& f : selection.files) {
+    reduced_files.insert(f);
+  }
+
+  for (const QString& d : reduced_dirs) {
+    if (!deleted_dir_prefixes_.contains(d)) {
+      deleted_dir_prefixes_.insert(d);
+      changed = true;
+    }
+  }
+
+  if (!reduced_dirs.isEmpty()) {
+    bool removed_added = false;
+    for (int i = added_files_.size() - 1; i >= 0; --i) {
+      const QString name = normalize_pak_path(added_files_[i].pak_name);
+      bool under = false;
+      for (const QString& d : reduced_dirs) {
+        const QString normalized = normalize_dir_prefix_path(d);
+        if (!normalized.isEmpty() && pak_path_starts_with(name, normalized)) {
+          under = true;
+          break;
+        }
+      }
+      if (under) {
+        added_files_.removeAt(i);
+        removed_added = true;
+      }
+    }
+    if (removed_added) {
+      rebuild_added_index();
+      changed = true;
+    }
+
+    QSet<QString> kept_dirs;
+    kept_dirs.reserve(virtual_dirs_.size());
+    for (const QString& vd : virtual_dirs_) {
+      const QString name = normalize_pak_path(vd);
+      bool under = false;
+      for (const QString& d : reduced_dirs) {
+        const QString normalized = normalize_dir_prefix_path(d);
+        if (!normalized.isEmpty() && pak_path_starts_with(name, normalized)) {
+          under = true;
+          break;
+        }
+      }
+      if (!under) {
+        kept_dirs.insert(vd);
+      } else {
+        changed = true;
+      }
+    }
+    virtual_dirs_.swap(kept_dirs);
+
+    QSet<QString> kept_deleted_files;
+    kept_deleted_files.reserve(deleted_files_.size());
+    for (const QString& f : deleted_files_) {
+      const QString name = normalize_pak_path(f);
+      bool under = false;
+      for (const QString& d : reduced_dirs) {
+        const QString normalized = normalize_dir_prefix_path(d);
+        if (!normalized.isEmpty() && pak_path_starts_with(name, normalized)) {
+          under = true;
+          break;
+        }
+      }
+      if (!under) {
+        kept_deleted_files.insert(f);
+      } else {
+        changed = true;
+      }
+    }
+    deleted_files_.swap(kept_deleted_files);
+  }
+
+  for (const QString& f : reduced_files) {
+    if (!deleted_files_.contains(f)) {
+      deleted_files_.insert(f);
+      changed = true;
+    }
+    remove_added_file_by_name(f);
+  }
+
+  if (!changed) {
+    return true;
+  }
+
+  if (undo_stack_) {
+    undo_stack_->push(new PakTabStateCommand(this,
+                                             "Move Out",
+                                             before_added,
+                                             before_virtual,
+                                             before_deleted_files,
+                                             before_deleted_dirs,
+                                             added_files_,
+                                             virtual_dirs_,
+                                             deleted_files_,
+                                             deleted_dir_prefixes_));
+  } else {
+    set_dirty(true);
+  }
+
+  refresh_listing();
+  return true;
+}
+
 namespace {
 bool copy_file_stream(const QString& src_path, const QString& dest_path, QString* error) {
   QFile src(src_path);
@@ -5829,8 +6309,35 @@ bool PakTab::import_urls(const QList<QUrl>& urls,
       if (failures) {
         failures->append(folder_failures);
       }
+      if (progress && progress->wasCanceled()) {
+        if (imported) {
+          imported->push_back(false);
+        }
+        break;
+      }
     } else if (info.isFile()) {
-      const QString pak_name = dest_prefix + info.fileName();
+      QString pak_name = dest_prefix + info.fileName();
+      if (file_exists_in_current_state(pak_name)) {
+        const CollisionChoice choice = choose_collision_action(pak_name, false);
+        if (choice == CollisionChoice::Cancel) {
+          if (progress) {
+            progress->cancel();
+          }
+          if (imported) {
+            imported->push_back(false);
+          }
+          break;
+        }
+        if (choice == CollisionChoice::Skip) {
+          if (imported) {
+            imported->push_back(false);
+          }
+          continue;
+        }
+        if (choice == CollisionChoice::KeepBoth) {
+          pak_name = unique_file_copy_path(pak_name);
+        }
+      }
       QString err;
       if (!add_file_mapping(pak_name, info.absoluteFilePath(), &err)) {
         if (failures) {
@@ -5852,14 +6359,16 @@ bool PakTab::import_urls(const QList<QUrl>& urls,
   return changed;
 }
 
-void PakTab::import_urls_with_undo(const QList<QUrl>& urls,
+bool PakTab::import_urls_with_undo(const QList<QUrl>& urls,
                                    const QString& dest_prefix,
                                    const QString& label,
                                    const QVector<QPair<QString, bool>>& cut_items,
-                                   bool is_cut) {
+                                   bool is_cut,
+                                   QVector<bool>* imported_out) {
   if (!ensure_editable(label)) {
-    return;
+    return false;
   }
+  reset_collision_prompt_state();
 
   const QVector<AddedFile> before_added = added_files_;
   const QSet<QString> before_virtual = virtual_dirs_;
@@ -5870,6 +6379,9 @@ void PakTab::import_urls_with_undo(const QList<QUrl>& urls,
   QProgressDialog progress(label, "Cancel", 0, 0, this);
   QVector<bool> imported;
   const bool changed = import_urls(urls, dest_prefix, &imported, &failures, &progress);
+  if (imported_out) {
+    *imported_out = imported;
+  }
 
   if (progress.wasCanceled()) {
     added_files_ = before_added;
@@ -5878,7 +6390,7 @@ void PakTab::import_urls_with_undo(const QList<QUrl>& urls,
     deleted_dir_prefixes_ = before_deleted_dirs;
     rebuild_added_index();
     refresh_listing();
-    return;
+    return false;
   }
 
   if (changed && is_cut && !cut_items.isEmpty()) {
@@ -5902,7 +6414,7 @@ void PakTab::import_urls_with_undo(const QList<QUrl>& urls,
   }
 
   if (!changed) {
-    return;
+    return false;
   }
 
   if (undo_stack_) {
@@ -5921,9 +6433,76 @@ void PakTab::import_urls_with_undo(const QList<QUrl>& urls,
   }
 
   refresh_listing();
+  return true;
 }
 
+namespace {
+struct MoveImportSelection {
+  QList<QUrl> urls;
+  QVector<QPair<QString, bool>> items;
+  bool blocked = false;
+};
+
+MoveImportSelection filter_move_selection_for_destination(const QList<QUrl>& urls,
+                                                          const QVector<QPair<QString, bool>>& items,
+                                                          const QString& dest_prefix_in) {
+  MoveImportSelection out;
+  if (urls.isEmpty() || items.isEmpty() || urls.size() != items.size()) {
+    return out;
+  }
+
+  QString dest_prefix = normalize_pak_path(dest_prefix_in);
+  if (!dest_prefix.isEmpty() && !dest_prefix.endsWith('/')) {
+    dest_prefix += '/';
+  }
+
+  out.urls.reserve(urls.size());
+  out.items.reserve(items.size());
+  for (int i = 0; i < items.size(); ++i) {
+    const auto& item = items[i];
+    const QString leaf = pak_leaf_name(item.first);
+    const QString dest_path = normalize_pak_path(dest_prefix + leaf + (item.second ? "/" : ""));
+    if (pak_paths_equal(item.first, dest_path)) {
+      continue;  // No-op move.
+    }
+    if (item.second && pak_path_is_under(dest_prefix, item.first)) {
+      out.blocked = true;  // Prevent moving a folder into itself.
+      out.urls.clear();
+      out.items.clear();
+      return out;
+    }
+    out.urls.push_back(urls[i]);
+    out.items.push_back(item);
+  }
+  return out;
+}
+
+void replace_clipboard_with_copy_payload(const QList<QUrl>& urls) {
+  auto* next = new QMimeData();
+  next->setUrls(urls);
+  QStringList local_paths;
+  local_paths.reserve(urls.size());
+  for (const QUrl& url : urls) {
+    if (url.isLocalFile()) {
+      local_paths.push_back(url.toLocalFile());
+    }
+  }
+  if (!local_paths.isEmpty()) {
+    next->setText(local_paths.join('\n'));
+  }
+
+  QJsonObject root;
+  root.insert("cut", false);
+  root.insert("items", QJsonArray());
+  next->setData(kPakFuMimeType, QJsonDocument(root).toJson(QJsonDocument::Compact));
+  QApplication::clipboard()->setMimeData(next);
+}
+}  // namespace
+
 bool PakTab::can_accept_mime(const QMimeData* mime) const {
+  if (!is_editable()) {
+    return false;
+  }
   if (!mime) {
     return false;
   }
@@ -5948,13 +6527,18 @@ bool PakTab::handle_drop_event(QDropEvent* event, const QString& dest_prefix_in)
   if (urls.isEmpty() && !has_payload) {
     return false;
   }
+  if (!is_editable()) {
+    event->setDropAction(Qt::IgnoreAction);
+    event->ignore();
+    return true;
+  }
 
   QString dest_prefix = normalize_pak_path(dest_prefix_in);
   if (!dest_prefix.isEmpty() && !dest_prefix.endsWith('/')) {
     dest_prefix += '/';
   }
 
-  const Qt::DropAction requested_action = resolve_requested_drop_action(
+  const Qt::DropAction requested_action = pakfu::ui::resolve_requested_drop_action(
     event->dropAction(),
     event->proposedAction(),
     event->possibleActions(),
@@ -5965,38 +6549,27 @@ bool PakTab::handle_drop_event(QDropEvent* event, const QString& dest_prefix_in)
     !payload.source_archive.isEmpty() &&
     !pak_path_.isEmpty() &&
     fs_paths_equal(payload.source_archive, pak_path_);
-  bool wants_move = (requested_action == Qt::MoveAction) && (source_is_this_tab || source_is_same_archive);
+  QPointer<PakTab> source_tab = has_payload ? find_drag_source_tab(payload.source_uid) : nullptr;
+  const bool source_tab_can_delete = source_tab && source_tab != this && source_tab->is_editable();
+  bool wants_move = (requested_action == Qt::MoveAction) &&
+                    (source_is_this_tab || source_is_same_archive || source_tab_can_delete);
+  bool delete_in_source_tab = wants_move && source_tab_can_delete;
+  bool delete_locally = wants_move && !delete_in_source_tab;
 
   QList<QUrl> import_urls = urls;
   QVector<QPair<QString, bool>> move_items;
 
   if (wants_move && !payload.items.isEmpty() && payload.items.size() == urls.size()) {
-    QList<QUrl> filtered_urls;
-    QVector<QPair<QString, bool>> filtered_items;
-    filtered_urls.reserve(urls.size());
-    filtered_items.reserve(payload.items.size());
-
-    bool move_blocked = false;
-    for (int i = 0; i < payload.items.size() && i < urls.size(); ++i) {
-      const auto& item = payload.items[i];
-      const QString leaf = pak_leaf_name(item.first);
-      QString new_path = normalize_pak_path(dest_prefix + leaf + (item.second ? "/" : ""));
-      if (pak_paths_equal(item.first, new_path)) {
-        continue;  // No-op move.
-      }
-      if (item.second && pak_path_is_under(dest_prefix, item.first)) {
-        move_blocked = true;
-        break;
-      }
-      filtered_urls.push_back(urls[i]);
-      filtered_items.push_back(item);
-    }
-
-    if (!move_blocked) {
-      import_urls = filtered_urls;
-      move_items = filtered_items;
+    const MoveImportSelection filtered = filter_move_selection_for_destination(urls, payload.items, dest_prefix);
+    if (filtered.blocked) {
+      wants_move = false;
+      delete_in_source_tab = false;
+      delete_locally = false;
+    } else {
+      import_urls = filtered.urls;
+      move_items = filtered.items;
       if (import_urls.isEmpty()) {
-        const Qt::DropAction accepted = resolve_requested_drop_action(
+        const Qt::DropAction accepted = pakfu::ui::resolve_requested_drop_action(
           requested_action,
           Qt::IgnoreAction,
           event->possibleActions(),
@@ -6005,11 +6578,11 @@ bool PakTab::handle_drop_event(QDropEvent* event, const QString& dest_prefix_in)
         event->accept();
         return true;
       }
-    } else {
-      wants_move = false;
     }
   } else if (wants_move) {
     wants_move = false;
+    delete_in_source_tab = false;
+    delete_locally = false;
   }
 
   if (!wants_move && event->dropAction() == Qt::MoveAction) {
@@ -6020,9 +6593,36 @@ bool PakTab::handle_drop_event(QDropEvent* event, const QString& dest_prefix_in)
     return false;
   }
 
-  import_urls_with_undo(import_urls, dest_prefix, wants_move ? "Move" : "Drop", move_items, wants_move);
+  QVector<bool> imported_flags;
+  const bool changed = import_urls_with_undo(import_urls,
+                                             dest_prefix,
+                                             wants_move ? "Move" : "Drop",
+                                             delete_locally ? move_items : QVector<QPair<QString, bool>>{},
+                                             delete_locally,
+                                             &imported_flags);
 
-  const Qt::DropAction accepted_action = resolve_requested_drop_action(
+  if (changed && delete_in_source_tab && !move_items.isEmpty()) {
+    QVector<QPair<QString, bool>> moved_from_source;
+    const int limit = qMin(imported_flags.size(), move_items.size());
+    moved_from_source.reserve(limit);
+    for (int i = 0; i < limit; ++i) {
+      if (imported_flags.value(i, false)) {
+        moved_from_source.push_back(move_items[i]);
+      }
+    }
+    if (!moved_from_source.isEmpty() && source_tab) {
+      QString source_err;
+      if (!source_tab->apply_external_move_deletions(moved_from_source, &source_err)) {
+        QMessageBox::warning(this,
+                             "Move",
+                             source_err.isEmpty()
+                               ? "Items were copied, but the source tab could not remove the originals."
+                               : source_err);
+      }
+    }
+  }
+
+  const Qt::DropAction accepted_action = pakfu::ui::resolve_requested_drop_action(
     wants_move ? Qt::MoveAction : Qt::CopyAction,
     Qt::IgnoreAction,
     event->possibleActions(),
@@ -6247,6 +6847,9 @@ void PakTab::copy_selected(bool cut) {
   if (!loaded_) {
     return;
   }
+  if (cut && !ensure_editable("Cut")) {
+    return;
+  }
 
   const QVector<QPair<QString, bool>> items = selected_items();
   if (items.isEmpty()) {
@@ -6285,17 +6888,42 @@ void PakTab::paste_from_clipboard() {
   if (urls.isEmpty()) {
     return;
   }
+  const QList<QUrl> clipboard_urls = urls;
 
   bool is_cut = false;
+  bool delete_in_source_tab = false;
   QVector<QPair<QString, bool>> cut_items;
+  QPointer<PakTab> source_tab;
   PakFuMimePayload payload;
   if (parse_pakfu_mime(mime, &payload)) {
     const bool source_is_this_tab = payload.source_uid == drag_source_uid_;
     const bool source_is_same_archive = !payload.source_archive.isEmpty() &&
       !pak_path_.isEmpty() &&
       fs_paths_equal(payload.source_archive, pak_path_);
-    is_cut = payload.cut && (source_is_this_tab || source_is_same_archive);
+    source_tab = find_drag_source_tab(payload.source_uid);
+    if (payload.cut && source_tab && source_tab != this && source_tab->is_editable()) {
+      delete_in_source_tab = true;
+    } else {
+      is_cut = payload.cut && (source_is_this_tab || source_is_same_archive);
+    }
     cut_items = payload.items;
+  }
+  if ((is_cut || delete_in_source_tab) && !cut_items.isEmpty() && cut_items.size() == urls.size()) {
+    const MoveImportSelection filtered = filter_move_selection_for_destination(urls, cut_items, current_prefix());
+    if (filtered.blocked) {
+      is_cut = false;
+      delete_in_source_tab = false;
+    } else {
+      urls = filtered.urls;
+      cut_items = filtered.items;
+      if (urls.isEmpty()) {
+        replace_clipboard_with_copy_payload(clipboard_urls);
+        return;
+      }
+    }
+  } else if (is_cut || delete_in_source_tab) {
+    is_cut = false;
+    delete_in_source_tab = false;
   }
 
   // Capture for undo.
@@ -6307,8 +6935,9 @@ void PakTab::paste_from_clipboard() {
   QStringList failures;
   bool changed = false;
   const QString dest_prefix = current_prefix();
+  reset_collision_prompt_state();
 
-  QProgressDialog progress(is_cut ? "Moving items…" : "Copying items…", "Cancel", 0, 0, this);
+  QProgressDialog progress((is_cut || delete_in_source_tab) ? "Moving items…" : "Copying items…", "Cancel", 0, 0, this);
   QVector<bool> imported;
   changed = import_urls(urls, dest_prefix, &imported, &failures, &progress);
 
@@ -6339,6 +6968,27 @@ void PakTab::paste_from_clipboard() {
     }
   }
 
+  if (changed && delete_in_source_tab && !cut_items.isEmpty() && source_tab) {
+    QVector<QPair<QString, bool>> moved_from_source;
+    const int limit = qMin(imported.size(), cut_items.size());
+    moved_from_source.reserve(limit);
+    for (int i = 0; i < limit; ++i) {
+      if (imported.value(i, false)) {
+        moved_from_source.push_back(cut_items.at(i));
+      }
+    }
+    if (!moved_from_source.isEmpty()) {
+      QString source_err;
+      if (!source_tab->apply_external_move_deletions(moved_from_source, &source_err)) {
+        QMessageBox::warning(this,
+                             "Move Items",
+                             source_err.isEmpty()
+                               ? "Items were copied, but the source tab could not remove the originals."
+                               : source_err);
+      }
+    }
+  }
+
   if (!failures.isEmpty()) {
     QMessageBox::warning(this, "Paste", failures.mid(0, 12).join("\n"));
   }
@@ -6350,7 +7000,7 @@ void PakTab::paste_from_clipboard() {
 
   if (undo_stack_) {
     undo_stack_->push(new PakTabStateCommand(this,
-                                             is_cut ? "Move Items" : "Paste",
+                                             (is_cut || delete_in_source_tab) ? "Move Items" : "Paste",
                                              before_added,
                                              before_virtual,
                                              before_deleted_files,
@@ -6366,14 +7016,8 @@ void PakTab::paste_from_clipboard() {
   refresh_listing();
 
   // After a cut+paste, convert the clipboard to a copy payload (so repeated pastes don't keep deleting).
-  if (is_cut) {
-    QJsonObject root;
-    root.insert("cut", false);
-    root.insert("items", QJsonArray());
-    auto* next = new QMimeData();
-    next->setUrls(urls);
-    next->setData(kPakFuMimeType, QJsonDocument(root).toJson(QJsonDocument::Compact));
-    QApplication::clipboard()->setMimeData(next);
+  if (is_cut || delete_in_source_tab) {
+    replace_clipboard_with_copy_payload(clipboard_urls);
   }
 }
 
@@ -6381,6 +7025,7 @@ void PakTab::rename_selected() {
   if (!ensure_editable("Rename")) {
     return;
   }
+  reset_collision_prompt_state();
 
   const QVector<QPair<QString, bool>> items = selected_items();
   if (items.size() != 1) {
@@ -6427,11 +7072,24 @@ void PakTab::rename_selected() {
   if (is_dir) {
     const QString forced_folder = name;
     const bool did = add_folder_from_path(exported, current_prefix(), forced_folder, &failures);
-    changed = changed || did;
-    deleted_dir_prefixes_.insert(normalize_dir_prefix_path(old_path));
-    changed = true;
+    if (did) {
+      changed = true;
+      deleted_dir_prefixes_.insert(normalize_dir_prefix_path(old_path));
+    }
   } else {
-    if (!add_file_mapping(new_path, exported, &err)) {
+    QString final_new_path = new_path;
+    if (file_exists_in_current_state(final_new_path)) {
+      reset_collision_prompt_state();
+      const CollisionChoice choice = choose_collision_action(final_new_path, false);
+      if (choice == CollisionChoice::Cancel || choice == CollisionChoice::Skip) {
+        return;
+      }
+      if (choice == CollisionChoice::KeepBoth) {
+        final_new_path = unique_file_copy_path(final_new_path);
+      }
+    }
+
+    if (!add_file_mapping(final_new_path, exported, &err)) {
       failures.push_back(err.isEmpty() ? "Unable to create renamed file." : err);
     } else {
       deleted_files_.insert(old_path);
@@ -6547,6 +7205,7 @@ void PakTab::add_files() {
   if (!ensure_editable("Add Files")) {
     return;
   }
+  reset_collision_prompt_state();
 
   const QVector<AddedFile> before_added = added_files_;
   const QSet<QString> before_virtual = virtual_dirs_;
@@ -6591,7 +7250,20 @@ void PakTab::add_files() {
       QCoreApplication::processEvents();
     }
 
-    const QString pak_name = current_prefix() + QFileInfo(path).fileName();
+    QString pak_name = current_prefix() + QFileInfo(path).fileName();
+    if (file_exists_in_current_state(pak_name)) {
+      const CollisionChoice choice = choose_collision_action(pak_name, false);
+      if (choice == CollisionChoice::Cancel) {
+        progress.cancel();
+        break;
+      }
+      if (choice == CollisionChoice::Skip) {
+        continue;
+      }
+      if (choice == CollisionChoice::KeepBoth) {
+        pak_name = unique_file_copy_path(pak_name);
+      }
+    }
     QString err;
     if (!add_file_mapping(pak_name, path, &err)) {
       failures.push_back(err.isEmpty() ? QString("Failed to add: %1").arg(path) : err);
@@ -6660,7 +7332,24 @@ bool PakTab::add_folder_from_path(const QString& folder_path_in,
   }
 
   const QString dest_prefix = normalize_pak_path(dest_prefix_in);
-  const QString pak_root = normalize_pak_path(dest_prefix + folder_name) + "/";
+  QString pak_root = normalize_pak_path(dest_prefix + folder_name) + "/";
+  if (dir_exists_in_current_state(pak_root)) {
+    const CollisionChoice choice = choose_collision_action(pak_root, true);
+    if (choice == CollisionChoice::Cancel) {
+      if (progress) {
+        progress->cancel();
+      }
+      return false;
+    }
+    if (choice == CollisionChoice::Skip) {
+      return false;
+    }
+    if (choice == CollisionChoice::KeepBoth) {
+      pak_root = unique_dir_copy_prefix(pak_root);
+      folder_name = pak_leaf_name(pak_root);
+    }
+  }
+
   const bool root_created = !virtual_dirs_.contains(pak_root);
   const int deleted_files_before = deleted_files_.size();
   const int deleted_dirs_before = deleted_dir_prefixes_.size();
@@ -6694,7 +7383,22 @@ bool PakTab::add_folder_from_path(const QString& folder_path_in,
     }
     const QString file_path = it.next();
     const QString rel = normalize_pak_path(base.relativeFilePath(file_path));
-    const QString pak_name = pak_root + rel;
+    QString pak_name = pak_root + rel;
+    if (file_exists_in_current_state(pak_name)) {
+      const CollisionChoice choice = choose_collision_action(pak_name, false);
+      if (choice == CollisionChoice::Cancel) {
+        if (progress) {
+          progress->cancel();
+        }
+        break;
+      }
+      if (choice == CollisionChoice::Skip) {
+        continue;
+      }
+      if (choice == CollisionChoice::KeepBoth) {
+        pak_name = unique_file_copy_path(pak_name);
+      }
+    }
     QString err;
     if (!add_file_mapping(pak_name, file_path, &err)) {
       if (failures) {
@@ -6717,6 +7421,7 @@ void PakTab::add_folder() {
   if (!ensure_editable("Add Folder")) {
     return;
   }
+  reset_collision_prompt_state();
   if (archive_.is_loaded() && archive_.format() == Archive::Format::Wad) {
     QMessageBox::information(this, "Add Folder", "WAD2 archives are flat. Use Add Files for individual lumps.");
     return;
@@ -7927,6 +8632,44 @@ void PakTab::set_current_dir(const QStringList& parts) {
 }
 
 void PakTab::refresh_listing() {
+  QStringList previous_selection;
+  QString previous_current;
+  auto append_prev = [&previous_selection](const QString& path_in) {
+    const QString path = normalize_pak_path(path_in);
+    if (path.isEmpty()) {
+      return;
+    }
+    for (const QString& existing : previous_selection) {
+      if (pak_paths_equal(existing, path)) {
+        return;
+      }
+    }
+    previous_selection.push_back(path);
+  };
+
+  const bool active_is_details = view_stack_ && view_stack_->currentWidget() == details_view_;
+  if (active_is_details && details_view_) {
+    const QList<QTreeWidgetItem*> selected = details_view_->selectedItems();
+    for (const QTreeWidgetItem* item : selected) {
+      if (item) {
+        append_prev(item->data(0, kRolePakPath).toString());
+      }
+    }
+    if (QTreeWidgetItem* current = details_view_->currentItem()) {
+      previous_current = normalize_pak_path(current->data(0, kRolePakPath).toString());
+    }
+  } else if (icon_view_) {
+    const QList<QListWidgetItem*> selected = icon_view_->selectedItems();
+    for (const QListWidgetItem* item : selected) {
+      if (item) {
+        append_prev(item->data(kRolePakPath).toString());
+      }
+    }
+    if (QListWidgetItem* current = icon_view_->currentItem()) {
+      previous_current = normalize_pak_path(current->data(kRolePakPath).toString());
+    }
+  }
+
   stop_thumbnail_generation();
   if (details_view_) {
     details_view_->clear();
@@ -8160,6 +8903,31 @@ void PakTab::refresh_listing() {
       details_view_->sortItems(details_view_->sortColumn(), details_view_->header()->sortIndicatorOrder());
     }
 
+    if (!previous_selection.isEmpty() || !previous_current.isEmpty()) {
+      const bool prev_block = details_view_->blockSignals(true);
+      details_view_->clearSelection();
+      QTreeWidgetItem* first_selected_item = nullptr;
+      for (const QString& path : previous_selection) {
+        if (QTreeWidgetItem* item = detail_items_by_path_.value(path, nullptr)) {
+          item->setSelected(true);
+          if (!first_selected_item) {
+            first_selected_item = item;
+          }
+        }
+      }
+      QTreeWidgetItem* current_item = nullptr;
+      if (!previous_current.isEmpty()) {
+        current_item = detail_items_by_path_.value(previous_current, nullptr);
+      }
+      if (!current_item) {
+        current_item = first_selected_item;
+      }
+      if (current_item) {
+        details_view_->setCurrentItem(current_item);
+      }
+      details_view_->blockSignals(prev_block);
+    }
+
     update_preview();
     return;
   }
@@ -8257,6 +9025,31 @@ void PakTab::refresh_listing() {
     icon_view_->setSortingEnabled(sorting);
     if (sorting) {
       icon_view_->sortItems();
+    }
+
+    if (!previous_selection.isEmpty() || !previous_current.isEmpty()) {
+      const bool prev_block = icon_view_->blockSignals(true);
+      icon_view_->clearSelection();
+      QListWidgetItem* first_selected_item = nullptr;
+      for (const QString& path : previous_selection) {
+        if (QListWidgetItem* item = icon_items_by_path_.value(path, nullptr)) {
+          item->setSelected(true);
+          if (!first_selected_item) {
+            first_selected_item = item;
+          }
+        }
+      }
+      QListWidgetItem* current_item = nullptr;
+      if (!previous_current.isEmpty()) {
+        current_item = icon_items_by_path_.value(previous_current, nullptr);
+      }
+      if (!current_item) {
+        current_item = first_selected_item;
+      }
+      if (current_item) {
+        icon_view_->setCurrentItem(current_item);
+      }
+      icon_view_->blockSignals(prev_block);
     }
   }
 

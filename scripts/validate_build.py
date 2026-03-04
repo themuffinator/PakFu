@@ -23,6 +23,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Validate a built PakFu binary.")
     parser.add_argument("--binary", required=True, help="Path to pakfu executable.")
     parser.add_argument("--expected-version", required=True, help="Expected version string.")
+    parser.add_argument(
+        "--run-practical-qa",
+        action="store_true",
+        help="Also run the practical archive-ops QA smoke checks (--cli --qa-practical).",
+    )
     args = parser.parse_args()
 
     binary = Path(args.binary).resolve()
@@ -54,6 +59,14 @@ def main() -> int:
         print(out, file=sys.stderr)
         print(err, file=sys.stderr)
         return 1
+
+    if args.run_practical_qa:
+        code, out, err = run_command([str(binary), "--cli", "--qa-practical"])
+        if code != 0:
+            print("Practical QA smoke check failed.", file=sys.stderr)
+            print(out, file=sys.stderr)
+            print(err, file=sys.stderr)
+            return 1
 
     print(f"Build validation passed for {binary.name} ({args.expected_version}).")
     return 0

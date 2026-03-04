@@ -59,7 +59,7 @@ Nightly automation:
 - Stages:
 1. `prepare`: compute nightly version + change gate
 2. `build`: compile on Windows/macOS/Linux
-3. `validate`: run CLI smoke checks on each platform build
+3. `validate`: run CLI smoke checks on each platform build (and optionally `--run-practical-qa` for UI file-ops smoke checks)
 4. `package`: build installer + portable assets per platform
 5. `release`: tag, validate completeness, publish prerelease with full changelog context
 

@@ -14,6 +14,7 @@
 #include "game/game_auto_detect.h"
 #include "game/game_set.h"
 #include "pakfu_config.h"
+#include "ui/practical_qa.h"
 #include "update/update_service.h"
 
 namespace {
@@ -167,7 +168,19 @@ bool wants_cli(int argc, char** argv) {
     if (arg == "--cli" || arg == "--list" || arg == "--info" || arg == "--extract" ||
         arg == "--check-updates" || arg == "--update-repo" || arg == "--update-channel" ||
         arg == "--list-game-sets" || arg == "--auto-detect-game-sets" || arg == "--select-game-set" ||
+        arg == "--list-game-installs" || arg == "--auto-detect-game-installs" || arg == "--select-game-install" ||
+        arg == "--qa-practical" ||
         arg == "--help" || arg == "-h" || arg == "--version" || arg == "-v") {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool cli_requires_gui(int argc, char** argv) {
+  for (int i = 1; i < argc; ++i) {
+    const QString arg = QString::fromLocal8Bit(argv[i]);
+    if (arg == "--qa-practical") {
       return true;
     }
   }
@@ -185,6 +198,9 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   const QCommandLineOption info_option({"i", "info"}, "Show archive summary information.");
   const QCommandLineOption extract_option({"x", "extract"}, "Extract archive contents.");
   const QCommandLineOption check_updates_option("check-updates", "Check GitHub for new releases.");
+  const QCommandLineOption qa_practical_option(
+    "qa-practical",
+    "Run practical archive-ops UI QA checks (selection/marquee/modifier smoke tests).");
   const QCommandLineOption list_game_sets_option("list-game-sets", "List configured installations (legacy option).");
   const QCommandLineOption list_game_installs_option("list-game-installs", "List configured installations.");
   const QCommandLineOption auto_detect_game_sets_option(
@@ -219,6 +235,7 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   parser.addOption(info_option);
   parser.addOption(extract_option);
   parser.addOption(check_updates_option);
+  parser.addOption(qa_practical_option);
   parser.addOption(list_game_sets_option);
   parser.addOption(list_game_installs_option);
   parser.addOption(auto_detect_game_sets_option);
@@ -255,6 +272,7 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   options.info = parser.isSet(info_option);
   options.extract = parser.isSet(extract_option);
   options.check_updates = parser.isSet(check_updates_option);
+  options.qa_practical = parser.isSet(qa_practical_option);
   options.list_game_sets = parser.isSet(list_game_sets_option) || parser.isSet(list_game_installs_option);
   options.auto_detect_game_sets = parser.isSet(auto_detect_game_sets_option) || parser.isSet(auto_detect_game_installs_option);
   options.select_game_set = parser.value(select_game_set_option);
@@ -271,6 +289,7 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   }
 
   const bool any_action = options.list || options.info || options.extract || options.check_updates ||
+                          options.qa_practical ||
                           options.list_game_sets || options.auto_detect_game_sets ||
                           !options.select_game_set.isEmpty();
   if (!any_action && options.pak_path.isEmpty()) {
@@ -291,12 +310,30 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
     return CliParseResult::ExitError;
   }
 
+  if (options.qa_practical) {
+    const bool has_conflict = options.list || options.info || options.extract || options.check_updates ||
+                              options.list_game_sets || options.auto_detect_game_sets ||
+                              !options.select_game_set.isEmpty() || !options.pak_path.isEmpty();
+    if (has_conflict) {
+      if (output) {
+        *output = normalize_output("--qa-practical must be used by itself.") + '\n' + parser.helpText();
+      }
+      return CliParseResult::ExitError;
+    }
+  }
+
   return CliParseResult::Ok;
 }
 
 int run_cli(const CliOptions& options) {
   QTextStream out(stdout);
   QTextStream err(stderr);
+
+  if (options.qa_practical) {
+    out << "Running practical archive-ops QA...\n";
+    out.flush();
+    return run_practical_archive_ops_qa();
+  }
 
   if (options.list_game_sets || options.auto_detect_game_sets || !options.select_game_set.isEmpty()) {
     QString load_err;

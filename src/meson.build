@@ -95,6 +95,8 @@ sources = files(
   'ui/preferences_tab.cpp',
   'ui/preview_renderer.cpp',
   'ui/theme_manager.cpp',
+  'ui/drag_drop_policy.cpp',
+  'ui/practical_qa.cpp',
   'ui/ui_icons.cpp',
   'ui/breadcrumb_bar.cpp',
   'ui/audio_viewer_window.cpp',
