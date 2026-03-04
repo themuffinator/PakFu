@@ -67,6 +67,7 @@ PakFu can also check for updates at runtime (GUI) and via CLI (`--check-updates`
 - Nested container mounting (open archives inside archives).
 - One-click `Extract Selected` and `Extract All` workflows for the active archive tab.
 - Batch conversion tool for selected assets with category tabs (images, video, archives, models, sound, maps, text, other).
+- Image batch conversion supports output to all supported image formats (`png`, `jpg`, `jpeg`, `bmp`, `gif`, `tga`, `tif`, `tiff`, `pcx`, `wal`, `swl`, `mip`, `lmp`, `ftx`, `dds`) with format-aware settings (quality, compression, palette source, dithering, alpha threshold, embedded palette where applicable).
 - 3D preview renderer selection with Vulkan/OpenGL behavior and fallback.
 - Fly camera controls for 3D preview (`Right Mouse + WASD`, `Q/E`, mouse wheel speed, `Shift` faster, `Ctrl` slower, `F` frame, `R`/`Home` reset).
 - Auto-detection and management of per-game installation profiles.

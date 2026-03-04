@@ -1,4 +1,5 @@
 #include <QCoreApplication>
+#include <QByteArrayView>
 #include <QCryptographicHash>
 #include <QFileInfo>
 #include <QImage>
@@ -12,7 +13,7 @@ QByteArray hash_image(const QImage& img) {
     return {};
   }
   QCryptographicHash h(QCryptographicHash::Sha256);
-  h.addData(reinterpret_cast<const char*>(img.constBits()), img.sizeInBytes());
+  h.addData(QByteArrayView(reinterpret_cast<const char*>(img.constBits()), static_cast<qsizetype>(img.sizeInBytes())));
   return h.result().toHex();
 }
 }  // namespace
@@ -92,4 +93,3 @@ int main(int argc, char** argv) {
   out << "Decoded frames: " << decoded << "\n";
   return 0;
 }
-

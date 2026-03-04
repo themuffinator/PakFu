@@ -4,7 +4,8 @@
 
 #include <QApplication>
 #include <QColor>
-#include <QGuiApplication>
+#include <QCoreApplication>
+#include <QEvent>
 #include <QPalette>
 #include <QTextCharFormat>
 #include <QTextDocument>
@@ -283,12 +284,17 @@ CfgSyntaxHighlighter::CfgSyntaxHighlighter(QTextDocument* parent)
 	: QSyntaxHighlighter(parent) {
 	refresh_theme();
 
-	if (auto* app = qobject_cast<QGuiApplication*>(QGuiApplication::instance())) {
-		connect(app, &QGuiApplication::paletteChanged, this, [this](const QPalette&) {
-			refresh_theme();
-			rehighlight();
-		});
+	if (auto* app = QCoreApplication::instance()) {
+		app->installEventFilter(this);
 	}
+}
+
+bool CfgSyntaxHighlighter::eventFilter(QObject* watched, QEvent* event) {
+	if (event && event->type() == QEvent::ApplicationPaletteChange) {
+		refresh_theme();
+		rehighlight();
+	}
+	return QSyntaxHighlighter::eventFilter(watched, event);
 }
 
 void CfgSyntaxHighlighter::refresh_theme() {

@@ -83,6 +83,7 @@
 #include "formats/idtech_asset_loader.h"
 #include "formats/idwav_audio.h"
 #include "formats/image_loader.h"
+#include "formats/image_writer.h"
 #include "formats/miptex_image.h"
 #include "formats/wal_image.h"
 #include "formats/lmp_image.h"
@@ -91,6 +92,9 @@
 #include "formats/quake3_skin.h"
 #include "formats/quake3_shader.h"
 #include "formats/sprite_loader.h"
+#ifndef MINIZ_NO_ZLIB_COMPATIBLE_NAMES
+#define MINIZ_NO_ZLIB_COMPATIBLE_NAMES
+#endif
 #include "third_party/miniz/miniz.h"
 #include "pak/pak_archive.h"
 #include "platform/file_associations.h"
@@ -2025,6 +2029,42 @@ ConversionCategory classify_conversion_category(const QString& file_name) {
   return ConversionCategory::Other;
 }
 
+QString normalized_image_format_key(const QString& format) {
+  return normalize_image_write_format(format);
+}
+
+bool image_output_supports_quality(const QString& format) {
+  const QString key = normalized_image_format_key(format);
+  return key == "jpg";
+}
+
+bool image_output_supports_compression(const QString& format) {
+  const QString key = normalized_image_format_key(format);
+  return key == "png" || key == "tiff";
+}
+
+bool image_output_is_paletted(const QString& format) {
+  return image_write_format_is_paletted(normalized_image_format_key(format));
+}
+
+bool image_output_supports_embedded_palette(const QString& format) {
+  return image_write_format_supports_embedded_palette(normalized_image_format_key(format));
+}
+
+QString resolve_image_palette_source(const QString& requested, const QString& format) {
+  const QString key = normalized_image_format_key(format);
+  if (requested != "auto") {
+    return requested;
+  }
+  if (key == "wal") {
+    return "quake2";
+  }
+  if (key == "mip" || key == "lmp") {
+    return "quake1";
+  }
+  return "adaptive";
+}
+
 struct ConversionCategoryCounts {
   int image = 0;
   int video = 0;
@@ -2044,6 +2084,11 @@ struct BatchConversionOptions {
   bool process_images = true;
   QString image_format = "png";
   int image_quality = 90;
+  int image_compression = 6;
+  QString image_palette_source = "auto";
+  bool image_dither = true;
+  int image_alpha_threshold = 127;
+  bool image_embed_palette = true;
 
   bool process_videos = true;
   QString video_mode = "frames_png";
@@ -2207,6 +2252,11 @@ public:
     out.process_images = image_enabled_ && image_enabled_->isChecked();
     out.image_format = image_format_ ? image_format_->currentData().toString() : "png";
     out.image_quality = image_quality_ ? image_quality_->value() : 90;
+    out.image_compression = image_compression_ ? image_compression_->value() : 6;
+    out.image_palette_source = image_palette_ ? image_palette_->currentData().toString() : "auto";
+    out.image_dither = image_dither_ && image_dither_->isChecked();
+    out.image_alpha_threshold = image_alpha_threshold_ ? image_alpha_threshold_->value() : 127;
+    out.image_embed_palette = image_embed_palette_ && image_embed_palette_->isChecked();
 
     out.process_videos = video_enabled_ && video_enabled_->isChecked();
     out.video_mode = video_mode_ ? video_mode_->currentData().toString() : "frames_png";
@@ -2350,8 +2400,21 @@ private:
   }
 
   void refresh_dynamic_visibility() {
-    const bool image_jpg = image_format_ && image_format_->currentData().toString() == "jpg";
-    set_row_visible(image_quality_label_, image_quality_, image_jpg);
+    const QString image_format = image_format_ ? image_format_->currentData().toString() : QString();
+    const bool image_quality = image_output_supports_quality(image_format);
+    const bool image_compression = image_output_supports_compression(image_format);
+    const bool image_paletted = image_output_is_paletted(image_format);
+    const bool image_embed_palette = image_output_supports_embedded_palette(image_format);
+    set_row_visible(image_quality_label_, image_quality_, image_quality);
+    set_row_visible(image_compression_label_, image_compression_, image_compression);
+    set_row_visible(image_palette_label_, image_palette_, image_paletted);
+    set_row_visible(image_alpha_threshold_label_, image_alpha_threshold_, image_paletted);
+    if (image_dither_) {
+      image_dither_->setVisible(image_paletted);
+    }
+    if (image_embed_palette_) {
+      image_embed_palette_->setVisible(image_embed_palette);
+    }
 
     const QString video_mode = video_mode_ ? video_mode_->currentData().toString() : QString();
     const bool video_jpg = video_mode == "frames_jpg";
@@ -2384,8 +2447,19 @@ private:
     image_format_ = new QComboBox(card);
     image_format_->addItem("PNG", "png");
     image_format_->addItem("JPG", "jpg");
+    image_format_->addItem("JPEG", "jpeg");
     image_format_->addItem("TGA", "tga");
+    image_format_->addItem("TIFF", "tiff");
+    image_format_->addItem("TIF", "tif");
     image_format_->addItem("BMP", "bmp");
+    image_format_->addItem("GIF", "gif");
+    image_format_->addItem("PCX (8-bit paletted)", "pcx");
+    image_format_->addItem("WAL (Quake II, 8-bit paletted)", "wal");
+    image_format_->addItem("SWL (SiN, 8-bit paletted)", "swl");
+    image_format_->addItem("MIP (Quake texture, 8-bit paletted)", "mip");
+    image_format_->addItem("LMP (QPIC, 8-bit paletted)", "lmp");
+    image_format_->addItem("FTX (RGBA)", "ftx");
+    image_format_->addItem("DDS (RGBA8)", "dds");
     tune_field(image_format_);
 
     image_quality_ = new QSpinBox(card);
@@ -2393,12 +2467,43 @@ private:
     image_quality_->setValue(90);
     tune_field(image_quality_);
 
+    image_compression_ = new QSpinBox(card);
+    image_compression_->setRange(0, 9);
+    image_compression_->setValue(6);
+    tune_field(image_compression_);
+
+    image_palette_ = new QComboBox(card);
+    image_palette_->addItem("Auto by output format (Recommended)", "auto");
+    image_palette_->addItem("Adaptive from source image", "adaptive");
+    image_palette_->addItem("Quake palette (gfx/palette.lmp)", "quake1");
+    image_palette_->addItem("Quake II palette (pics/colormap.pcx)", "quake2");
+    tune_field(image_palette_);
+
+    image_alpha_threshold_ = new QSpinBox(card);
+    image_alpha_threshold_->setRange(0, 255);
+    image_alpha_threshold_->setValue(127);
+    tune_field(image_alpha_threshold_);
+
+    image_dither_ = new QCheckBox("Use dithering for 8-bit palette conversion", card);
+    image_dither_->setChecked(true);
+
+    image_embed_palette_ = new QCheckBox("Embed palette in MIP/LMP output", card);
+    image_embed_palette_->setChecked(true);
+
     card_layout->addWidget(image_enabled_);
     auto* form = make_form_layout();
     form->addRow(make_form_label("Output format", card), image_format_);
     image_quality_label_ = make_form_label("JPG quality", card);
     form->addRow(image_quality_label_, image_quality_);
+    image_compression_label_ = make_form_label("Compression level", card);
+    form->addRow(image_compression_label_, image_compression_);
+    image_palette_label_ = make_form_label("Palette source", card);
+    form->addRow(image_palette_label_, image_palette_);
+    image_alpha_threshold_label_ = make_form_label("Alpha threshold", card);
+    form->addRow(image_alpha_threshold_label_, image_alpha_threshold_);
     card_layout->addLayout(form);
+    card_layout->addWidget(image_dither_);
+    card_layout->addWidget(image_embed_palette_);
     (void)apply_tab_meta(tab, ConversionCategory::Image, image_enabled_);
   }
 
@@ -2612,6 +2717,14 @@ private:
   QComboBox* image_format_ = nullptr;
   QLabel* image_quality_label_ = nullptr;
   QSpinBox* image_quality_ = nullptr;
+  QLabel* image_compression_label_ = nullptr;
+  QSpinBox* image_compression_ = nullptr;
+  QLabel* image_palette_label_ = nullptr;
+  QComboBox* image_palette_ = nullptr;
+  QLabel* image_alpha_threshold_label_ = nullptr;
+  QSpinBox* image_alpha_threshold_ = nullptr;
+  QCheckBox* image_dither_ = nullptr;
+  QCheckBox* image_embed_palette_ = nullptr;
 
   QCheckBox* video_enabled_ = nullptr;
   QComboBox* video_mode_ = nullptr;
@@ -3748,7 +3861,7 @@ void PakTab::convert_selected_assets() {
           continue;
         }
         decode_opts.palette = &quake2_palette_;
-      } else if (ext == "mip") {
+      } else if (ext == "mip" || ext == "lmp") {
         QString pal_err;
         if (ensure_quake1_palette(&pal_err) && quake1_palette_.size() == 256) {
           decode_opts.palette = &quake1_palette_;
@@ -3759,17 +3872,52 @@ void PakTab::convert_selected_assets() {
         failures.push_back(decoded.error.isEmpty() ? QString("Unable to decode image: %1").arg(item.display_name) : decoded.error);
         continue;
       }
-      target_path = change_file_extension(target_path, options.image_format);
-      const QByteArray fmt = options.image_format.toUpper().toLatin1();
-      const int quality = (options.image_format == "jpg") ? options.image_quality : -1;
-      const QFileInfo info(target_path);
-      if (!QDir(info.absolutePath()).exists() && !QDir().mkpath(info.absolutePath())) {
-        failures.push_back(QString("Unable to create output directory: %1").arg(info.absolutePath()));
+      const QString target_format = options.image_format.trimmed().toLower();
+      const QString requested_format = target_format.isEmpty() ? "png" : target_format;
+      const QString resolved_format = normalized_image_format_key(requested_format);
+      target_path = change_file_extension(target_path, requested_format);
+
+      ImageWriteOptions write_opts;
+      write_opts.format = resolved_format.isEmpty() ? requested_format : resolved_format;
+      write_opts.quality = options.image_quality;
+      write_opts.compression = options.image_compression;
+      write_opts.dither = options.image_dither;
+      write_opts.alpha_threshold = options.image_alpha_threshold;
+      write_opts.embed_palette = options.image_embed_palette;
+      write_opts.texture_name = QFileInfo(target_path).completeBaseName();
+
+      const QString palette_mode = resolve_image_palette_source(options.image_palette_source, write_opts.format);
+      const bool wants_paletted_output = image_output_is_paletted(write_opts.format);
+      if (wants_paletted_output) {
+        if (palette_mode == "quake1") {
+          QString pal_err;
+          if (!ensure_quake1_palette(&pal_err) || quake1_palette_.size() != 256) {
+            failures.push_back(pal_err.isEmpty()
+                                 ? QString("Missing Quake palette for conversion: %1").arg(item.display_name)
+                                 : pal_err);
+            continue;
+          }
+          write_opts.palette = &quake1_palette_;
+        } else if (palette_mode == "quake2") {
+          QString pal_err;
+          if (!ensure_quake2_palette(&pal_err) || quake2_palette_.size() != 256) {
+            failures.push_back(pal_err.isEmpty()
+                                 ? QString("Missing Quake II palette for conversion: %1").arg(item.display_name)
+                                 : pal_err);
+            continue;
+          }
+          write_opts.palette = &quake2_palette_;
+        }
+      }
+
+      if (write_opts.format == "wal" && (!write_opts.palette || write_opts.palette->size() != 256)) {
+        failures.push_back(QString("WAL output requires Quake II palette selection: %1").arg(item.display_name));
         continue;
       }
-      ok = decoded.image.save(target_path, fmt.constData(), quality);
+
+      ok = write_image_file(decoded.image, target_path, write_opts, &err);
       if (!ok) {
-        failures.push_back(QString("Unable to save converted image: %1").arg(target_path));
+        failures.push_back(err.isEmpty() ? QString("Unable to save converted image: %1").arg(target_path) : err);
       }
     } else if (item.category == ConversionCategory::Sound) {
       if (options.sound_mode == "copy") {

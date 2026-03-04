@@ -8,6 +8,9 @@
 #include <QSaveFile>
 
 #include "archive/path_safety.h"
+#ifndef MINIZ_NO_ZLIB_COMPATIBLE_NAMES
+#define MINIZ_NO_ZLIB_COMPATIBLE_NAMES
+#endif
 #include "third_party/miniz/miniz.h"
 #include "zip/quakelive_pk3_crypto.h"
 

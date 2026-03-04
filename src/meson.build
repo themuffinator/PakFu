@@ -73,6 +73,7 @@ sources = files(
   'formats/idwav_audio.cpp',
   'formats/sprite_loader.cpp',
   'formats/image_loader.cpp',
+  'formats/image_writer.cpp',
   'formats/lmp_image.cpp',
   'formats/miptex_image.cpp',
   'formats/cinematic.cpp',
@@ -154,16 +155,13 @@ if host_machine.system() == 'windows'
     windows = import('windows')
     pakfu_win_resources += windows.compile_resources('pakfu.rc')
   else
-    warning('No Windows resource compiler found; skipping embedded .exe icon resource.')
+    message('No Windows resource compiler found; skipping embedded .exe icon resource.')
   endif
   pakfu_win_subsystem = 'windows'
 
-  qt_libdir = qt6_dep.get_variable(configtool: 'QT_INSTALL_LIBS')
-  qt_entrypoint_name = 'Qt6EntryPoint.lib'
-  if get_option('buildtype') == 'debug' or get_option('buildtype') == 'debugoptimized'
-    qt_entrypoint_name = 'Qt6EntryPointd.lib'
-  endif
-  pakfu_link_args += join_paths(qt_libdir, qt_entrypoint_name)
+  # Use mainCRTStartup directly for Windows GUI subsystem builds.
+  # This avoids duplicate WinMain/wWinMain shims and keeps linker output warning-free.
+  pakfu_link_args += '/ENTRY:mainCRTStartup'
   pakfu_platform_deps += cpp_compiler.find_library('Dbghelp', required: true)
 endif
 

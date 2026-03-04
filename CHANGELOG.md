@@ -2,6 +2,10 @@
 
 All notable changes to PakFu are documented here.
 ## [Unreleased]
+### Added
+- Extend batch image conversion output coverage to all supported image formats, including legacy/paletted targets (`pcx`, `wal`, `swl`, `mip`, `lmp`) and custom writers for `ftx`/`dds`.
+- Add format-aware image conversion settings (quality, compression, palette source, dithering, alpha threshold, embedded palette controls).
+
 ### Fixed
 - Fix stale folder listings when navigating newly added folders in a new PAK tab by using canonical archive paths for navigation/listing.
 
