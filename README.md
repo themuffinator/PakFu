@@ -231,6 +231,10 @@ Selector support:
 ## Updates and Releases
 PakFu can check GitHub Releases at runtime and from CLI.
 
+GUI updater install handoff:
+- Windows: `Install and Restart` waits for installer completion, then relaunches PakFu (preferring the installer-managed `%LOCALAPPDATA%\PakFu\pakfu.exe` after MSI updates).
+- macOS/Linux: PakFu exits and starts the downloaded installer artifact (`.pkg` / `.AppImage`) after shutdown.
+
 Build-time updater config:
 - `-Dgithub_repo=themuffinator/PakFu` (default; see `meson_options.txt`)
 - `-Dupdate_channel=stable|beta|dev` (default: `stable`; full releases only; see `meson_options.txt`)

@@ -132,6 +132,7 @@ namespace {
   }
 
   const QString installer_absolute_path = installer_info.absoluteFilePath();
+  const QString app_absolute_path = QFileInfo(QCoreApplication::applicationFilePath()).absoluteFilePath();
 
   const QString temp_dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
   if (temp_dir.isEmpty()) {
@@ -164,6 +165,8 @@ namespace {
     "setlocal EnableExtensions\r\n"
     "set \"PID=%~1\"\r\n"
     "set \"INSTALLER=%~f2\"\r\n"
+    "set \"APP=%~f3\"\r\n"
+    "set \"APP_TO_START=%APP%\"\r\n"
     "set \"EXT=%~x2\"\r\n"
     ":waitloop\r\n"
     "tasklist /FI \"PID eq %PID%\" 2>NUL | findstr /I \"%PID%\" >NUL\r\n"
@@ -172,9 +175,13 @@ namespace {
     "  goto waitloop\r\n"
     ")\r\n"
     "if /I \"%EXT%\"==\".msi\" (\r\n"
-    "  start \"\" msiexec.exe /i \"%INSTALLER%\"\r\n"
+    "  start \"\" /wait msiexec.exe /i \"%INSTALLER%\"\r\n"
+    "  if exist \"%LOCALAPPDATA%\\PakFu\\pakfu.exe\" set \"APP_TO_START=%LOCALAPPDATA%\\PakFu\\pakfu.exe\"\r\n"
     ") else (\r\n"
-    "  start \"\" \"%INSTALLER%\"\r\n"
+    "  start \"\" /wait \"%INSTALLER%\"\r\n"
+    ")\r\n"
+    "if exist \"%APP_TO_START%\" (\r\n"
+    "  start \"\" \"%APP_TO_START%\"\r\n"
     ")\r\n"
     "start \"\" /B cmd.exe /C del /F /Q \"%~f0\" >NUL 2>&1\r\n"
     "endlocal\r\n";
@@ -183,8 +190,11 @@ namespace {
 
   const QString script_path = QDir::toNativeSeparators(script.fileName());
   const QString installer_arg = QDir::toNativeSeparators(installer_absolute_path);
+  const QString app_arg = QDir::toNativeSeparators(app_absolute_path);
+  const QString cmd = QString("\"\"%1\" %2 \"%3\" \"%4\"\"")
+                        .arg(script_path, QString::number(pid), installer_arg, app_arg);
 
-  if (!QProcess::startDetached("cmd.exe", {"/C", script_path, QString::number(pid), installer_arg})) {
+  if (!QProcess::startDetached("cmd.exe", {"/C", cmd})) {
     if (error) {
       *error = "Unable to start deferred update launcher.";
     }
