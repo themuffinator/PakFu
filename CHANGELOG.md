@@ -8,6 +8,8 @@ All notable changes to PakFu are documented here.
 
 ### Fixed
 - Fix stale folder listings when navigating newly added folders in a new PAK tab by using canonical archive paths for navigation/listing.
+- Revise all open/save file and folder dialogs to use platform-native navigation by default, with persistent recent locations, filters, and sidebar bookmarks across sessions.
+- Fix potential GUI hangs when opening file dialogs on systems with slow/unreachable volumes by removing synchronous volume probing from dialog state restore.
 
 ## [0.1.18.1] - 2026-02-19
 ### Other

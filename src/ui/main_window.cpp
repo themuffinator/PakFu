@@ -55,6 +55,7 @@
 #include "ui/file_associations_dialog.h"
 #include "ui/game_set_dialog.h"
 #include "ui/audio_viewer_window.h"
+#include "ui/file_dialog_utils.h"
 #include "ui/image_viewer_window.h"
 #include "ui/model_viewer_window.h"
 #include "ui/pak_tab.h"
@@ -1484,16 +1485,12 @@ void MainWindow::open_file_dialog() {
     "Archives (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3)",
     "All files (*.*)",
   });
-  dialog.setDirectory(default_directory_for_dialogs());
-#if defined(Q_OS_WIN)
-  // Work around sporadic native dialog crashes reported in early development.
-  dialog.setOption(QFileDialog::DontUseNativeDialog, true);
-#endif
-  if (dialog.exec() != QDialog::Accepted) {
-    return;
-  }
-  const QStringList selected = dialog.selectedFiles();
-  if (selected.isEmpty()) {
+  FileDialogUtils::Options options;
+  options.settings_key = "main/open_file";
+  options.fallback_directory = default_directory_for_dialogs();
+
+  QStringList selected;
+  if (!FileDialogUtils::exec_with_state(&dialog, options, &selected)) {
     return;
   }
   open_pak(selected.first());
@@ -1512,16 +1509,12 @@ void MainWindow::open_pak_dialog() {
     "ZIP-based (PK3/PK4/PKZ/ZIP) (*.pk3 *.pk4 *.pkz *.zip)",
     "All files (*.*)",
   });
-  dialog.setDirectory(default_directory_for_dialogs());
-#if defined(Q_OS_WIN)
-  // Work around sporadic native dialog crashes reported in early development.
-  dialog.setOption(QFileDialog::DontUseNativeDialog, true);
-#endif
-  if (dialog.exec() != QDialog::Accepted) {
-    return;
-  }
-  const QStringList selected = dialog.selectedFiles();
-  if (selected.isEmpty()) {
+  FileDialogUtils::Options options;
+  options.settings_key = "main/open_archive";
+  options.fallback_directory = default_directory_for_dialogs();
+
+  QStringList selected;
+  if (!FileDialogUtils::exec_with_state(&dialog, options, &selected)) {
     return;
   }
   open_pak(selected.first());
@@ -1532,16 +1525,12 @@ void MainWindow::open_folder_dialog() {
   dialog.setWindowTitle("Open Folder");
   dialog.setFileMode(QFileDialog::Directory);
   dialog.setOption(QFileDialog::ShowDirsOnly, true);
-  dialog.setDirectory(default_directory_for_dialogs());
-#if defined(Q_OS_WIN)
-  // Work around sporadic native dialog crashes reported in early development.
-  dialog.setOption(QFileDialog::DontUseNativeDialog, true);
-#endif
-  if (dialog.exec() != QDialog::Accepted) {
-    return;
-  }
-  const QStringList selected = dialog.selectedFiles();
-  if (selected.isEmpty()) {
+  FileDialogUtils::Options options;
+  options.settings_key = "main/open_folder";
+  options.fallback_directory = default_directory_for_dialogs();
+
+  QStringList selected;
+  if (!FileDialogUtils::exec_with_state(&dialog, options, &selected)) {
     return;
   }
   open_pak(selected.first());
@@ -2642,22 +2631,18 @@ bool MainWindow::save_tab_as(PakTab* tab) {
     }
     dialog.setNameFilters(filters);
   }
-  dialog.setDirectory(default_directory_for_dialogs());
-  dialog.selectFile(suggested);
-#if defined(Q_OS_WIN)
-  dialog.setOption(QFileDialog::DontUseNativeDialog, true);
-#endif
+  FileDialogUtils::Options dialog_options;
+  dialog_options.settings_key = "main/save_archive_as";
+  dialog_options.fallback_directory = default_directory_for_dialogs();
+  dialog_options.initial_selection = suggested;
 
-  if (dialog.exec() != QDialog::Accepted) {
-    return false;
-  }
-  const QStringList selected = dialog.selectedFiles();
-  if (selected.isEmpty()) {
+  QStringList selected;
+  QString filter;
+  if (!FileDialogUtils::exec_with_state(&dialog, dialog_options, &selected, &filter)) {
     return false;
   }
 
   QString dest = selected.first();
-  const QString filter = dialog.selectedNameFilter();
 
   PakTab::SaveOptions options;
   QString want_ext;

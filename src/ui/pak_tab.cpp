@@ -100,6 +100,7 @@
 #include "platform/file_associations.h"
 #include "ui/breadcrumb_bar.h"
 #include "ui/drag_drop_policy.h"
+#include "ui/file_dialog_utils.h"
 #include "ui/preview_pane.h"
 #include "ui/preview_renderer.h"
 #include "ui/ui_icons.h"
@@ -2194,17 +2195,11 @@ public:
       dialog.setWindowTitle("Choose Output Folder");
       dialog.setFileMode(QFileDialog::Directory);
       dialog.setOption(QFileDialog::ShowDirsOnly, true);
-      if (!output_edit_->text().trimmed().isEmpty()) {
-        dialog.setDirectory(output_edit_->text().trimmed());
-      }
-#if defined(Q_OS_WIN)
-      dialog.setOption(QFileDialog::DontUseNativeDialog, true);
-#endif
-      if (dialog.exec() != QDialog::Accepted) {
-        return;
-      }
-      const QStringList selected = dialog.selectedFiles();
-      if (selected.isEmpty()) {
+      FileDialogUtils::Options options;
+      options.settings_key = "pak_tab/batch_output";
+      options.fallback_directory = output_edit_->text().trimmed();
+      QStringList selected;
+      if (!FileDialogUtils::exec_with_state(&dialog, options, &selected)) {
         return;
       }
       output_edit_->setText(QDir::cleanPath(selected.first()));
@@ -3423,15 +3418,11 @@ void PakTab::extract_selected() {
   const QString base_dir = !default_directory_.isEmpty()
     ? default_directory_
     : (!pak_path_.isEmpty() ? QFileInfo(pak_path_).absolutePath() : QDir::homePath());
-  dialog.setDirectory(base_dir);
-#if defined(Q_OS_WIN)
-  dialog.setOption(QFileDialog::DontUseNativeDialog, true);
-#endif
-  if (dialog.exec() != QDialog::Accepted) {
-    return;
-  }
-  const QStringList selected = dialog.selectedFiles();
-  if (selected.isEmpty()) {
+  FileDialogUtils::Options options;
+  options.settings_key = "pak_tab/extract_selected";
+  options.fallback_directory = base_dir;
+  QStringList selected;
+  if (!FileDialogUtils::exec_with_state(&dialog, options, &selected)) {
     return;
   }
 
@@ -3538,15 +3529,11 @@ void PakTab::extract_all() {
   const QString base_dir = !default_directory_.isEmpty()
     ? default_directory_
     : (!pak_path_.isEmpty() ? QFileInfo(pak_path_).absolutePath() : QDir::homePath());
-  dialog.setDirectory(base_dir);
-#if defined(Q_OS_WIN)
-  dialog.setOption(QFileDialog::DontUseNativeDialog, true);
-#endif
-  if (dialog.exec() != QDialog::Accepted) {
-    return;
-  }
-  const QStringList selected = dialog.selectedFiles();
-  if (selected.isEmpty()) {
+  FileDialogUtils::Options options;
+  options.settings_key = "pak_tab/extract_all";
+  options.fallback_directory = base_dir;
+  QStringList selected;
+  if (!FileDialogUtils::exec_with_state(&dialog, options, &selected)) {
     return;
   }
 
@@ -7364,18 +7351,11 @@ void PakTab::add_files() {
   dialog.setWindowTitle("Add Files");
   dialog.setFileMode(QFileDialog::ExistingFiles);
   dialog.setNameFilters({"All files (*.*)"});
-  if (!default_directory_.isEmpty() && QFileInfo::exists(default_directory_)) {
-    dialog.setDirectory(default_directory_);
-  }
-#if defined(Q_OS_WIN)
-  dialog.setOption(QFileDialog::DontUseNativeDialog, true);
-#endif
-  if (dialog.exec() != QDialog::Accepted) {
-    return;
-  }
-
-  const QStringList selected = dialog.selectedFiles();
-  if (selected.isEmpty()) {
+  FileDialogUtils::Options options;
+  options.settings_key = "pak_tab/add_files";
+  options.fallback_directory = default_directory_;
+  QStringList selected;
+  if (!FileDialogUtils::exec_with_state(&dialog, options, &selected)) {
     return;
   }
   default_directory_ = QFileInfo(selected.first()).absolutePath();
@@ -7584,18 +7564,11 @@ void PakTab::add_folder() {
   dialog.setWindowTitle("Add Folder");
   dialog.setFileMode(QFileDialog::Directory);
   dialog.setOption(QFileDialog::ShowDirsOnly, true);
-  if (!default_directory_.isEmpty() && QFileInfo::exists(default_directory_)) {
-    dialog.setDirectory(default_directory_);
-  }
-#if defined(Q_OS_WIN)
-  dialog.setOption(QFileDialog::DontUseNativeDialog, true);
-#endif
-  if (dialog.exec() != QDialog::Accepted) {
-    return;
-  }
-
-  const QStringList selected = dialog.selectedFiles();
-  if (selected.isEmpty()) {
+  FileDialogUtils::Options options;
+  options.settings_key = "pak_tab/add_folder";
+  options.fallback_directory = default_directory_;
+  QStringList selected;
+  if (!FileDialogUtils::exec_with_state(&dialog, options, &selected)) {
     return;
   }
   default_directory_ = QFileInfo(selected.first()).absoluteFilePath();

@@ -91,6 +91,7 @@ sources = files(
   'ui/splash_screen.cpp',
   'ui/about_dialog.cpp',
   'ui/main_window.cpp',
+  'ui/file_dialog_utils.cpp',
   'ui/file_associations_dialog.cpp',
   'ui/game_set_dialog.cpp',
   'ui/game_set_editor_dialog.cpp',

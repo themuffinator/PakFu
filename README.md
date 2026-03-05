@@ -68,6 +68,7 @@ PakFu can also check for updates at runtime (GUI) and via CLI (`--check-updates`
 - One-click `Extract Selected` and `Extract All` workflows for the active archive tab.
 - Batch conversion tool for selected assets with category tabs (images, video, archives, models, sound, maps, text, other).
 - Image batch conversion supports output to all supported image formats (`png`, `jpg`, `jpeg`, `bmp`, `gif`, `tga`, `tif`, `tiff`, `pcx`, `wal`, `swl`, `mip`, `lmp`, `ftx`, `dds`) with format-aware settings (quality, compression, palette source, dithering, alpha threshold, embedded palette where applicable).
+- Modern platform-native open/save/folder dialogs with standard breadcrumbs/bookmarks and robust cross-platform behavior.
 - 3D preview renderer selection with Vulkan/OpenGL behavior and fallback.
 - Fly camera controls for 3D preview (`Right Mouse + WASD`, `Q/E`, mouse wheel speed, `Shift` faster, `Ctrl` slower, `F` frame, `R`/`Home` reset).
 - Auto-detection and management of per-game installation profiles.
@@ -256,6 +257,7 @@ For full policy details, see `docs/RELEASES.md`.
 | `PAKFU_DISABLE_QT_MESSAGE_HOOK` | Disable Qt log interception for troubleshooting. |
 | `PAKFU_DEBUG_MEDIA` | Enable extra media diagnostics in logs. |
 | `PAKFU_AUTO_PLAY_ON_OPEN` | Auto-start playback when opening videos. |
+| `PAKFU_FORCE_QT_FILE_DIALOG` | Force Qt's non-native file dialog implementation (useful for troubleshooting platform dialog issues). |
 | `PAKFU_ALLOW_MULTI_INSTANCE` | Disable single-instance behavior and allow multiple app instances. |
 | `PAKFU_SMOKE_TABS` | Run tab smoke test automation on startup (debug/CI helper). |
 | `QT_MEDIA_BACKEND` | Override Qt multimedia backend selection. |

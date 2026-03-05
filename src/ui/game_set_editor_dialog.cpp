@@ -13,6 +13,7 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 
+#include "ui/file_dialog_utils.h"
 #include "ui/ui_icons.h"
 
 namespace {
@@ -385,17 +386,12 @@ void GameSetEditorDialog::browse_root_dir() {
   dialog.setWindowTitle("Choose Game Root Directory");
   dialog.setFileMode(QFileDialog::Directory);
   dialog.setOption(QFileDialog::ShowDirsOnly, true);
-  if (!initial.isEmpty()) {
-    dialog.setDirectory(initial);
-  }
-#if defined(Q_OS_WIN)
-  dialog.setOption(QFileDialog::DontUseNativeDialog, true);
-#endif
-  if (dialog.exec() != QDialog::Accepted) {
-    return;
-  }
-  const QStringList selected = dialog.selectedFiles();
-  if (selected.isEmpty()) {
+  FileDialogUtils::Options options;
+  options.settings_key = "game_set_editor/root_dir";
+  options.fallback_directory = initial;
+
+  QStringList selected;
+  if (!FileDialogUtils::exec_with_state(&dialog, options, &selected)) {
     return;
   }
   const QString dir = selected.first();
@@ -417,17 +413,12 @@ void GameSetEditorDialog::browse_default_dir() {
   dialog.setWindowTitle("Choose Default Directory");
   dialog.setFileMode(QFileDialog::Directory);
   dialog.setOption(QFileDialog::ShowDirsOnly, true);
-  if (!initial.isEmpty()) {
-    dialog.setDirectory(initial);
-  }
-#if defined(Q_OS_WIN)
-  dialog.setOption(QFileDialog::DontUseNativeDialog, true);
-#endif
-  if (dialog.exec() != QDialog::Accepted) {
-    return;
-  }
-  const QStringList selected = dialog.selectedFiles();
-  if (selected.isEmpty()) {
+  FileDialogUtils::Options options;
+  options.settings_key = "game_set_editor/default_dir";
+  options.fallback_directory = initial;
+
+  QStringList selected;
+  if (!FileDialogUtils::exec_with_state(&dialog, options, &selected)) {
     return;
   }
   const QString dir = selected.first();
@@ -441,18 +432,13 @@ void GameSetEditorDialog::browse_executable() {
   QFileDialog dialog(this);
   dialog.setWindowTitle("Choose Game Executable");
   dialog.setFileMode(QFileDialog::ExistingFile);
-  if (!initial.isEmpty()) {
-    dialog.setDirectory(QFileInfo(initial).absolutePath());
-    dialog.selectFile(initial);
-  }
-#if defined(Q_OS_WIN)
-  dialog.setOption(QFileDialog::DontUseNativeDialog, true);
-#endif
-  if (dialog.exec() != QDialog::Accepted) {
-    return;
-  }
-  const QStringList selected = dialog.selectedFiles();
-  if (selected.isEmpty()) {
+  FileDialogUtils::Options options;
+  options.settings_key = "game_set_editor/executable";
+  options.fallback_directory = initial.isEmpty() ? QString() : QFileInfo(initial).absolutePath();
+  options.initial_selection = initial;
+
+  QStringList selected;
+  if (!FileDialogUtils::exec_with_state(&dialog, options, &selected)) {
     return;
   }
   const QString file = selected.first();
@@ -467,17 +453,12 @@ void GameSetEditorDialog::browse_working_dir() {
   dialog.setWindowTitle("Choose Working Directory");
   dialog.setFileMode(QFileDialog::Directory);
   dialog.setOption(QFileDialog::ShowDirsOnly, true);
-  if (!initial.isEmpty()) {
-    dialog.setDirectory(initial);
-  }
-#if defined(Q_OS_WIN)
-  dialog.setOption(QFileDialog::DontUseNativeDialog, true);
-#endif
-  if (dialog.exec() != QDialog::Accepted) {
-    return;
-  }
-  const QStringList selected = dialog.selectedFiles();
-  if (selected.isEmpty()) {
+  FileDialogUtils::Options options;
+  options.settings_key = "game_set_editor/working_dir";
+  options.fallback_directory = initial;
+
+  QStringList selected;
+  if (!FileDialogUtils::exec_with_state(&dialog, options, &selected)) {
     return;
   }
   const QString dir = selected.first();
