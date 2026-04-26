@@ -1,16 +1,25 @@
 #include "wad/wad_archive.h"
 
 #include <algorithm>
+#include <cstring>
+#include <limits>
 
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
 
+#include "archive/path_safety.h"
+
 namespace {
 constexpr int kWadHeaderSize = 12;
 constexpr int kQ12WadDirEntrySize = 32;
 constexpr int kDoomWadDirEntrySize = 16;
+constexpr int kWadNameBytes = 16;
+constexpr quint8 kWadTypeNone = 0;
+constexpr quint8 kWadTypeQpic = static_cast<quint8>('B');
+constexpr quint8 kWadTypeMiptexWad2 = static_cast<quint8>('D');
+constexpr quint8 kWadTypeLumpy = 64;
 
 [[nodiscard]] quint32 read_u32_le_from(const char* p) {
   const quint32 b0 = static_cast<quint8>(p[0]);
@@ -60,6 +69,55 @@ constexpr int kDoomWadDirEntrySize = 16;
   const quint64 want = 8ULL + static_cast<quint64>(w) * static_cast<quint64>(h);
   return want == static_cast<quint64>(size);
 }
+
+[[nodiscard]] bool looks_like_qpic_lump_bytes(const QByteArray& bytes) {
+  if (bytes.size() < 8) {
+    return false;
+  }
+  const quint32 w = read_u32_le_from(bytes.constData() + 0);
+  const quint32 h = read_u32_le_from(bytes.constData() + 4);
+  if (w == 0 || h == 0) {
+    return false;
+  }
+  constexpr quint32 kMaxDim = 16384;
+  if (w > kMaxDim || h > kMaxDim) {
+    return false;
+  }
+  const quint64 want = 8ULL + static_cast<quint64>(w) * static_cast<quint64>(h);
+  return want == static_cast<quint64>(bytes.size());
+}
+
+void write_u32_le_to(QByteArray* bytes, int offset, quint32 value) {
+  if (!bytes || offset < 0 || offset + 4 > bytes->size()) {
+    return;
+  }
+  (*bytes)[offset + 0] = static_cast<char>(value & 0xFF);
+  (*bytes)[offset + 1] = static_cast<char>((value >> 8) & 0xFF);
+  (*bytes)[offset + 2] = static_cast<char>((value >> 16) & 0xFF);
+  (*bytes)[offset + 3] = static_cast<char>((value >> 24) & 0xFF);
+}
+
+[[nodiscard]] quint8 derive_wad2_lump_type(const QString& entry_name_in,
+                                           const QString& lump_name,
+                                           const QByteArray* bytes = nullptr) {
+  const QString lower = normalize_archive_entry_name(entry_name_in).toLower();
+  if (lower.endsWith(".mip")) {
+    return kWadTypeMiptexWad2;
+  }
+  if (lower.endsWith(".lmp")) {
+    if (lump_name.compare("palette", Qt::CaseInsensitive) == 0) {
+      return kWadTypeLumpy;
+    }
+    if (bytes && looks_like_qpic_lump_bytes(*bytes)) {
+      return kWadTypeQpic;
+    }
+    return kWadTypeQpic;
+  }
+  if (bytes && looks_like_qpic_lump_bytes(*bytes)) {
+    return kWadTypeQpic;
+  }
+  return kWadTypeNone;
+}
 }  // namespace
 
 QString WadArchive::normalize_entry_name(QString name) {
@@ -93,6 +151,324 @@ const WadArchive::LumpMeta* WadArchive::find_lump(const QString& name) const {
     return nullptr;
   }
   return &meta_by_index_[idx];
+}
+
+bool WadArchive::derive_wad2_lump_name(const QString& entry_name_in, QString* out_lump_name, QString* error) {
+  if (error) {
+    error->clear();
+  }
+
+  const QString entry_name = normalize_archive_entry_name(entry_name_in);
+  if (entry_name.isEmpty()) {
+    if (error) {
+      *error = "WAD entry name is empty.";
+    }
+    return false;
+  }
+  if (entry_name.contains('/')) {
+    if (error) {
+      *error = QString("WAD entries cannot contain folders: %1").arg(entry_name);
+    }
+    return false;
+  }
+
+  QString lump_name = entry_name;
+  const int dot = lump_name.lastIndexOf('.');
+  if (dot > 0) {
+    const QString ext = lump_name.mid(dot + 1).toLower();
+    if (ext == "mip" || ext == "lmp") {
+      lump_name = lump_name.left(dot);
+    }
+  }
+
+  if (lump_name.isEmpty()) {
+    if (error) {
+      *error = QString("WAD entry has an invalid lump name: %1").arg(entry_name);
+    }
+    return false;
+  }
+
+  const QByteArray lump_latin1 = lump_name.toLatin1();
+  if (QString::fromLatin1(lump_latin1) != lump_name) {
+    if (error) {
+      *error = QString("WAD entry name must be Latin-1: %1").arg(entry_name);
+    }
+    return false;
+  }
+  if (lump_latin1.size() > kWadNameBytes) {
+    if (error) {
+      *error = QString("WAD lump names are limited to %1 bytes: %2").arg(kWadNameBytes).arg(lump_name);
+    }
+    return false;
+  }
+
+  if (out_lump_name) {
+    *out_lump_name = lump_name;
+  }
+  return true;
+}
+
+bool WadArchive::write_wad2(const QString& dest_path, const WritePlan& plan, QString* error) {
+  if (error) {
+    error->clear();
+  }
+
+  const QString abs = QFileInfo(dest_path).absoluteFilePath();
+  if (abs.isEmpty()) {
+    if (error) {
+      *error = "Invalid destination path.";
+    }
+    return false;
+  }
+
+  WadArchive source_wad;
+  const bool needs_source_wad = std::any_of(plan.entries.cbegin(), plan.entries.cend(), [](const WriteEntry& e) {
+    return e.from_source_wad;
+  });
+  if (needs_source_wad) {
+    if (plan.source_wad_path.isEmpty()) {
+      if (error) {
+        *error = "No source WAD path was provided.";
+      }
+      return false;
+    }
+    QString load_err;
+    if (!source_wad.load(plan.source_wad_path, &load_err)) {
+      if (error) {
+        *error = load_err.isEmpty() ? "Unable to load source WAD." : load_err;
+      }
+      return false;
+    }
+  }
+
+  struct WadWriteItem {
+    QString entry_name;
+    QString source_path;
+    bool from_source_wad = false;
+    QString lump_name;
+  };
+
+  QVector<WadWriteItem> items;
+  items.reserve(plan.entries.size());
+
+  QHash<QString, QString> lump_owner_by_key;
+  lump_owner_by_key.reserve(plan.entries.size());
+
+  for (const WriteEntry& entry : plan.entries) {
+    const QString entry_name = normalize_archive_entry_name(entry.entry_name);
+    if (entry_name.isEmpty()) {
+      continue;
+    }
+    if (!is_safe_archive_entry_name(entry_name)) {
+      if (error) {
+        *error = QString("Refusing to save unsafe entry: %1").arg(entry_name);
+      }
+      return false;
+    }
+
+    QString lump_name;
+    QString lump_err;
+    if (!derive_wad2_lump_name(entry_name, &lump_name, &lump_err)) {
+      if (error) {
+        *error = lump_err.isEmpty() ? QString("Invalid WAD entry name: %1").arg(entry_name) : lump_err;
+      }
+      return false;
+    }
+
+    const QString key = lump_name.toLower();
+    const QString existing = lump_owner_by_key.value(key);
+    if (!existing.isEmpty()) {
+      if (error) {
+        *error = QString("Duplicate WAD lump name after normalization: %1 (from %2 and %3)")
+                   .arg(lump_name, existing, entry_name);
+      }
+      return false;
+    }
+    lump_owner_by_key.insert(key, entry_name);
+
+    WadWriteItem item;
+    item.entry_name = entry_name;
+    item.source_path = entry.source_path;
+    item.from_source_wad = entry.from_source_wad;
+    item.lump_name = lump_name;
+    items.push_back(std::move(item));
+  }
+
+  QSaveFile out(abs);
+  if (!out.open(QIODevice::WriteOnly)) {
+    if (error) {
+      *error = "Unable to create destination WAD.";
+    }
+    return false;
+  }
+
+  QByteArray header(kWadHeaderSize, '\0');
+  std::memcpy(header.data(), "WAD2", 4);
+  if (out.write(header) != header.size()) {
+    if (error) {
+      *error = "Unable to write WAD2 header.";
+    }
+    return false;
+  }
+
+  struct WadDirEntry {
+    quint32 file_pos = 0;
+    quint32 disk_size = 0;
+    quint32 size = 0;
+    quint8 type = 0;
+    QByteArray lump_name_latin1;
+  };
+
+  QVector<WadDirEntry> dir_entries;
+  dir_entries.reserve(items.size());
+
+  QByteArray buffer;
+  buffer.resize(1 << 16);
+
+  for (const WadWriteItem& item : items) {
+    const qint64 out_pos = out.pos();
+    if (out_pos < 0 || out_pos > std::numeric_limits<quint32>::max()) {
+      if (error) {
+        *error = "WAD2 output exceeds format limits.";
+      }
+      return false;
+    }
+
+    quint32 size = 0;
+    quint8 type = kWadTypeNone;
+
+    if (item.from_source_wad) {
+      QByteArray bytes;
+      QString read_err;
+      if (!source_wad.read_entry_bytes(item.entry_name, &bytes, &read_err)) {
+        if (error) {
+          *error = read_err.isEmpty() ? QString("Unable to read source entry: %1").arg(item.entry_name) : read_err;
+        }
+        return false;
+      }
+      if (static_cast<quint64>(bytes.size()) > std::numeric_limits<quint32>::max()) {
+        if (error) {
+          *error = QString("Entry is too large for WAD2 format: %1").arg(item.entry_name);
+        }
+        return false;
+      }
+      if (out.write(bytes) != bytes.size()) {
+        if (error) {
+          *error = QString("Unable to write destination entry: %1").arg(item.entry_name);
+        }
+        return false;
+      }
+      size = static_cast<quint32>(bytes.size());
+      type = derive_wad2_lump_type(item.entry_name, item.lump_name, &bytes);
+    } else {
+      QFile in(item.source_path);
+      if (!in.open(QIODevice::ReadOnly)) {
+        if (error) {
+          *error = QString("Unable to open file: %1").arg(item.source_path);
+        }
+        return false;
+      }
+
+      const qint64 in_size64 = in.size();
+      if (in_size64 < 0 || in_size64 > std::numeric_limits<quint32>::max()) {
+        if (error) {
+          *error = QString("File is too large for WAD2 format: %1").arg(item.source_path);
+        }
+        return false;
+      }
+      size = static_cast<quint32>(in_size64);
+      type = derive_wad2_lump_type(item.entry_name, item.lump_name, nullptr);
+
+      quint32 remaining = size;
+      while (remaining > 0) {
+        const int want =
+          static_cast<int>(std::min<quint32>(remaining, static_cast<quint32>(buffer.size())));
+        const qint64 got = in.read(buffer.data(), want);
+        if (got <= 0) {
+          if (error) {
+            *error = QString("Unable to read file: %1").arg(item.source_path);
+          }
+          return false;
+        }
+        if (out.write(buffer.constData(), got) != got) {
+          if (error) {
+            *error = QString("Unable to write destination entry: %1").arg(item.entry_name);
+          }
+          return false;
+        }
+        remaining -= static_cast<quint32>(got);
+      }
+    }
+
+    WadDirEntry d;
+    d.file_pos = static_cast<quint32>(out_pos);
+    d.disk_size = size;
+    d.size = size;
+    d.type = type;
+    d.lump_name_latin1 = item.lump_name.toLatin1();
+    dir_entries.push_back(std::move(d));
+  }
+
+  const qint64 dir_offset64 = out.pos();
+  if (dir_offset64 < 0 || dir_offset64 > std::numeric_limits<quint32>::max()) {
+    if (error) {
+      *error = "WAD2 output exceeds format limits.";
+    }
+    return false;
+  }
+  const quint32 dir_offset = static_cast<quint32>(dir_offset64);
+
+  const qint64 dir_bytes64 = static_cast<qint64>(dir_entries.size()) * kQ12WadDirEntrySize;
+  if (dir_bytes64 < 0 || dir_bytes64 > std::numeric_limits<int>::max()) {
+    if (error) {
+      *error = "WAD2 directory exceeds format limits.";
+    }
+    return false;
+  }
+
+  QByteArray dir;
+  dir.resize(static_cast<int>(dir_bytes64));
+  dir.fill('\0');
+  for (int i = 0; i < dir_entries.size(); ++i) {
+    const WadDirEntry& d = dir_entries[i];
+    const int base = i * kQ12WadDirEntrySize;
+    write_u32_le_to(&dir, base + 0, d.file_pos);
+    write_u32_le_to(&dir, base + 4, d.disk_size);
+    write_u32_le_to(&dir, base + 8, d.size);
+    dir[base + 12] = static_cast<char>(d.type);
+    dir[base + 13] = 0;
+    dir[base + 14] = 0;
+    dir[base + 15] = 0;
+    const QByteArray lump = d.lump_name_latin1.left(kWadNameBytes);
+    if (!lump.isEmpty()) {
+      std::memcpy(dir.data() + base + 16, lump.constData(), static_cast<size_t>(lump.size()));
+    }
+  }
+
+  if (out.write(dir) != dir.size()) {
+    if (error) {
+      *error = "Unable to write WAD2 directory.";
+    }
+    return false;
+  }
+
+  write_u32_le_to(&header, 4, static_cast<quint32>(dir_entries.size()));
+  write_u32_le_to(&header, 8, dir_offset);
+  if (!out.seek(0) || out.write(header) != header.size()) {
+    if (error) {
+      *error = "Unable to update WAD2 header.";
+    }
+    return false;
+  }
+
+  if (!out.commit()) {
+    if (error) {
+      *error = "Unable to finalize destination WAD2.";
+    }
+    return false;
+  }
+
+  return true;
 }
 
 bool WadArchive::load(const QString& path, QString* error) {

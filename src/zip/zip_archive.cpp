@@ -80,6 +80,51 @@ struct MemWriteCtx {
 	std::memcpy(out.data() + ofs, buf, static_cast<size_t>(to_copy));
 	return n;
 }
+
+[[nodiscard]] bool zip_path_starts_with(const QString& path, const QString& prefix) {
+	if (path.isEmpty() || prefix.isEmpty()) {
+		return false;
+	}
+#if defined(Q_OS_WIN)
+	return path.startsWith(prefix, Qt::CaseInsensitive);
+#else
+	return path.startsWith(prefix);
+#endif
+}
+
+[[nodiscard]] QString normalize_zip_dir_prefix(QString path) {
+	path = normalize_archive_entry_name(std::move(path));
+	if (!path.isEmpty() && !path.endsWith('/')) {
+		path += '/';
+	}
+	return path;
+}
+
+struct MzZipReaderGuard {
+	mz_zip_archive* zip = nullptr;
+	bool active = false;
+
+	~MzZipReaderGuard() {
+		if (active && zip) {
+			mz_zip_reader_end(zip);
+		}
+	}
+
+	void dismiss() { active = false; }
+};
+
+struct MzZipWriterGuard {
+	mz_zip_archive* zip = nullptr;
+	bool active = false;
+
+	~MzZipWriterGuard() {
+		if (active && zip) {
+			mz_zip_writer_end(zip);
+		}
+	}
+
+	void dismiss() { active = false; }
+};
 }  // namespace
 
 struct ZipArchive::ZipState {
@@ -297,6 +342,295 @@ bool ZipArchive::load(const QString& path, QString* error) {
 		*error = load_err.isEmpty() ? (dec_err.isEmpty() ? "Unable to load ZIP archive." : dec_err) : load_err;
 	}
 	return false;
+}
+
+bool ZipArchive::write_rebuilt(const QString& dest_path,
+                               const WritePlan& plan,
+                               bool quakelive_encrypt_pk3,
+                               QString* error) {
+	if (error) {
+		error->clear();
+	}
+
+	const QString abs = QFileInfo(dest_path).absoluteFilePath();
+	if (abs.isEmpty()) {
+		if (error) {
+			*error = "Invalid destination path.";
+		}
+		return false;
+	}
+
+	QSet<QString> deleted_files;
+	deleted_files.reserve(plan.deleted_files.size());
+	for (const QString& file_name : plan.deleted_files) {
+		const QString normalized = normalize_entry_name(file_name);
+		if (!normalized.isEmpty()) {
+			deleted_files.insert(normalized);
+		}
+	}
+
+	QVector<QString> deleted_dirs;
+	deleted_dirs.reserve(plan.deleted_dir_prefixes.size());
+	for (const QString& dir_name : plan.deleted_dir_prefixes) {
+		const QString normalized = normalize_zip_dir_prefix(dir_name);
+		if (!normalized.isEmpty()) {
+			deleted_dirs.push_back(normalized);
+		}
+	}
+
+	QSet<QString> replaced_entries;
+	replaced_entries.reserve(plan.replaced_entries.size());
+	for (const QString& name : plan.replaced_entries) {
+		const QString normalized = normalize_entry_name(name);
+		if (!normalized.isEmpty()) {
+			replaced_entries.insert(normalized);
+		}
+	}
+
+	const auto is_deleted_path = [&](const QString& path_in) -> bool {
+		const QString path = normalize_entry_name(path_in);
+		if (path.isEmpty()) {
+			return false;
+		}
+		if (deleted_files.contains(path)) {
+			return true;
+		}
+		for (const QString& dir_prefix : deleted_dirs) {
+			if (zip_path_starts_with(path, dir_prefix)) {
+				return true;
+			}
+		}
+		return false;
+	};
+
+	const auto set_error = [&](const QString& message) {
+		if (error) {
+			*error = message;
+		}
+	};
+
+	QFile src_file;
+	mz_zip_archive src_zip{};
+	bool have_src_zip = false;
+	MzZipReaderGuard src_guard{&src_zip, false};
+
+	if (!plan.source_zip_path.isEmpty()) {
+		src_file.setFileName(plan.source_zip_path);
+		if (!src_file.open(QIODevice::ReadOnly)) {
+			set_error("Unable to open source ZIP for reading.");
+			return false;
+		}
+		mz_zip_zero_struct(&src_zip);
+		src_zip.m_pRead = mz_read_qiodevice;
+		src_zip.m_pNeeds_keepalive = mz_keepalive_qiodevice;
+		src_zip.m_pIO_opaque = &src_file;
+		const qint64 src_size = src_file.size();
+		if (src_size < 0 || !mz_zip_reader_init(&src_zip, static_cast<mz_uint64>(src_size), 0)) {
+			const mz_zip_error zerr = mz_zip_get_last_error(&src_zip);
+			const char* msg = mz_zip_get_error_string(zerr);
+			set_error(msg ? QString("Unable to read source ZIP (%1).").arg(QString::fromLatin1(msg)) : "Unable to read source ZIP.");
+			src_file.close();
+			return false;
+		}
+		src_guard.active = true;
+		have_src_zip = true;
+	}
+
+	QTemporaryFile temp_zip;
+	temp_zip.setAutoRemove(true);
+	if (!temp_zip.open()) {
+		set_error("Unable to create temporary ZIP for writing.");
+		return false;
+	}
+
+	mz_zip_archive out_zip{};
+	mz_zip_zero_struct(&out_zip);
+	out_zip.m_pWrite = mz_write_qiodevice;
+	out_zip.m_pNeeds_keepalive = mz_keepalive_qiodevice;
+	out_zip.m_pIO_opaque = &temp_zip;
+
+	if (!mz_zip_writer_init(&out_zip, 0)) {
+		const mz_zip_error zerr = mz_zip_get_last_error(&out_zip);
+		const char* msg = mz_zip_get_error_string(zerr);
+		set_error(msg ? QString("Unable to initialize ZIP writer (%1).").arg(QString::fromLatin1(msg)) : "Unable to initialize ZIP writer.");
+		return false;
+	}
+	MzZipWriterGuard out_guard{&out_zip, true};
+
+	if (have_src_zip) {
+		const mz_uint file_count = mz_zip_reader_get_num_files(&src_zip);
+		for (mz_uint i = 0; i < file_count; ++i) {
+			mz_zip_archive_file_stat st{};
+			if (!mz_zip_reader_file_stat(&src_zip, i, &st)) {
+				continue;
+			}
+			QString name = QString::fromUtf8(st.m_filename);
+			name = normalize_entry_name(name);
+			if (name.isEmpty()) {
+				continue;
+			}
+			if (st.m_is_directory && !name.endsWith('/')) {
+				name += '/';
+			}
+			if (is_deleted_path(name)) {
+				continue;
+			}
+			if (replaced_entries.contains(name)) {
+				continue;
+			}
+			if (!is_safe_archive_entry_name(name)) {
+				set_error(QString("Refusing to save unsafe entry: %1").arg(name));
+				return false;
+			}
+
+			if (!mz_zip_writer_add_from_zip_reader(&out_zip, &src_zip, i)) {
+				const mz_zip_error zerr = mz_zip_get_last_error(&out_zip);
+				const char* msg = mz_zip_get_error_string(zerr);
+				set_error(msg ? QString("Unable to copy ZIP entry (%1).").arg(QString::fromLatin1(msg)) : "Unable to copy ZIP entry.");
+				return false;
+			}
+		}
+	}
+
+	QSet<QString> explicit_dirs_seen;
+	explicit_dirs_seen.reserve(plan.explicit_directories.size());
+	for (const QString& dir_path_in : plan.explicit_directories) {
+		QString name = normalize_zip_dir_prefix(dir_path_in);
+		if (name.isEmpty()) {
+			continue;
+		}
+		if (explicit_dirs_seen.contains(name)) {
+			continue;
+		}
+		explicit_dirs_seen.insert(name);
+		if (is_deleted_path(name)) {
+			continue;
+		}
+		if (!is_safe_archive_entry_name(name)) {
+			set_error(QString("Refusing to save unsafe directory entry: %1").arg(name));
+			return false;
+		}
+
+		const QByteArray name_utf8 = name.toUtf8();
+		if (!mz_zip_writer_add_mem_ex(&out_zip, name_utf8.constData(), "", 0, nullptr, 0, 0, 0, 0)) {
+			const mz_zip_error zerr = mz_zip_get_last_error(&out_zip);
+			const char* msg = mz_zip_get_error_string(zerr);
+			set_error(msg ? QString("Unable to add directory entry (%1).").arg(QString::fromLatin1(msg)) : "Unable to add directory entry.");
+			return false;
+		}
+	}
+
+	for (const DiskFile& file : plan.disk_files) {
+		const QString name = normalize_entry_name(file.archive_name);
+		if (name.isEmpty()) {
+			continue;
+		}
+		if (is_deleted_path(name)) {
+			continue;
+		}
+		if (!is_safe_archive_entry_name(name)) {
+			set_error(QString("Refusing to save unsafe entry: %1").arg(name));
+			return false;
+		}
+
+		QFile in(file.source_path);
+		if (!in.open(QIODevice::ReadOnly)) {
+			set_error(QString("Unable to open file: %1").arg(file.source_path));
+			return false;
+		}
+
+		const qint64 size = in.size();
+		if (size < 0) {
+			set_error(QString("Unable to read file size: %1").arg(file.source_path));
+			return false;
+		}
+
+		const QByteArray name_utf8 = name.toUtf8();
+		MZ_TIME_T mtime = 0;
+		const MZ_TIME_T* mtime_ptr = nullptr;
+		if (file.mtime_utc_secs > 0) {
+			mtime = static_cast<MZ_TIME_T>(file.mtime_utc_secs);
+			mtime_ptr = &mtime;
+		}
+
+		if (!mz_zip_writer_add_read_buf_callback(&out_zip,
+		                                         name_utf8.constData(),
+		                                         mz_read_qiodevice,
+		                                         &in,
+		                                         static_cast<mz_uint64>(size),
+		                                         mtime_ptr,
+		                                         nullptr,
+		                                         0,
+		                                         MZ_DEFAULT_COMPRESSION,
+		                                         nullptr,
+		                                         0,
+		                                         nullptr,
+		                                         0)) {
+			const mz_zip_error zerr = mz_zip_get_last_error(&out_zip);
+			const char* msg = mz_zip_get_error_string(zerr);
+			set_error(msg ? QString("Unable to add file to ZIP (%1).").arg(QString::fromLatin1(msg)) : "Unable to add file to ZIP.");
+			return false;
+		}
+	}
+
+	if (!mz_zip_writer_finalize_archive(&out_zip)) {
+		const mz_zip_error zerr = mz_zip_get_last_error(&out_zip);
+		const char* msg = mz_zip_get_error_string(zerr);
+		set_error(msg ? QString("Unable to finalize ZIP (%1).").arg(QString::fromLatin1(msg)) : "Unable to finalize ZIP.");
+		return false;
+	}
+
+	mz_zip_writer_end(&out_zip);
+	out_guard.dismiss();
+
+	if (have_src_zip) {
+		mz_zip_reader_end(&src_zip);
+		src_guard.dismiss();
+		src_file.close();
+	}
+
+	if (!temp_zip.flush() || !temp_zip.seek(0)) {
+		set_error("Unable to prepare ZIP output for commit.");
+		return false;
+	}
+
+	QSaveFile out(abs);
+	if (!out.open(QIODevice::WriteOnly)) {
+		set_error("Unable to create destination archive.");
+		return false;
+	}
+
+	if (quakelive_encrypt_pk3) {
+		QString enc_err;
+		if (!quakelive_pk3_xor_stream(temp_zip, out, &enc_err)) {
+			set_error(enc_err.isEmpty() ? "Unable to encrypt Quake Live PK3." : enc_err);
+			return false;
+		}
+	} else {
+		QByteArray buf;
+		buf.resize(1 << 16);
+		for (;;) {
+			const qint64 got = temp_zip.read(buf.data(), buf.size());
+			if (got < 0) {
+				set_error("Unable to read temporary ZIP.");
+				return false;
+			}
+			if (got == 0) {
+				break;
+			}
+			if (out.write(buf.constData(), got) != got) {
+				set_error("Unable to write destination archive.");
+				return false;
+			}
+		}
+	}
+
+	if (!out.commit()) {
+		set_error("Unable to finalize destination archive.");
+		return false;
+	}
+
+	return true;
 }
 
 bool ZipArchive::read_entry_bytes(const QString& name, QByteArray* out, QString* error, qint64 max_bytes) const {

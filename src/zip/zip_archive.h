@@ -3,6 +3,7 @@
 #include <QByteArray>
 #include <QFile>
 #include <QHash>
+#include <QSet>
 #include <QTemporaryFile>
 #include <QVector>
 #include <QString>
@@ -13,8 +14,28 @@
 
 class ZipArchive {
 public:
+  struct DiskFile {
+    QString archive_name;
+    QString source_path;
+    qint64 mtime_utc_secs = -1;
+  };
+
+  struct WritePlan {
+    // Optional readable ZIP path to clone preserved entries from.
+    QString source_zip_path;
+    QSet<QString> deleted_files;
+    QSet<QString> deleted_dir_prefixes;
+    QSet<QString> replaced_entries;
+    QVector<QString> explicit_directories;
+    QVector<DiskFile> disk_files;
+  };
+
   ~ZipArchive();
   bool load(const QString& path, QString* error);
+  static bool write_rebuilt(const QString& dest_path,
+                            const WritePlan& plan,
+                            bool quakelive_encrypt_pk3,
+                            QString* error);
 
   bool is_loaded() const { return loaded_; }
   QString path() const { return path_; }  // The user-visible archive path (may be encrypted).

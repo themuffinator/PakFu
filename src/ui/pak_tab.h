@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "archive/archive.h"
+#include "archive/archive_search_index.h"
 #include "game/game_set.h"
 
 class BreadcrumbBar;
@@ -25,6 +26,7 @@ class QAction;
 class QActionGroup;
 class QListWidget;
 class QListWidgetItem;
+class QLineEdit;
 class PreviewPane;
 enum class PreviewRenderer;
 class QStackedWidget;
@@ -143,6 +145,8 @@ private:
   void select_path(const QString& pak_path);
   void refresh_listing();
   void update_preview();
+  void update_search_index(qint64 fallback_mtime_utc_secs);
+  [[nodiscard]] bool is_search_active() const;
 	void select_adjacent_audio(int delta);
 	void select_adjacent_video(int delta);
   bool mount_wad_from_selected_file(const QString& pak_path, QString* error);
@@ -247,6 +251,7 @@ private:
   QAction* add_folder_action_ = nullptr;
   QAction* new_folder_action_ = nullptr;
   QAction* delete_action_ = nullptr;
+  QLineEdit* search_edit_ = nullptr;
 
   QAction* view_auto_action_ = nullptr;
   QAction* view_details_action_ = nullptr;
@@ -290,6 +295,8 @@ private:
   QSet<QString> virtual_dirs_;
   QSet<QString> deleted_files_;
   QSet<QString> deleted_dir_prefixes_;
+  ArchiveSearchIndex search_index_;
+  QString search_query_;
   ViewMode view_mode_ = ViewMode::Auto;
   ViewMode effective_view_ = ViewMode::Details;
   bool dirty_ = false;

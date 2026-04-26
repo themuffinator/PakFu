@@ -42,6 +42,11 @@ Required assets per platform:
 
 Current updater behavior prefers installer assets and falls back to portable
 archives when needed.
+Runtime update checks are asynchronous and do not block the main window from
+opening. When the GUI updater downloads an asset, it first downloads the
+matching `pakfu-<version>-release-manifest.json` asset and verifies the selected
+package by exact asset name, byte size, and SHA-256 before opening the downloaded
+folder or launching an installer handoff.
 
 Linux portable archives are produced from the same deployed AppDir used for the
 AppImage, so Qt and other runtime libraries are bundled in both Linux assets.

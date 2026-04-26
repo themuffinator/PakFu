@@ -1,6 +1,7 @@
 #include "update_service.h"
 
 #include <QApplication>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QCheckBox>
@@ -110,6 +111,23 @@ bool is_installable_name(const QString& name) {
 #else
   return lower.endsWith(".appimage");
 #endif
+}
+
+bool is_release_manifest_name(const QString& name) {
+  const QString lower = name.toLower();
+  return lower.endsWith(".json") && lower.contains("release-manifest");
+}
+
+bool looks_like_sha256(const QString& text) {
+  if (text.size() != 64) {
+    return false;
+  }
+  for (const QChar ch : text) {
+    if (!ch.isDigit() && (ch.toLower() < 'a' || ch.toLower() > 'f')) {
+      return false;
+    }
+  }
+  return true;
 }
 
 }  // namespace
@@ -314,6 +332,12 @@ void UpdateService::abort_checks() {
     check_reply_->abort();
     check_reply_->deleteLater();
     check_reply_ = nullptr;
+  }
+  if (manifest_reply_) {
+    manifest_reply_->disconnect(this);
+    manifest_reply_->abort();
+    manifest_reply_->deleteLater();
+    manifest_reply_ = nullptr;
   }
   if (download_reply_) {
     download_reply_->disconnect(this);
@@ -529,6 +553,7 @@ UpdateInfo UpdateService::parse_release_object(const QJsonObject& release_obj) c
   info.prerelease = release_obj.value("prerelease").toBool();
   const QJsonArray assets = release_obj.value("assets").toArray();
   info.asset_url = select_asset(assets, &info.asset_name, &info.asset_size);
+  info.manifest_url = select_manifest_asset(assets, &info.manifest_name, &info.manifest_size);
   return info;
 }
 
@@ -566,7 +591,13 @@ QUrl UpdateService::select_asset(const QJsonArray& assets,
     const QJsonObject asset = value.toObject();
     const QString name = asset.value("name").toString();
     const QUrl url = QUrl(asset.value("browser_download_url").toString());
+    if (name.isEmpty() || !url.isValid() || is_release_manifest_name(name)) {
+      continue;
+    }
     const int score = score_asset_name(name);
+    if (score <= 0) {
+      continue;
+    }
     if (score > best_score) {
       best_score = score;
       best_url = url;
@@ -580,6 +611,38 @@ QUrl UpdateService::select_asset(const QJsonArray& assets,
   }
   if (asset_size) {
     *asset_size = best_size;
+  }
+  return best_url;
+}
+
+QUrl UpdateService::select_manifest_asset(const QJsonArray& assets,
+                                          QString* manifest_name,
+                                          qint64* manifest_size) const {
+  QUrl best_url;
+  QString best_name;
+  qint64 best_size = 0;
+
+  for (const QJsonValue& value : assets) {
+    if (!value.isObject()) {
+      continue;
+    }
+    const QJsonObject asset = value.toObject();
+    const QString name = asset.value("name").toString();
+    const QUrl url = QUrl(asset.value("browser_download_url").toString());
+    if (!is_release_manifest_name(name) || !url.isValid()) {
+      continue;
+    }
+    best_url = url;
+    best_name = name;
+    best_size = asset.value("size").toVariant().toLongLong();
+    break;
+  }
+
+  if (manifest_name) {
+    *manifest_name = best_name;
+  }
+  if (manifest_size) {
+    *manifest_size = best_size;
   }
   return best_url;
 }
@@ -719,6 +782,34 @@ void UpdateService::begin_download(const UpdateInfo& info, QWidget* parent) {
     return;
   }
 
+  if (!info.manifest_url.isValid()) {
+    show_error_message(parent,
+                       "This release does not include a verification manifest. PakFu will not download or launch "
+                       "updates that cannot be checked against the release manifest.");
+    return;
+  }
+
+  parent_window_ = parent;
+  pending_download_info_ = info;
+  download_expected_sha256_.clear();
+  download_expected_size_ = -1;
+
+  if (manifest_reply_) {
+    manifest_reply_->disconnect(this);
+    manifest_reply_->abort();
+    manifest_reply_->deleteLater();
+    manifest_reply_ = nullptr;
+  }
+
+  QNetworkRequest request(info.manifest_url);
+  request.setRawHeader("Accept", "application/json,application/octet-stream");
+  request.setRawHeader("User-Agent", kUserAgent);
+  request.setTransferTimeout(15000);
+  manifest_reply_ = network_->get(request);
+  connect(manifest_reply_, &QNetworkReply::finished, this, &UpdateService::on_manifest_finished);
+}
+
+void UpdateService::begin_asset_download(const UpdateInfo& info, QWidget* parent) {
   const QString temp_dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
   if (temp_dir.isEmpty()) {
     show_error_message(parent, "No temporary directory is available to store the update.");
@@ -766,6 +857,43 @@ void UpdateService::begin_download(const UpdateInfo& info, QWidget* parent) {
   connect(progress_dialog_, &QProgressDialog::canceled, download_reply_, &QNetworkReply::abort);
 }
 
+void UpdateService::on_manifest_finished() {
+  auto* reply = qobject_cast<QNetworkReply*>(sender());
+  if (!reply) {
+    show_error_message(parent_window_, "Release manifest verification failed.");
+    return;
+  }
+  if (reply != manifest_reply_) {
+    reply->deleteLater();
+    return;
+  }
+  manifest_reply_ = nullptr;
+  QScopedPointer<QNetworkReply, QScopedPointerDeleteLater> reply_guard(reply);
+
+  if (reply->error() != QNetworkReply::NoError) {
+    show_error_message(parent_window_, "Release manifest could not be downloaded, so the update was not started.");
+    return;
+  }
+
+  QString expected_sha256;
+  qint64 expected_size = -1;
+  QString parse_err;
+  if (!parse_manifest_for_download(reply->readAll(),
+                                   pending_download_info_,
+                                   &expected_sha256,
+                                   &expected_size,
+                                   &parse_err)) {
+    show_error_message(parent_window_,
+                       parse_err.isEmpty() ? "Release manifest did not contain a valid checksum for this update."
+                                           : parse_err);
+    return;
+  }
+
+  download_expected_sha256_ = expected_sha256;
+  download_expected_size_ = expected_size;
+  begin_asset_download(pending_download_info_, parent_window_);
+}
+
 void UpdateService::on_download_ready_read() {
   auto* reply = qobject_cast<QNetworkReply*>(sender());
   if (reply && reply == download_reply_ && download_file_) {
@@ -789,6 +917,155 @@ void UpdateService::on_download_progress(qint64 received, qint64 total) {
   }
 }
 
+bool UpdateService::parse_manifest_for_download(const QByteArray& payload,
+                                                const UpdateInfo& info,
+                                                QString* expected_sha256,
+                                                qint64* expected_size,
+                                                QString* error) const {
+  if (expected_sha256) {
+    expected_sha256->clear();
+  }
+  if (expected_size) {
+    *expected_size = -1;
+  }
+
+  QJsonParseError parse_error{};
+  const QJsonDocument doc = QJsonDocument::fromJson(payload, &parse_error);
+  if (parse_error.error != QJsonParseError::NoError || !doc.isObject()) {
+    if (error) {
+      *error = "Release manifest could not be parsed.";
+    }
+    return false;
+  }
+
+  const QJsonObject root = doc.object();
+  const QString product = root.value("product").toString().trimmed();
+  if (!product.isEmpty() && product.compare("pakfu", Qt::CaseInsensitive) != 0) {
+    if (error) {
+      *error = "Release manifest is not for PakFu.";
+    }
+    return false;
+  }
+
+  const QString manifest_version = normalize_version(root.value("version").toString());
+  const QString release_version = normalize_version(info.version);
+  if (!manifest_version.isEmpty() && !release_version.isEmpty() &&
+      manifest_version.compare(release_version, Qt::CaseInsensitive) != 0) {
+    if (error) {
+      *error = "Release manifest version does not match the selected update.";
+    }
+    return false;
+  }
+
+  const QJsonArray assets = root.value("assets").toArray();
+  for (const QJsonValue& value : assets) {
+    if (!value.isObject()) {
+      continue;
+    }
+    const QJsonObject asset = value.toObject();
+    const QString name = asset.value("name").toString();
+    if (name.compare(info.asset_name, Qt::CaseSensitive) != 0) {
+      continue;
+    }
+
+    const QString sha256 = asset.value("sha256").toString().trimmed().toLower();
+    if (!looks_like_sha256(sha256)) {
+      if (error) {
+        *error = QString("Release manifest entry for %1 does not include a valid SHA-256 checksum.").arg(name);
+      }
+      return false;
+    }
+
+    const qint64 size = asset.value("size").toVariant().toLongLong();
+    if (size <= 0) {
+      if (error) {
+        *error = QString("Release manifest entry for %1 does not include a valid size.").arg(name);
+      }
+      return false;
+    }
+
+    if (expected_sha256) {
+      *expected_sha256 = sha256;
+    }
+    if (expected_size) {
+      *expected_size = size;
+    }
+    if (error) {
+      error->clear();
+    }
+    return true;
+  }
+
+  if (error) {
+    *error = QString("Release manifest does not contain the selected asset: %1").arg(info.asset_name);
+  }
+  return false;
+}
+
+bool UpdateService::verify_downloaded_file(QString* error) const {
+  const QFileInfo info(download_path_);
+  if (!info.exists() || !info.isFile()) {
+    if (error) {
+      *error = "Downloaded update file is missing.";
+    }
+    return false;
+  }
+
+  if (download_expected_size_ > 0 && info.size() != download_expected_size_) {
+    if (error) {
+      *error = QString("Downloaded update size mismatch. Expected %1 bytes, got %2 bytes.")
+                 .arg(download_expected_size_)
+                 .arg(info.size());
+    }
+    return false;
+  }
+
+  if (!looks_like_sha256(download_expected_sha256_)) {
+    if (error) {
+      *error = "No valid expected SHA-256 checksum is available for the downloaded update.";
+    }
+    return false;
+  }
+
+  QFile file(download_path_);
+  if (!file.open(QIODevice::ReadOnly)) {
+    if (error) {
+      *error = "Unable to open downloaded update for verification.";
+    }
+    return false;
+  }
+
+  QCryptographicHash hash(QCryptographicHash::Sha256);
+  QByteArray buffer;
+  buffer.resize(1024 * 1024);
+  for (;;) {
+    const qint64 got = file.read(buffer.data(), buffer.size());
+    if (got < 0) {
+      if (error) {
+        *error = "Unable to read downloaded update for verification.";
+      }
+      return false;
+    }
+    if (got == 0) {
+      break;
+    }
+    hash.addData(QByteArrayView(buffer.constData(), static_cast<qsizetype>(got)));
+  }
+
+  const QString actual = QString::fromLatin1(hash.result().toHex());
+  if (actual.compare(download_expected_sha256_, Qt::CaseInsensitive) != 0) {
+    if (error) {
+      *error = "Downloaded update SHA-256 checksum does not match the release manifest.";
+    }
+    return false;
+  }
+
+  if (error) {
+    error->clear();
+  }
+  return true;
+}
+
 void UpdateService::on_download_finished() {
   auto* reply = qobject_cast<QNetworkReply*>(sender());
   if (!reply) {
@@ -799,6 +1076,7 @@ void UpdateService::on_download_finished() {
     return;
   }
   download_reply_ = nullptr;
+  QScopedPointer<QNetworkReply, QScopedPointerDeleteLater> reply_guard(reply);
 
   if (progress_dialog_) {
     progress_dialog_->close();
@@ -812,6 +1090,7 @@ void UpdateService::on_download_finished() {
       download_file_->cancelWriting();
       download_file_.reset();
     }
+    QFile::remove(download_path_);
     return;
   }
 
@@ -823,6 +1102,16 @@ void UpdateService::on_download_finished() {
       return;
     }
     download_file_.reset();
+  }
+
+  QString verify_err;
+  if (!verify_downloaded_file(&verify_err)) {
+    QFile::remove(download_path_);
+    show_error_message(parent_window_,
+                       verify_err.isEmpty()
+                         ? "Downloaded update could not be verified against the release manifest."
+                         : verify_err);
+    return;
   }
 
   if (!download_installable_) {
@@ -837,8 +1126,6 @@ void UpdateService::on_download_finished() {
   if (!launch_installer(download_path_, parent_window_)) {
     show_error_message(parent_window_, "Downloaded update could not be launched.");
   }
-
-  reply->deleteLater();
 }
 
 bool UpdateService::launch_installer(const QString& file_path, QWidget* parent) const {

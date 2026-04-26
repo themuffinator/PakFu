@@ -166,8 +166,20 @@ Core actions:
 - `-l, --list` : list entries.
 - `-i, --info` : show archive summary.
 - `-x, --extract` : extract entries (`-o, --output <dir>` optional).
+- `--save-as <archive>` : rebuild selected entries into a new archive.
+- `--convert <format>` : convert selected images to a supported image-writer output (`png`, `jpg`, `bmp`, `gif`, `tga`, `tiff`, `pcx`, `wal`, `swl`, `mip`, `lmp`, `ftx`, `dds`) or IDWAV audio to `wav`.
+- `--preview-export <entry>` : export the CLI preview rendition of one entry; images write an image file, text and binary entries write bytes.
 - `--check-updates` : query GitHub Releases.
 - `--qa-practical` : run practical archive-ops smoke QA (selection/marquee/modifier checks).
+
+Archive selection and mounting:
+- `--entry <path>` : limit `--list`, `--extract`, `--save-as`, or `--convert` to an exact archive entry. Repeat for multiple entries.
+- `--prefix <dir>` : limit `--list`, `--extract`, `--save-as`, or `--convert` to entries under a directory prefix. Repeat for multiple prefixes.
+- `--mount <entry>` : mount a nested archive entry first, then run the requested action against the mounted archive.
+
+Save-as options:
+- `--format <pak|sin|zip|pk3|pk4|pkz|wad|wad2>` : choose the output archive format. If omitted, PakFu infers it from `--save-as`.
+- `--quakelive-encrypt-pk3` : write ZIP-family `--save-as` output with Quake Live Beta PK3 encryption.
 
 Installation profile actions:
 - `--list-game-installs`
@@ -188,6 +200,11 @@ Examples:
 ./builddir/src/pakfu --cli --info path/to/archive.pk3
 ./builddir/src/pakfu --cli --list path/to/archive.wad
 ./builddir/src/pakfu --cli --extract -o out_dir path/to/archive.resources
+./builddir/src/pakfu --cli --extract --prefix maps -o maps_out path/to/archive.pk3
+./builddir/src/pakfu --cli --save-as mod_subset.pk3 --format pk3 --prefix textures path/to/archive.pk3
+./builddir/src/pakfu --cli --convert png --prefix textures -o converted_textures path/to/archive.pk3
+./builddir/src/pakfu --cli --preview-export gfx/conback.lmp -o previews path/to/pak0.pak
+./builddir/src/pakfu --cli --mount nested/maps.pk3 --list path/to/archive.pk3
 ./builddir/src/pakfu --cli --check-updates
 ./builddir/src/pakfu --cli --qa-practical
 ./builddir/src/pakfu --cli --list-game-installs
@@ -239,8 +256,10 @@ Selector support:
 
 ## Updates and Releases
 PakFu can check GitHub Releases at runtime and from CLI.
+GUI auto-checks run after the main window is shown, so network latency does not block startup.
 
 GUI updater install handoff:
+- Downloaded update assets are verified against the release manifest (`size` and `sha256`) before PakFu opens the download folder or launches an installer.
 - Windows: `Install and Restart` waits for installer completion, then relaunches PakFu (preferring the installer-managed `%LOCALAPPDATA%\PakFu\pakfu.exe` after MSI updates).
 - macOS/Linux: PakFu exits and starts the downloaded installer artifact (`.pkg` / `.AppImage`) after shutdown.
 

@@ -92,10 +92,6 @@
 #include "formats/quake3_skin.h"
 #include "formats/quake3_shader.h"
 #include "formats/sprite_loader.h"
-#ifndef MINIZ_NO_ZLIB_COMPATIBLE_NAMES
-#define MINIZ_NO_ZLIB_COMPATIBLE_NAMES
-#endif
-#include "third_party/miniz/miniz.h"
 #include "pak/pak_archive.h"
 #include "platform/file_associations.h"
 #include "ui/breadcrumb_bar.h"
@@ -104,18 +100,29 @@
 #include "ui/preview_pane.h"
 #include "ui/preview_renderer.h"
 #include "ui/ui_icons.h"
-#include "zip/quakelive_pk3_crypto.h"
+#include "wad/wad_archive.h"
+#include "zip/zip_archive.h"
 
 namespace {
 struct ChildListing {
   QString name;
+  QString pak_path;
   QString source_path;
+  QString scope_label;
+  QStringList dependency_hints;
   bool is_dir = false;
   quint32 size = 0;
   qint64 mtime_utc_secs = -1;
   bool is_added = false;
   bool is_overridden = false;
 };
+
+QString child_display_label(const ChildListing& child) {
+  if (!child.is_dir) {
+    return child.name;
+  }
+  return child.name.endsWith('/') ? child.name : (child.name + "/");
+}
 
 QString normalize_pak_path(QString path);
 bool pak_path_starts_with(const QString& path, const QString& prefix);
@@ -124,35 +131,6 @@ bool is_wad_archive_ext(const QString& ext);
 bool is_mountable_archive_ext(const QString& ext);
 bool is_mountable_archive_file_name(const QString& name);
 bool copy_file_stream(const QString& src_path, const QString& dest_path, QString* error);
-
-[[nodiscard]] size_t mz_read_qfile(void* opaque, mz_uint64 file_ofs, void* buf, size_t n) {
-  auto* f = static_cast<QFile*>(opaque);
-  if (!f || !f->isOpen()) {
-    return 0;
-  }
-  if (!f->seek(static_cast<qint64>(file_ofs))) {
-    return 0;
-  }
-  const qint64 got = f->read(static_cast<char*>(buf), static_cast<qint64>(n));
-  return got > 0 ? static_cast<size_t>(got) : 0;
-}
-
-[[nodiscard]] size_t mz_write_qiodevice(void* opaque, mz_uint64 file_ofs, const void* buf, size_t n) {
-  auto* dev = static_cast<QIODevice*>(opaque);
-  if (!dev || !dev->isOpen()) {
-    return 0;
-  }
-  if (!dev->seek(static_cast<qint64>(file_ofs))) {
-    return 0;
-  }
-  const qint64 wrote = dev->write(static_cast<const char*>(buf), static_cast<qint64>(n));
-  return wrote > 0 ? static_cast<size_t>(wrote) : 0;
-}
-
-[[nodiscard]] mz_bool mz_keepalive_qiodevice(void* opaque) {
-  (void)opaque;
-  return MZ_TRUE;
-}
 
 QString format_size(quint32 size) {
   constexpr quint32 kKiB = 1024;
@@ -454,115 +432,6 @@ constexpr int kPakDirEntrySize = 64;
 constexpr int kPakNameBytes = 56;
 constexpr int kSinDirEntrySize = 128;
 constexpr int kSinNameBytes = 120;
-constexpr int kWadHeaderSize = 12;
-constexpr int kWadDirEntrySize = 32;
-constexpr int kWadNameBytes = 16;
-constexpr quint8 kWadTypeNone = 0;
-constexpr quint8 kWadTypeQpic = static_cast<quint8>('B');
-constexpr quint8 kWadTypeMiptexWad2 = static_cast<quint8>('D');
-constexpr quint8 kWadTypeLumpy = 64;
-
-[[nodiscard]] quint32 read_u32_le_from(const char* p) {
-  const quint32 b0 = static_cast<quint8>(p[0]);
-  const quint32 b1 = static_cast<quint8>(p[1]);
-  const quint32 b2 = static_cast<quint8>(p[2]);
-  const quint32 b3 = static_cast<quint8>(p[3]);
-  return (b0) | (b1 << 8) | (b2 << 16) | (b3 << 24);
-}
-
-[[nodiscard]] bool looks_like_qpic_lump_bytes(const QByteArray& bytes) {
-  if (bytes.size() < 8) {
-    return false;
-  }
-  const quint32 w = read_u32_le_from(bytes.constData() + 0);
-  const quint32 h = read_u32_le_from(bytes.constData() + 4);
-  if (w == 0 || h == 0) {
-    return false;
-  }
-  constexpr quint32 kMaxDim = 16384;
-  if (w > kMaxDim || h > kMaxDim) {
-    return false;
-  }
-  const quint64 want = 8ULL + static_cast<quint64>(w) * static_cast<quint64>(h);
-  return want == static_cast<quint64>(bytes.size());
-}
-
-bool derive_wad2_lump_name(const QString& entry_name_in, QString* out_lump_name, QString* error) {
-  if (error) {
-    error->clear();
-  }
-
-  const QString entry_name = normalize_pak_path(entry_name_in);
-  if (entry_name.isEmpty()) {
-    if (error) {
-      *error = "WAD entry name is empty.";
-    }
-    return false;
-  }
-  if (entry_name.contains('/')) {
-    if (error) {
-      *error = QString("WAD entries cannot contain folders: %1").arg(entry_name);
-    }
-    return false;
-  }
-
-  QString lump_name = entry_name;
-  const int dot = lump_name.lastIndexOf('.');
-  if (dot > 0) {
-    const QString ext = lump_name.mid(dot + 1).toLower();
-    if (ext == "mip" || ext == "lmp") {
-      lump_name = lump_name.left(dot);
-    }
-  }
-
-  if (lump_name.isEmpty()) {
-    if (error) {
-      *error = QString("WAD entry has an invalid lump name: %1").arg(entry_name);
-    }
-    return false;
-  }
-
-  const QByteArray lump_latin1 = lump_name.toLatin1();
-  if (QString::fromLatin1(lump_latin1) != lump_name) {
-    if (error) {
-      *error = QString("WAD entry name must be Latin-1: %1").arg(entry_name);
-    }
-    return false;
-  }
-  if (lump_latin1.size() > kWadNameBytes) {
-    if (error) {
-      *error = QString("WAD lump names are limited to %1 bytes: %2").arg(kWadNameBytes).arg(lump_name);
-    }
-    return false;
-  }
-
-  if (out_lump_name) {
-    *out_lump_name = lump_name;
-  }
-  return true;
-}
-
-[[nodiscard]] quint8 derive_wad2_lump_type(const QString& entry_name_in,
-                                           const QString& lump_name,
-                                           const QByteArray* bytes = nullptr) {
-  const QString lower = normalize_pak_path(entry_name_in).toLower();
-  if (lower.endsWith(".mip")) {
-    return kWadTypeMiptexWad2;
-  }
-  if (lower.endsWith(".lmp")) {
-    if (lump_name.compare("palette", Qt::CaseInsensitive) == 0) {
-      return kWadTypeLumpy;
-    }
-    if (bytes && looks_like_qpic_lump_bytes(*bytes)) {
-      return kWadTypeQpic;
-    }
-    return kWadTypeQpic;
-  }
-  if (bytes && looks_like_qpic_lump_bytes(*bytes)) {
-    return kWadTypeQpic;
-  }
-  return kWadTypeNone;
-}
 
 void write_u32_le(QByteArray* bytes, int offset, quint32 value) {
   if (!bytes || offset < 0 || offset + 4 > bytes->size()) {
@@ -867,6 +736,31 @@ QList<QUrl> local_urls_from_mime(const QMimeData* mime) {
   }
 #endif
 
+  return out;
+}
+
+QVector<ChildListing> search_results_to_children(const QVector<ArchiveSearchIndex::Item>& results) {
+  QVector<ChildListing> out;
+  out.reserve(results.size());
+  for (const ArchiveSearchIndex::Item& result : results) {
+    QString display = normalize_pak_path(result.path);
+    if (result.is_dir && display.endsWith('/')) {
+      display.chop(1);
+    }
+
+    ChildListing child;
+    child.name = display;
+    child.pak_path = result.path;
+    child.source_path = result.source_path;
+    child.scope_label = result.scope_label;
+    child.dependency_hints = result.dependency_hints;
+    child.is_dir = result.is_dir;
+    child.size = result.size;
+    child.mtime_utc_secs = result.mtime_utc_secs;
+    child.is_added = result.is_added;
+    child.is_overridden = result.is_overridden;
+    out.push_back(std::move(child));
+  }
   return out;
 }
 
@@ -4483,6 +4377,23 @@ void PakTab::build_ui() {
     }
   });
 
+  auto* find_sc = new QShortcut(QKeySequence::Find, this);
+  find_sc->setContext(Qt::WidgetWithChildrenShortcut);
+  connect(find_sc, &QShortcut::activated, this, [this]() {
+    if (search_edit_) {
+      search_edit_->setFocus(Qt::ShortcutFocusReason);
+      search_edit_->selectAll();
+    }
+  });
+
+  auto* clear_find_sc = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+  clear_find_sc->setContext(Qt::WidgetWithChildrenShortcut);
+  connect(clear_find_sc, &QShortcut::activated, this, [this]() {
+    if (search_edit_ && search_edit_->hasFocus() && !search_edit_->text().isEmpty()) {
+      search_edit_->clear();
+    }
+  });
+
   update_view_controls();
 }
 
@@ -4561,6 +4472,20 @@ void PakTab::setup_actions() {
 
   view_button_->setMenu(view_menu);
   toolbar_->addWidget(view_button_);
+
+  toolbar_->addSeparator();
+
+  search_edit_ = new QLineEdit(toolbar_);
+  search_edit_->setClearButtonEnabled(true);
+  search_edit_->setPlaceholderText("Search paths");
+  search_edit_->setMinimumWidth(180);
+  search_edit_->setMaximumWidth(320);
+  search_edit_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+  toolbar_->addWidget(search_edit_);
+  connect(search_edit_, &QLineEdit::textChanged, this, [this](const QString& text) {
+    search_query_ = text;
+    refresh_listing();
+  });
 }
 
 void PakTab::show_context_menu(QWidget* view, const QPoint& pos) {
@@ -7272,7 +7197,7 @@ bool PakTab::add_file_mapping(const QString& pak_name_in, const QString& source_
   if (archive_.is_loaded() && archive_.format() == Archive::Format::Wad && !is_wad_mounted()) {
     QString lump_name;
     QString wad_err;
-    if (!derive_wad2_lump_name(pak_name, &lump_name, &wad_err)) {
+    if (!WadArchive::derive_wad2_lump_name(pak_name, &lump_name, &wad_err)) {
       if (error) {
         *error = wad_err.isEmpty() ? QString("Invalid WAD entry name: %1").arg(pak_name) : wad_err;
       }
@@ -8079,63 +8004,18 @@ bool PakTab::write_wad2_file(const QString& dest_path, QString* error) {
     return false;
   }
 
-  struct WadWriteItem {
-    QString entry_name;
-    QString source_path;
-    bool from_archive = false;
-    QString lump_name;
-  };
-
-  QVector<WadWriteItem> items;
-  items.reserve((archive_.is_loaded() ? archive_.entries().size() : 0) + added_files_.size());
-
-  QHash<QString, QString> lump_owner_by_key;
-  lump_owner_by_key.reserve(items.capacity());
-
-  const auto add_item = [&](const QString& name_in, const QString& source_path, bool from_archive) -> bool {
-    const QString entry_name = normalize_pak_path(name_in);
-    if (entry_name.isEmpty() || is_deleted_path(entry_name)) {
-      return true;
-    }
-    if (!is_safe_entry_name(entry_name)) {
-      if (error) {
-        *error = QString("Refusing to save unsafe entry: %1").arg(entry_name);
-      }
-      return false;
-    }
-
-    QString lump_name;
-    QString lump_err;
-    if (!derive_wad2_lump_name(entry_name, &lump_name, &lump_err)) {
-      if (error) {
-        *error = lump_err.isEmpty() ? QString("Invalid WAD entry name: %1").arg(entry_name) : lump_err;
-      }
-      return false;
-    }
-
-    const QString key = lump_name.toLower();
-    const QString existing = lump_owner_by_key.value(key);
-    if (!existing.isEmpty()) {
-      if (error) {
-        *error = QString("Duplicate WAD lump name after normalization: %1 (from %2 and %3)")
-                   .arg(lump_name, existing, entry_name);
-      }
-      return false;
-    }
-    lump_owner_by_key.insert(key, entry_name);
-
-    WadWriteItem item;
-    item.entry_name = entry_name;
-    item.source_path = source_path;
-    item.from_archive = from_archive;
-    item.lump_name = lump_name;
-    items.push_back(std::move(item));
-    return true;
-  };
+  WadArchive::WritePlan plan;
+  plan.entries.reserve((archive_.is_loaded() ? archive_.entries().size() : 0) + added_files_.size());
 
   const bool have_src_dir = archive_.is_loaded() &&
     archive_.format() == Archive::Format::Directory &&
     !archive_.path().isEmpty();
+  const bool have_src_wad = archive_.is_loaded() &&
+    archive_.format() == Archive::Format::Wad &&
+    !archive_.path().isEmpty();
+  if (have_src_wad) {
+    plan.source_wad_path = archive_.path();
+  }
 
   if (archive_.is_loaded()) {
     const QDir root_dir(archive_.path());
@@ -8144,200 +8024,25 @@ bool PakTab::write_wad2_file(const QString& dest_path, QString* error) {
       if (name.isEmpty() || is_deleted_path(name) || added_index_by_name_.contains(name)) {
         continue;
       }
+      WadArchive::WriteEntry item;
+      item.entry_name = name;
       if (have_src_dir) {
-        const QString source_path = root_dir.filePath(QString(name).replace('/', QDir::separator()));
-        if (!add_item(name, source_path, false)) {
-          return false;
-        }
+        item.source_path = root_dir.filePath(QString(name).replace('/', QDir::separator()));
       } else {
-        if (!add_item(name, QString(), true)) {
-          return false;
-        }
+        item.from_source_wad = true;
       }
+      plan.entries.push_back(std::move(item));
     }
   }
 
   for (const AddedFile& f : added_files_) {
-    if (!add_item(f.pak_name, f.source_path, false)) {
-      return false;
-    }
+    WadArchive::WriteEntry item;
+    item.entry_name = f.pak_name;
+    item.source_path = f.source_path;
+    plan.entries.push_back(std::move(item));
   }
 
-  QSaveFile out(abs);
-  if (!out.open(QIODevice::WriteOnly)) {
-    if (error) {
-      *error = "Unable to create destination WAD.";
-    }
-    return false;
-  }
-
-  QByteArray header(kWadHeaderSize, '\0');
-  std::memcpy(header.data(), "WAD2", 4);
-  if (out.write(header) != header.size()) {
-    if (error) {
-      *error = "Unable to write WAD2 header.";
-    }
-    return false;
-  }
-
-  struct WadDirEntry {
-    quint32 file_pos = 0;
-    quint32 disk_size = 0;
-    quint32 size = 0;
-    quint8 type = 0;
-    QByteArray lump_name_latin1;
-  };
-
-  QVector<WadDirEntry> dir_entries;
-  dir_entries.reserve(items.size());
-
-  QByteArray buffer;
-  buffer.resize(1 << 16);
-
-  for (const WadWriteItem& item : items) {
-    const qint64 out_pos = out.pos();
-    if (out_pos < 0 || out_pos > std::numeric_limits<quint32>::max()) {
-      if (error) {
-        *error = "WAD2 output exceeds format limits.";
-      }
-      return false;
-    }
-
-    quint32 size = 0;
-    quint8 type = kWadTypeNone;
-
-    if (item.from_archive) {
-      QByteArray bytes;
-      QString read_err;
-      if (!archive_.read_entry_bytes(item.entry_name, &bytes, &read_err)) {
-        if (error) {
-          *error = read_err.isEmpty() ? QString("Unable to read source entry: %1").arg(item.entry_name) : read_err;
-        }
-        return false;
-      }
-      if (bytes.size() < 0 || static_cast<quint64>(bytes.size()) > std::numeric_limits<quint32>::max()) {
-        if (error) {
-          *error = QString("Entry is too large for WAD2 format: %1").arg(item.entry_name);
-        }
-        return false;
-      }
-      if (out.write(bytes) != bytes.size()) {
-        if (error) {
-          *error = QString("Unable to write destination entry: %1").arg(item.entry_name);
-        }
-        return false;
-      }
-      size = static_cast<quint32>(bytes.size());
-      type = derive_wad2_lump_type(item.entry_name, item.lump_name, &bytes);
-    } else {
-      QFile in(item.source_path);
-      if (!in.open(QIODevice::ReadOnly)) {
-        if (error) {
-          *error = QString("Unable to open file: %1").arg(item.source_path);
-        }
-        return false;
-      }
-
-      const qint64 in_size64 = in.size();
-      if (in_size64 < 0 || in_size64 > std::numeric_limits<quint32>::max()) {
-        if (error) {
-          *error = QString("File is too large for WAD2 format: %1").arg(item.source_path);
-        }
-        return false;
-      }
-      size = static_cast<quint32>(in_size64);
-      type = derive_wad2_lump_type(item.entry_name, item.lump_name, nullptr);
-
-      quint32 remaining = size;
-      while (remaining > 0) {
-        const int want =
-          static_cast<int>(std::min<quint32>(remaining, static_cast<quint32>(buffer.size())));
-        const qint64 got = in.read(buffer.data(), want);
-        if (got <= 0) {
-          if (error) {
-            *error = QString("Unable to read file: %1").arg(item.source_path);
-          }
-          return false;
-        }
-        if (out.write(buffer.constData(), got) != got) {
-          if (error) {
-            *error = QString("Unable to write destination entry: %1").arg(item.entry_name);
-          }
-          return false;
-        }
-        remaining -= static_cast<quint32>(got);
-      }
-    }
-
-    WadDirEntry d;
-    d.file_pos = static_cast<quint32>(out_pos);
-    d.disk_size = size;
-    d.size = size;
-    d.type = type;
-    d.lump_name_latin1 = item.lump_name.toLatin1();
-    dir_entries.push_back(std::move(d));
-  }
-
-  const qint64 dir_offset64 = out.pos();
-  if (dir_offset64 < 0 || dir_offset64 > std::numeric_limits<quint32>::max()) {
-    if (error) {
-      *error = "WAD2 output exceeds format limits.";
-    }
-    return false;
-  }
-  const quint32 dir_offset = static_cast<quint32>(dir_offset64);
-
-  const qint64 dir_bytes64 = static_cast<qint64>(dir_entries.size()) * kWadDirEntrySize;
-  if (dir_bytes64 < 0 || dir_bytes64 > std::numeric_limits<int>::max()) {
-    if (error) {
-      *error = "WAD2 directory exceeds format limits.";
-    }
-    return false;
-  }
-
-  QByteArray dir;
-  dir.resize(static_cast<int>(dir_bytes64));
-  dir.fill('\0');
-  for (int i = 0; i < dir_entries.size(); ++i) {
-    const WadDirEntry& d = dir_entries[i];
-    const int base = i * kWadDirEntrySize;
-    write_u32_le(&dir, base + 0, d.file_pos);
-    write_u32_le(&dir, base + 4, d.disk_size);
-    write_u32_le(&dir, base + 8, d.size);
-    dir[base + 12] = static_cast<char>(d.type);
-    dir[base + 13] = 0;
-    dir[base + 14] = 0;
-    dir[base + 15] = 0;
-    const QByteArray lump = d.lump_name_latin1.left(kWadNameBytes);
-    if (!lump.isEmpty()) {
-      std::memcpy(dir.data() + base + 16, lump.constData(), static_cast<size_t>(lump.size()));
-    }
-  }
-
-  if (out.write(dir) != dir.size()) {
-    if (error) {
-      *error = "Unable to write WAD2 directory.";
-    }
-    return false;
-  }
-
-  write_u32_le(&header, 4, static_cast<quint32>(dir_entries.size()));
-  write_u32_le(&header, 8, dir_offset);
-  if (!out.seek(0) || out.write(header) != header.size()) {
-    if (error) {
-      *error = "Unable to update WAD2 header.";
-    }
-    return false;
-  }
-
-  if (!out.commit()) {
-    if (error) {
-      *error = "Unable to finalize destination WAD2.";
-    }
-    return false;
-  }
-
-  return true;
+  return WadArchive::write_wad2(abs, plan, error);
 }
 
 bool PakTab::write_zip_file(const QString& dest_path, bool quakelive_encrypt_pk3, QString* error) {
@@ -8369,82 +8074,34 @@ bool PakTab::write_zip_file(const QString& dest_path, bool quakelive_encrypt_pk3
     }
   }
 
-  QFile src_file;
-  mz_zip_archive src_zip{};
-  bool have_src_zip = false;
-
   const bool have_src_dir = archive_.is_loaded() &&
     archive_.format() == Archive::Format::Directory &&
     !archive_.path().isEmpty();
+  const bool have_src_zip = archive_.is_loaded() &&
+    archive_.format() == Archive::Format::Zip &&
+    !archive_.readable_path().isEmpty();
 
-  if (mode_ == Mode::ExistingPak && archive_.is_loaded() && archive_.format() == Archive::Format::Zip) {
-    const QString src_path = archive_.readable_path();
-    if (!src_path.isEmpty()) {
-      src_file.setFileName(src_path);
-      if (!src_file.open(QIODevice::ReadOnly)) {
-        if (error) {
-          *error = "Unable to open source ZIP for reading.";
-        }
-        return false;
-      }
-      mz_zip_zero_struct(&src_zip);
-      src_zip.m_pRead = mz_read_qfile;
-      src_zip.m_pNeeds_keepalive = mz_keepalive_qiodevice;
-      src_zip.m_pIO_opaque = &src_file;
-      const qint64 src_size = src_file.size();
-      if (src_size < 0 || !mz_zip_reader_init(&src_zip, static_cast<mz_uint64>(src_size), 0)) {
-        const mz_zip_error zerr = mz_zip_get_last_error(&src_zip);
-        const char* msg = mz_zip_get_error_string(zerr);
-        if (error) {
-          *error = msg ? QString("Unable to read source ZIP (%1).").arg(QString::fromLatin1(msg)) : "Unable to read source ZIP.";
-        }
-        src_file.close();
-        return false;
-      }
-      have_src_zip = true;
+  ZipArchive::WritePlan plan;
+  plan.deleted_files = deleted_files_;
+  plan.deleted_dir_prefixes = deleted_dir_prefixes_;
+  plan.explicit_directories.reserve(virtual_dirs_.size());
+  for (const QString& dir : virtual_dirs_) {
+    plan.explicit_directories.push_back(dir);
+  }
+  plan.disk_files.reserve((have_src_dir ? archive_.entries().size() : 0) + added_files_.size());
+  plan.replaced_entries.reserve(added_files_.size());
+  for (const AddedFile& f : added_files_) {
+    const QString name = normalize_pak_path(f.pak_name);
+    if (!name.isEmpty()) {
+      plan.replaced_entries.insert(name);
     }
   }
-
-  QTemporaryFile temp_zip;
-  temp_zip.setAutoRemove(true);
-  if (!temp_zip.open()) {
-    if (error) {
-      *error = "Unable to create temporary ZIP for writing.";
-    }
-    if (have_src_zip) {
-      mz_zip_reader_end(&src_zip);
-    }
-    return false;
+  if (have_src_zip) {
+    plan.source_zip_path = archive_.readable_path();
   }
 
-  mz_zip_archive out_zip{};
-  mz_zip_zero_struct(&out_zip);
-  out_zip.m_pWrite = mz_write_qiodevice;
-  out_zip.m_pNeeds_keepalive = mz_keepalive_qiodevice;
-  out_zip.m_pIO_opaque = &temp_zip;
-
-  if (!mz_zip_writer_init(&out_zip, 0)) {
-    const mz_zip_error zerr = mz_zip_get_last_error(&out_zip);
-    const char* msg = mz_zip_get_error_string(zerr);
-    if (error) {
-      *error = msg ? QString("Unable to initialize ZIP writer (%1).").arg(QString::fromLatin1(msg)) : "Unable to initialize ZIP writer.";
-    }
-    if (have_src_zip) {
-      mz_zip_reader_end(&src_zip);
-    }
-    return false;
-  }
-
-  const auto add_error = [&](const QString& message) {
-    if (error) {
-      *error = message;
-    }
-  };
-
-  QVector<AddedFile> dir_files;
   if (have_src_dir) {
     const QDir root_dir(archive_.path());
-    dir_files.reserve(archive_.entries().size());
     for (const ArchiveEntry& e : archive_.entries()) {
       const QString name = normalize_pak_path(e.name);
       if (name.isEmpty()) {
@@ -8453,241 +8110,26 @@ bool PakTab::write_zip_file(const QString& dest_path, bool quakelive_encrypt_pk3
       if (added_index_by_name_.contains(name)) {
         continue;
       }
-      AddedFile f;
-      f.pak_name = name;
-      f.source_path = root_dir.filePath(QString(name).replace('/', QDir::separator()));
-      f.mtime_utc_secs = e.mtime_utc_secs;
-      dir_files.push_back(std::move(f));
-    }
-  }
-
-  // Clone preserved entries from the source ZIP without recompressing.
-  if (have_src_zip) {
-    const mz_uint file_count = mz_zip_reader_get_num_files(&src_zip);
-    for (mz_uint i = 0; i < file_count; ++i) {
-      mz_zip_archive_file_stat st{};
-      if (!mz_zip_reader_file_stat(&src_zip, i, &st)) {
-        continue;
-      }
-      QString name = QString::fromUtf8(st.m_filename);
-      name = normalize_pak_path(name);
-      if (name.isEmpty()) {
-        continue;
-      }
-      if (st.m_is_directory && !name.endsWith('/')) {
-        name += '/';
-      }
-
       if (is_deleted_path(name)) {
         continue;
       }
-      if (added_index_by_name_.contains(name)) {
-        continue;
-      }
-      if (!is_safe_entry_name(name)) {
-        mz_zip_writer_end(&out_zip);
-        mz_zip_reader_end(&src_zip);
-        add_error(QString("Refusing to save unsafe entry: %1").arg(name));
-        return false;
-      }
-
-      if (!mz_zip_writer_add_from_zip_reader(&out_zip, &src_zip, i)) {
-        const mz_zip_error zerr = mz_zip_get_last_error(&out_zip);
-        const char* msg = mz_zip_get_error_string(zerr);
-        mz_zip_writer_end(&out_zip);
-        mz_zip_reader_end(&src_zip);
-        add_error(msg ? QString("Unable to copy ZIP entry (%1).").arg(QString::fromLatin1(msg)) : "Unable to copy ZIP entry.");
-        return false;
-      }
+      ZipArchive::DiskFile file;
+      file.archive_name = name;
+      file.source_path = root_dir.filePath(QString(name).replace('/', QDir::separator()));
+      file.mtime_utc_secs = e.mtime_utc_secs;
+      plan.disk_files.push_back(std::move(file));
     }
   }
 
-  // Ensure empty directories are preserved as explicit directory entries.
-  for (const QString& dir_path_in : virtual_dirs_) {
-    QString name = normalize_pak_path(dir_path_in);
-    if (name.isEmpty()) {
-      continue;
-    }
-    if (!name.endsWith('/')) {
-      name += '/';
-    }
-    if (is_deleted_path(name)) {
-      continue;
-    }
-    if (!is_safe_entry_name(name)) {
-      mz_zip_writer_end(&out_zip);
-      if (have_src_zip) {
-        mz_zip_reader_end(&src_zip);
-      }
-      add_error(QString("Refusing to save unsafe directory entry: %1").arg(name));
-      return false;
-    }
-
-    const QByteArray name_utf8 = name.toUtf8();
-    if (!mz_zip_writer_add_mem_ex(&out_zip, name_utf8.constData(), "", 0, nullptr, 0, 0, 0, 0)) {
-      const mz_zip_error zerr = mz_zip_get_last_error(&out_zip);
-      const char* msg = mz_zip_get_error_string(zerr);
-      mz_zip_writer_end(&out_zip);
-      if (have_src_zip) {
-        mz_zip_reader_end(&src_zip);
-      }
-      add_error(msg ? QString("Unable to add directory entry (%1).").arg(QString::fromLatin1(msg)) : "Unable to add directory entry.");
-      return false;
-    }
-  }
-
-  auto add_disk_file = [&](const AddedFile& f) -> bool {
-    const QString name = normalize_pak_path(f.pak_name);
-    if (name.isEmpty()) {
-      return true;
-    }
-    if (is_deleted_path(name)) {
-      return true;
-    }
-    if (!is_safe_entry_name(name)) {
-      mz_zip_writer_end(&out_zip);
-      if (have_src_zip) {
-        mz_zip_reader_end(&src_zip);
-      }
-      add_error(QString("Refusing to save unsafe entry: %1").arg(name));
-      return false;
-    }
-
-    QFile in(f.source_path);
-    if (!in.open(QIODevice::ReadOnly)) {
-      mz_zip_writer_end(&out_zip);
-      if (have_src_zip) {
-        mz_zip_reader_end(&src_zip);
-      }
-      add_error(QString("Unable to open file: %1").arg(f.source_path));
-      return false;
-    }
-
-    const qint64 size = in.size();
-    if (size < 0) {
-      mz_zip_writer_end(&out_zip);
-      if (have_src_zip) {
-        mz_zip_reader_end(&src_zip);
-      }
-      add_error(QString("Unable to read file size: %1").arg(f.source_path));
-      return false;
-    }
-
-    const QByteArray name_utf8 = name.toUtf8();
-    MZ_TIME_T mtime = 0;
-    const MZ_TIME_T* mtime_ptr = nullptr;
-    if (f.mtime_utc_secs > 0) {
-      mtime = static_cast<MZ_TIME_T>(f.mtime_utc_secs);
-      mtime_ptr = &mtime;
-    }
-
-    if (!mz_zip_writer_add_read_buf_callback(&out_zip,
-                                             name_utf8.constData(),
-                                             mz_read_qfile,
-                                             &in,
-                                             static_cast<mz_uint64>(size),
-                                             mtime_ptr,
-                                             nullptr,
-                                             0,
-                                             MZ_DEFAULT_COMPRESSION,
-                                             nullptr,
-                                             0,
-                                             nullptr,
-                                             0)) {
-      const mz_zip_error zerr = mz_zip_get_last_error(&out_zip);
-      const char* msg = mz_zip_get_error_string(zerr);
-      mz_zip_writer_end(&out_zip);
-      if (have_src_zip) {
-        mz_zip_reader_end(&src_zip);
-      }
-      add_error(msg ? QString("Unable to add file to ZIP (%1).").arg(QString::fromLatin1(msg)) : "Unable to add file to ZIP.");
-      return false;
-    }
-
-    return true;
-  };
-
-  for (const AddedFile& f : dir_files) {
-    if (!add_disk_file(f)) {
-      return false;
-    }
-  }
   for (const AddedFile& f : added_files_) {
-    if (!add_disk_file(f)) {
-      return false;
-    }
+    ZipArchive::DiskFile file;
+    file.archive_name = f.pak_name;
+    file.source_path = f.source_path;
+    file.mtime_utc_secs = f.mtime_utc_secs;
+    plan.disk_files.push_back(std::move(file));
   }
 
-  if (!mz_zip_writer_finalize_archive(&out_zip)) {
-    const mz_zip_error zerr = mz_zip_get_last_error(&out_zip);
-    const char* msg = mz_zip_get_error_string(zerr);
-    mz_zip_writer_end(&out_zip);
-    if (have_src_zip) {
-      mz_zip_reader_end(&src_zip);
-    }
-    add_error(msg ? QString("Unable to finalize ZIP (%1).").arg(QString::fromLatin1(msg)) : "Unable to finalize ZIP.");
-    return false;
-  }
-
-  mz_zip_writer_end(&out_zip);
-  if (have_src_zip) {
-    mz_zip_reader_end(&src_zip);
-  }
-
-  if (!temp_zip.flush() || !temp_zip.seek(0)) {
-    if (error) {
-      *error = "Unable to prepare ZIP output for commit.";
-    }
-    return false;
-  }
-
-  QSaveFile out(abs);
-  if (!out.open(QIODevice::WriteOnly)) {
-    if (error) {
-      *error = "Unable to create destination archive.";
-    }
-    return false;
-  }
-
-  if (quakelive_encrypt_pk3) {
-    QString enc_err;
-    if (!quakelive_pk3_xor_stream(temp_zip, out, &enc_err)) {
-      if (error) {
-        *error = enc_err.isEmpty() ? "Unable to encrypt Quake Live PK3." : enc_err;
-      }
-      return false;
-    }
-  } else {
-    QByteArray buf;
-    buf.resize(1 << 16);
-    for (;;) {
-      const qint64 got = temp_zip.read(buf.data(), buf.size());
-      if (got < 0) {
-        if (error) {
-          *error = "Unable to read temporary ZIP.";
-        }
-        return false;
-      }
-      if (got == 0) {
-        break;
-      }
-      if (out.write(buf.constData(), got) != got) {
-        if (error) {
-          *error = "Unable to write destination archive.";
-        }
-        return false;
-      }
-    }
-  }
-
-  if (!out.commit()) {
-    if (error) {
-      *error = "Unable to finalize destination archive.";
-    }
-    return false;
-  }
-
-  return true;
+  return ZipArchive::write_rebuilt(abs, plan, quakelive_encrypt_pk3, error);
 }
 
 void PakTab::load_archive() {
@@ -8717,6 +8159,47 @@ void PakTab::load_archive() {
 
   // Root listing.
   set_current_dir({});
+}
+
+bool PakTab::is_search_active() const {
+  return !search_query_.trimmed().isEmpty();
+}
+
+void PakTab::update_search_index(qint64 fallback_mtime_utc_secs) {
+  ArchiveSearchIndex::BuildInput input;
+  if (view_archive().is_loaded()) {
+    input.archive_entries = view_archive().entries();
+  }
+  input.fallback_mtime_utc_secs = fallback_mtime_utc_secs;
+
+  QStringList scope;
+  if (!pak_path_.isEmpty()) {
+    const QFileInfo info(pak_path_);
+    scope.push_back(info.fileName().isEmpty() ? info.absoluteFilePath() : info.fileName());
+  } else {
+    scope.push_back(mode_ == Mode::NewPak ? QString("New Archive") : QString("Archive"));
+  }
+  for (const MountedArchiveLayer& layer : mounted_archives_) {
+    scope.push_back(layer.mount_name.isEmpty() ? QString("Mounted Archive") : layer.mount_name);
+  }
+  input.scope_label = scope.join(" > ");
+
+  if (!is_wad_mounted()) {
+    input.virtual_dirs = virtual_dirs_;
+    input.deleted_files = deleted_files_;
+    input.deleted_dir_prefixes = deleted_dir_prefixes_;
+    input.overlay_files.reserve(added_files_.size());
+    for (const AddedFile& file : added_files_) {
+      ArchiveSearchIndex::OverlayFile overlay;
+      overlay.path = file.pak_name;
+      overlay.source_path = file.source_path;
+      overlay.size = file.size;
+      overlay.mtime_utc_secs = file.mtime_utc_secs;
+      input.overlay_files.push_back(std::move(overlay));
+    }
+  }
+
+  search_index_.rebuild(input);
 }
 
 void PakTab::set_current_dir(const QStringList& parts) {
@@ -8857,21 +8340,27 @@ void PakTab::refresh_listing() {
     }
   }
 
+  update_search_index(fallback_mtime_utc_secs);
+
   const QVector<ArchiveEntry> empty_entries;
-  const QVector<ChildListing> children =
-    list_children(view_archive().is_loaded() ? view_archive().entries() : empty_entries,
-                  added_sizes,
-                  added_sources,
-                  added_mtimes,
-                  is_wad_mounted() ? QSet<QString>{} : virtual_dirs_,
-                  is_wad_mounted() ? QSet<QString>{} : deleted_files_,
-                  is_wad_mounted() ? QSet<QString>{} : deleted_dir_prefixes_,
-                  fallback_mtime_utc_secs,
-                  current_dir_);
+  const bool search_active = is_search_active();
+  const QVector<ChildListing> children = search_active
+    ? search_results_to_children(search_index_.search(search_query_))
+    : list_children(view_archive().is_loaded() ? view_archive().entries() : empty_entries,
+                    added_sizes,
+                    added_sources,
+                    added_mtimes,
+                    is_wad_mounted() ? QSet<QString>{} : virtual_dirs_,
+                    is_wad_mounted() ? QSet<QString>{} : deleted_files_,
+                    is_wad_mounted() ? QSet<QString>{} : deleted_dir_prefixes_,
+                    fallback_mtime_utc_secs,
+                    current_dir_);
   if (children.isEmpty()) {
-    const QString msg = (mode_ == Mode::NewPak)
-      ? "Empty archive. Use Add Files/Add Folder to add content, then Save As."
-      : "No entries in this folder.";
+    const QString msg = search_active
+      ? QString("No matches for \"%1\".").arg(search_query_.trimmed())
+      : ((mode_ == Mode::NewPak)
+           ? QString("Empty archive. Use Add Files/Add Folder to add content, then Save As.")
+           : QString("No entries in this folder."));
     if (details_view_) {
       auto* item = new PakTreeItem();
       item->setText(0, msg);
@@ -8947,11 +8436,12 @@ void PakTab::refresh_listing() {
     details_view_->setSortingEnabled(false);
 
     for (const ChildListing& child : children) {
-      const QString full_path =
-        normalize_pak_path(current_prefix() + child.name + (child.is_dir ? "/" : ""));
+      const QString full_path = child.pak_path.isEmpty()
+        ? normalize_pak_path(current_prefix() + child.name + (child.is_dir ? "/" : ""))
+        : normalize_pak_path(child.pak_path);
 
       auto* item = new PakTreeItem();
-      item->setText(0, child.is_dir ? (child.name + "/") : child.name);
+      item->setText(0, child_display_label(child));
       item->setData(0, kRoleIsDir, child.is_dir);
       item->setData(0, kRolePakPath, full_path);
       item->setData(0, kRoleIsAdded, child.is_added);
@@ -8960,7 +8450,7 @@ void PakTab::refresh_listing() {
       if (child.is_dir) {
         item->setIcon(0, dir_icon);
       } else {
-        const QString leaf = child.name;
+        const QString leaf = pak_leaf_name(full_path);
         const QString ext = file_ext_lower(leaf);
         QIcon assoc_icon;
         if (try_file_association_icon(leaf, details_icon_size, &assoc_icon)) {
@@ -8991,12 +8481,19 @@ void PakTab::refresh_listing() {
       item->setData(2, kRoleMtime, child.is_dir ? static_cast<qint64>(-1) : child.mtime_utc_secs);
       item->setText(2, child.is_dir ? "" : format_mtime(child.mtime_utc_secs));
 
+      QString tooltip = full_path;
+      if (!child.scope_label.isEmpty()) {
+        tooltip += QString("\nIn: %1").arg(child.scope_label);
+      }
+      if (!child.dependency_hints.isEmpty()) {
+        tooltip += QString("\nRelated paths: %1").arg(child.dependency_hints.join(", "));
+      }
       if (child.is_overridden) {
-        item->setToolTip(0, QString("Modified: %1\nFrom: %2").arg(full_path, child.source_path));
+        item->setToolTip(0, QString("Modified: %1\nFrom: %2").arg(tooltip, child.source_path));
       } else if (child.is_added) {
-        item->setToolTip(0, QString("Added: %1\nFrom: %2").arg(full_path, child.source_path));
+        item->setToolTip(0, QString("Added: %1\nFrom: %2").arg(tooltip, child.source_path));
       } else {
-        item->setToolTip(0, full_path);
+        item->setToolTip(0, tooltip);
       }
 
       Qt::ItemFlags flags = item->flags() | Qt::ItemIsDragEnabled;
@@ -9067,10 +8564,11 @@ void PakTab::refresh_listing() {
     const QIcon sprite_icon = make_badged_icon(file_icon, icon_size, "SPR", palette());
 
     for (const ChildListing& child : children) {
-      const QString full_path =
-        normalize_pak_path(current_prefix() + child.name + (child.is_dir ? "/" : ""));
+      const QString full_path = child.pak_path.isEmpty()
+        ? normalize_pak_path(current_prefix() + child.name + (child.is_dir ? "/" : ""))
+        : normalize_pak_path(child.pak_path);
 
-      const QString label = child.is_dir ? (child.name + "/") : child.name;
+      const QString label = child_display_label(child);
       auto* item = new PakIconItem(label);
       item->setData(kRoleIsDir, child.is_dir);
       item->setData(kRolePakPath, full_path);
@@ -9083,7 +8581,7 @@ void PakTab::refresh_listing() {
 
       QIcon icon = child.is_dir ? dir_icon : file_icon;
       if (!child.is_dir) {
-        const QString leaf = child.name;
+        const QString leaf = pak_leaf_name(full_path);
         const QString ext = file_ext_lower(leaf);
         QIcon assoc_icon;
         if (try_file_association_icon(leaf, icon_size, &assoc_icon)) {
@@ -9117,12 +8615,19 @@ void PakTab::refresh_listing() {
       }
       item->setIcon(icon);
 
+      QString tooltip = full_path;
+      if (!child.scope_label.isEmpty()) {
+        tooltip += QString("\nIn: %1").arg(child.scope_label);
+      }
+      if (!child.dependency_hints.isEmpty()) {
+        tooltip += QString("\nRelated paths: %1").arg(child.dependency_hints.join(", "));
+      }
       if (child.is_overridden) {
-        item->setToolTip(QString("Modified: %1\nFrom: %2").arg(full_path, child.source_path));
+        item->setToolTip(QString("Modified: %1\nFrom: %2").arg(tooltip, child.source_path));
       } else if (child.is_added) {
-        item->setToolTip(QString("Added: %1\nFrom: %2").arg(full_path, child.source_path));
+        item->setToolTip(QString("Added: %1\nFrom: %2").arg(tooltip, child.source_path));
       } else {
-        item->setToolTip(full_path);
+        item->setToolTip(tooltip);
       }
 
       Qt::ItemFlags flags = item->flags() | Qt::ItemIsDragEnabled;

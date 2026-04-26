@@ -13,7 +13,6 @@
 #include <QPointer>
 #include <QScreen>
 #include <QSet>
-#include <QSettings>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTimer>
@@ -41,7 +40,6 @@
 #include "game/game_set.h"
 #include "pakfu_config.h"
 #include "platform/crash_handler.h"
-#include "update/update_service.h"
 #include "ui/game_set_dialog.h"
 #include "ui/audio_viewer_window.h"
 #include "ui/image_viewer_window.h"
@@ -248,11 +246,6 @@ bool send_ipc_payload(const QString& server_name, const QByteArray& payload) {
   return false;
 }
 
-bool should_check_updates() {
-  QSettings settings;
-  return settings.value("updates/autoCheck", true).toBool();
-}
-
 QPixmap load_logo_pixmap() {
   QPixmap pixmap(":/assets/img/logo.png");
   if (pixmap.isNull()) {
@@ -323,7 +316,7 @@ SplashScreen* show_splash(QApplication& app) {
   splash->move(screen->availableGeometry().center() - QPoint(scaled.width() / 2, scaled.height() / 2));
   splash->show();
   splash->raise();
-  splash->setStatusText("Checking for updates...");
+  splash->setStatusText("Starting PakFu...");
   splash->setVersionText(QString("v%1").arg(PAKFU_VERSION));
   app.processEvents();
   return splash;
@@ -606,7 +599,7 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  MainWindow window(*selected, QString(), false);
+  MainWindow window(*selected, QString(), true);
   main_window = &window;
   if (!initial_paths.isEmpty()) {
     window.open_archives(initial_paths);
@@ -617,8 +610,6 @@ int main(int argc, char** argv) {
     // Prevent the app from exiting when the splash is the only visible window.
     app.setQuitOnLastWindowClosed(false);
   }
-  bool update_finished = false;
-  QPointer<UpdateService> updater;
 
   auto finish_and_show = [&]() {
     if (main_shown) {
@@ -649,57 +640,7 @@ int main(int argc, char** argv) {
     run_tab_smoke_test(window);
   };
 
-  if (should_check_updates()) {
-    updater = new UpdateService(&app);
-    updater->configure(PAKFU_GITHUB_REPO, PAKFU_UPDATE_CHANNEL, PAKFU_VERSION);
-    QObject::connect(updater, &UpdateService::check_completed, &app,
-                     [&, updater](const UpdateCheckResult& result) {
-                       Q_UNUSED(updater);
-                       if (update_finished) {
-                         return;
-                       }
-                       update_finished = true;
-
-                       if (splash) {
-                         QString status;
-                         switch (result.state) {
-                           case UpdateCheckState::UpdateAvailable:
-                             status = result.info.version.isEmpty()
-                                        ? "Update available."
-                                        : QString("Update available: %1").arg(result.info.version);
-                             break;
-                           case UpdateCheckState::UpToDate:
-                             status = "You are up to date.";
-                             break;
-                           case UpdateCheckState::NoRelease:
-                             status = "No releases found.";
-                             break;
-                           case UpdateCheckState::NotConfigured:
-                             status = "Update source not configured.";
-                             break;
-                           case UpdateCheckState::Error:
-                             status = result.message.isEmpty() ? "Update check failed." : result.message;
-                             break;
-                         }
-                         splash->setStatusText(status);
-                       }
-
-                       QTimer::singleShot(0, &app, [&, result]() {
-                         Q_UNUSED(result);
-                         finish_and_show();
-                       });
-                     });
-
-    QTimer::singleShot(100, &app, [&, updater]() {
-      if (updater) {
-        QWidget* parent = splash ? static_cast<QWidget*>(splash.data()) : static_cast<QWidget*>(&window);
-        updater->check_for_updates(false, parent);
-      }
-    });
-
-  } else {
-    finish_and_show();
-  }
+  finish_and_show();
 
   return app.exec();
 }

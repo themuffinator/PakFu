@@ -9,7 +9,21 @@
 
 class WadArchive {
 public:
+  struct WriteEntry {
+    QString entry_name;
+    QString source_path;
+    bool from_source_wad = false;
+  };
+
+  struct WritePlan {
+    // Optional WAD path used by WriteEntry::from_source_wad entries.
+    QString source_wad_path;
+    QVector<WriteEntry> entries;
+  };
+
   bool load(const QString& path, QString* error);
+  static bool derive_wad2_lump_name(const QString& entry_name_in, QString* out_lump_name, QString* error);
+  static bool write_wad2(const QString& dest_path, const WritePlan& plan, QString* error);
 
   bool is_loaded() const { return loaded_; }
   QString path() const { return path_; }

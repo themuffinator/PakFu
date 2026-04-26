@@ -79,6 +79,7 @@ sources = files(
   'cli/cli.cpp',
   'archive/archive.cpp',
   'archive/dir_archive.cpp',
+  'archive/archive_search_index.cpp',
   'resources/resources_archive.cpp',
   'game/game_set.cpp',
   'game/game_auto_detect.cpp',
@@ -231,3 +232,32 @@ model_probe = executable(
   dependencies: [qt6_dep],
   install: false,
 )
+
+archive_writer_roundtrip_test = executable(
+  'archive_writer_roundtrip_test',
+  [
+    'tests/archive_writer_roundtrip_test.cpp',
+    'zip/zip_archive.cpp',
+    'zip/quakelive_pk3_crypto.cpp',
+    'wad/wad_archive.cpp',
+  ],
+  include_directories: pakfu_includes,
+  dependencies: [qt6_dep],
+  link_with: [miniz_lib],
+  install: false,
+)
+
+test('archive-writer-roundtrip', archive_writer_roundtrip_test)
+
+archive_search_index_test = executable(
+  'archive_search_index_test',
+  [
+    'tests/archive_search_index_test.cpp',
+    'archive/archive_search_index.cpp',
+  ],
+  include_directories: pakfu_includes,
+  dependencies: [qt6_dep],
+  install: false,
+)
+
+test('archive-search-index', archive_search_index_test)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
 
 class QCoreApplication;
 
@@ -8,12 +9,21 @@ struct CliOptions {
   bool list = false;
   bool info = false;
   bool extract = false;
+  bool save_as = false;
+  bool quakelive_encrypt_pk3 = false;
   bool check_updates = false;
   bool qa_practical = false;
   bool list_game_sets = false;
   bool auto_detect_game_sets = false;
   QString select_game_set;
   QString output_dir;
+  QString save_as_path;
+  QString save_format;
+  QString convert_format;
+  QString preview_export_entry;
+  QString mount_entry;
+  QStringList entry_filters;
+  QStringList prefix_filters;
   QString pak_path;
   QString update_repo;
   QString update_channel;

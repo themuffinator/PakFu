@@ -23,6 +23,9 @@ struct UpdateInfo {
   QUrl asset_url;
   QString asset_name;
   qint64 asset_size = 0;
+  QUrl manifest_url;
+  QString manifest_name;
+  qint64 manifest_size = 0;
 };
 
 enum class UpdateCheckState {
@@ -57,6 +60,7 @@ signals:
 
 private slots:
   void on_check_finished();
+  void on_manifest_finished();
   void on_download_ready_read();
   void on_download_progress(qint64 received, qint64 total);
   void on_download_finished();
@@ -65,6 +69,7 @@ private:
   UpdateInfo parse_release_object(const QJsonObject& release_obj) const;
   UpdateInfo select_release_from_array(const QJsonArray& releases) const;
   QUrl select_asset(const QJsonArray& assets, QString* asset_name, qint64* asset_size) const;
+  QUrl select_manifest_asset(const QJsonArray& assets, QString* manifest_name, qint64* manifest_size) const;
   QString normalize_version(const QString& version) const;
   bool is_newer_version(const QString& latest, const QString& current) const;
   bool is_installable_asset(const QString& name) const;
@@ -73,6 +78,13 @@ private:
   void prompt_update_error(const QString& message);
   void prompt_update(const UpdateInfo& info, QWidget* parent, bool user_initiated);
   void begin_download(const UpdateInfo& info, QWidget* parent);
+  void begin_asset_download(const UpdateInfo& info, QWidget* parent);
+  bool parse_manifest_for_download(const QByteArray& payload,
+                                   const UpdateInfo& info,
+                                   QString* expected_sha256,
+                                   qint64* expected_size,
+                                   QString* error) const;
+  bool verify_downloaded_file(QString* error) const;
   bool launch_installer(const QString& file_path, QWidget* parent) const;
 
   QString github_repo_;
@@ -82,9 +94,13 @@ private:
 
   QNetworkAccessManager* network_ = nullptr;
   QPointer<QNetworkReply> check_reply_;
+  QPointer<QNetworkReply> manifest_reply_;
   QPointer<QNetworkReply> download_reply_;
   QPointer<QTimer> check_timeout_;
   QString check_error_override_;
+  UpdateInfo pending_download_info_;
+  QString download_expected_sha256_;
+  qint64 download_expected_size_ = -1;
   QScopedPointer<QSaveFile> download_file_;
   QString download_path_;
   bool download_installable_ = false;
