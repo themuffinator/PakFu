@@ -71,6 +71,8 @@ PakFu can also check for updates at runtime (GUI) and via CLI (`--check-updates`
 - Nested container mounting (open archives inside archives).
 - One-click `Extract Selected` and `Extract All` workflows for the active archive tab.
 - Batch conversion tool for selected assets with category tabs (images, video, archives, models, sound, maps, text, other).
+- Manifest-driven extension commands for archive-aware external tools in the GUI and CLI.
+- A reusable `pakfu_core` static library for non-UI archive, format, search, and extension code.
 - Image batch conversion supports output to all supported image formats (`png`, `jpg`, `jpeg`, `bmp`, `gif`, `tga`, `tif`, `tiff`, `pcx`, `wal`, `swl`, `mip`, `lmp`, `ftx`, `dds`) with format-aware settings (quality, compression, palette source, dithering, alpha threshold, embedded palette where applicable).
 - Modern platform-native open/save/folder dialogs with standard breadcrumbs/bookmarks and robust cross-platform behavior.
 - 3D preview renderer selection with Vulkan/OpenGL behavior and fallback.
@@ -81,6 +83,10 @@ PakFu can also check for updates at runtime (GUI) and via CLI (`--check-updates`
 - File-association management UI with per-format icon sets.
 
 ## Supported Formats
+
+For the fixture-backed support contract and current verification status, see
+[`docs/SUPPORT_MATRIX.md`](docs/SUPPORT_MATRIX.md). The tables below are the
+quick reference.
 
 ### Archive And Container Support
 | Type | Extensions | Open/List | Extract | Save/Rebuild |
@@ -144,6 +150,19 @@ meson setup builddir --backend ninja
 meson compile -C builddir
 ```
 
+### Core Library Target
+```sh
+meson compile -C builddir pakfu_core
+meson test -C builddir core-api-smoke
+```
+
+### Parser Hardening Build
+For parser hardening smoke tests with libFuzzer + sanitizers:
+```sh
+CC=clang CXX=clang++ meson setup builddir-fuzz --backend ninja --buildtype=debugoptimized -Dvulkan_preview=disabled -Dfuzzing=enabled -Db_sanitize=address,undefined
+meson test -C builddir-fuzz --print-errorlogs
+```
+
 ### Run
 ```sh
 ./builddir/src/pakfu
@@ -169,13 +188,16 @@ Core actions:
 - `--save-as <archive>` : rebuild selected entries into a new archive.
 - `--convert <format>` : convert selected images to a supported image-writer output (`png`, `jpg`, `bmp`, `gif`, `tga`, `tiff`, `pcx`, `wal`, `swl`, `mip`, `lmp`, `ftx`, `dds`) or IDWAV audio to `wav`.
 - `--preview-export <entry>` : export the CLI preview rendition of one entry; images write an image file, text and binary entries write bytes.
+- `--list-plugins` : list discovered extension commands.
+- `--run-plugin <plugin[:command]>` : run one extension command against the loaded archive.
 - `--check-updates` : query GitHub Releases.
 - `--qa-practical` : run practical archive-ops smoke QA (selection/marquee/modifier checks).
 
 Archive selection and mounting:
-- `--entry <path>` : limit `--list`, `--extract`, `--save-as`, or `--convert` to an exact archive entry. Repeat for multiple entries.
-- `--prefix <dir>` : limit `--list`, `--extract`, `--save-as`, or `--convert` to entries under a directory prefix. Repeat for multiple prefixes.
+- `--entry <path>` : limit `--list`, `--extract`, `--save-as`, `--convert`, or `--run-plugin` to an exact archive entry. Repeat for multiple entries.
+- `--prefix <dir>` : limit `--list`, `--extract`, `--save-as`, `--convert`, or `--run-plugin` to entries under a directory prefix. Repeat for multiple prefixes.
 - `--mount <entry>` : mount a nested archive entry first, then run the requested action against the mounted archive.
+- `--plugin-dir <dir>` : add an extension search directory (repeat for more than one).
 
 Save-as options:
 - `--format <pak|sin|zip|pk3|pk4|pkz|wad|wad2>` : choose the output archive format. If omitted, PakFu infers it from `--save-as`.
@@ -205,6 +227,8 @@ Examples:
 ./builddir/src/pakfu --cli --convert png --prefix textures -o converted_textures path/to/archive.pk3
 ./builddir/src/pakfu --cli --preview-export gfx/conback.lmp -o previews path/to/pak0.pak
 ./builddir/src/pakfu --cli --mount nested/maps.pk3 --list path/to/archive.pk3
+./builddir/src/pakfu --cli --list-plugins
+./builddir/src/pakfu --cli --run-plugin example:inspect-cfg --entry scripts/autoexec.cfg path/to/archive.pk3
 ./builddir/src/pakfu --cli --check-updates
 ./builddir/src/pakfu --cli --qa-practical
 ./builddir/src/pakfu --cli --list-game-installs
@@ -235,6 +259,7 @@ Examples:
   - Double-click nested container files to mount and browse in-place.
   - Multiple nested layers are supported.
   - `File` menu and context menu actions support `Extract Selected`, `Extract All` (archive views), and `Convert Selected Assets...`.
+  - The `Extensions` menu discovers manifest-backed external tools and validates the current archive selection before launch.
 - Safety:
   - Pure PAK Protector is enabled by default for official archives (read-only protection with Save As workflow).
 
@@ -295,7 +320,9 @@ For full policy details, see `docs/RELEASES.md`.
 | `QT_MEDIA_BACKEND` | Override Qt multimedia backend selection. |
 
 ## Documentation
+- `docs/CORE_LIBRARY.md` : `pakfu_core` scope, umbrella header, and intended build contract.
 - `docs/DEPENDENCIES.md` : dependency baseline and optional libraries.
+- `docs/EXTENSIONS.md` : manifest schema, JSON payload contract, and CLI/GUI extension workflow.
 - `docs/QA_ARCHIVE_FILE_OPS.md` : practical QA checklist for selection, drag/drop, cut/copy/paste, and modifiers.
 - `docs/RELEASES.md` : versioning, release rules, and asset contract.
 - `docs/UI_BUTTON_ICONS.md` : UI action icon inventory.

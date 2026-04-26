@@ -31,6 +31,7 @@
 
 ## Planned / Optional
 - Vulkan runtime + drivers (enables the Vulkan 3D preview renderer; OpenGL remains the fallback)
+- Clang/LLVM with libFuzzer support (parser fuzzing targets and sanitizer CI workflow)
 - OGG (if not handled by Qt Multimedia on a platform)
 - Third-party decoding libraries as needed, scoped to formats that Qt does not
   cover on all platforms

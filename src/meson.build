@@ -74,12 +74,26 @@ configure_file(
 
 pakfu_includes = [include_directories('.')] + qt_rhi_includes
 
-sources = files(
-  'main.cpp',
-  'cli/cli.cpp',
+fuzzing_opt = get_option('fuzzing')
+fuzz_compile_args = ['-fsanitize=fuzzer', '-fno-omit-frame-pointer']
+fuzz_link_args = ['-fsanitize=fuzzer']
+fuzzing_supported = (
+  cpp_compiler.has_multi_arguments(fuzz_compile_args) and
+  cpp_compiler.has_multi_link_arguments(fuzz_link_args)
+)
+if fuzzing_opt.enabled() and not fuzzing_supported
+  error('Parser fuzz targets require compiler support for -fsanitize=fuzzer.')
+endif
+fuzzing_enabled = fuzzing_supported and not fuzzing_opt.disabled()
+if fuzzing_enabled
+  message('Parser fuzz targets enabled.')
+endif
+
+core_sources = files(
   'archive/archive.cpp',
   'archive/dir_archive.cpp',
   'archive/archive_search_index.cpp',
+  'extensions/extension_plugin.cpp',
   'resources/resources_archive.cpp',
   'game/game_set.cpp',
   'game/game_auto_detect.cpp',
@@ -105,6 +119,13 @@ sources = files(
   'formats/wal_image.cpp',
   'zip/quakelive_pk3_crypto.cpp',
   'zip/zip_archive.cpp',
+  'pak/pak_archive.cpp',
+  'wad/wad_archive.cpp',
+)
+
+app_sources = files(
+  'main.cpp',
+  'cli/cli.cpp',
   'ui/splash_screen.cpp',
   'ui/about_dialog.cpp',
   'ui/main_window.cpp',
@@ -134,13 +155,11 @@ sources = files(
   'ui/pak_tab.cpp',
   'platform/crash_handler.cpp',
   'platform/file_associations.cpp',
-  'pak/pak_archive.cpp',
-  'wad/wad_archive.cpp',
   'update/update_service.cpp',
 )
 
 if vulkan_preview_enabled
-  sources += files(
+  app_sources += files(
     'ui/bsp_preview_vulkan_widget.cpp',
     'ui/model_viewer_vulkan_widget.cpp',
   )
@@ -174,8 +193,23 @@ moc_sources = qt6.preprocess(
   moc_headers: moc_headers,
   moc_extra_arguments: moc_extra_arguments,
 )
-sources += rcc_sources
-sources += moc_sources
+app_sources += rcc_sources
+app_sources += moc_sources
+
+pakfu_core = static_library(
+  'pakfu_core',
+  core_sources,
+  include_directories: pakfu_includes,
+  dependencies: [qt6_dep],
+  link_with: [miniz_lib],
+  install: false,
+)
+
+pakfu_core_dep = declare_dependency(
+  include_directories: pakfu_includes,
+  dependencies: [qt6_dep],
+  link_with: [pakfu_core, miniz_lib],
+)
 
 pakfu_link_args = []
 pakfu_win_subsystem = 'console'
@@ -200,10 +234,9 @@ endif
 
 pakfu = executable(
   'pakfu',
-  sources + pakfu_win_resources,
+  app_sources + pakfu_win_resources,
   include_directories: pakfu_includes,
-  dependencies: [qt6_dep] + pakfu_platform_deps,
-  link_with: [miniz_lib],
+  dependencies: [qt6_dep, pakfu_core_dep] + pakfu_platform_deps,
   link_args: pakfu_link_args,
   win_subsystem: pakfu_win_subsystem,
   install: true,
@@ -211,39 +244,25 @@ pakfu = executable(
 
 roq_probe = executable(
   'roq_probe',
-  [
-    'tools/roq_probe.cpp',
-    'formats/cinematic.cpp',
-    'formats/cin_cinematic.cpp',
-    'formats/roq_cinematic.cpp',
-  ],
+  ['tools/roq_probe.cpp'],
   include_directories: pakfu_includes,
-  dependencies: [qt6_dep],
+  dependencies: [pakfu_core_dep],
   install: false,
 )
 
 model_probe = executable(
   'model_probe',
-  [
-    'tools/model_probe.cpp',
-    'formats/model.cpp',
-  ],
+  ['tools/model_probe.cpp'],
   include_directories: pakfu_includes,
-  dependencies: [qt6_dep],
+  dependencies: [pakfu_core_dep],
   install: false,
 )
 
 archive_writer_roundtrip_test = executable(
   'archive_writer_roundtrip_test',
-  [
-    'tests/archive_writer_roundtrip_test.cpp',
-    'zip/zip_archive.cpp',
-    'zip/quakelive_pk3_crypto.cpp',
-    'wad/wad_archive.cpp',
-  ],
+  ['tests/archive_writer_roundtrip_test.cpp'],
   include_directories: pakfu_includes,
-  dependencies: [qt6_dep],
-  link_with: [miniz_lib],
+  dependencies: [pakfu_core_dep],
   install: false,
 )
 
@@ -251,13 +270,172 @@ test('archive-writer-roundtrip', archive_writer_roundtrip_test)
 
 archive_search_index_test = executable(
   'archive_search_index_test',
-  [
-    'tests/archive_search_index_test.cpp',
-    'archive/archive_search_index.cpp',
-  ],
+  ['tests/archive_search_index_test.cpp'],
   include_directories: pakfu_includes,
-  dependencies: [qt6_dep],
+  dependencies: [pakfu_core_dep],
   install: false,
 )
 
 test('archive-search-index', archive_search_index_test)
+
+core_api_smoke_test = executable(
+  'core_api_smoke_test',
+  ['tests/core_api_smoke_test.cpp'],
+  include_directories: pakfu_includes,
+  dependencies: [pakfu_core_dep],
+  install: false,
+)
+
+test('core-api-smoke', core_api_smoke_test)
+
+extension_plugin_test = executable(
+  'extension_plugin_test',
+  ['tests/extension_plugin_test.cpp'],
+  include_directories: pakfu_includes,
+  dependencies: [pakfu_core_dep],
+  install: false,
+)
+
+test('extension-plugin', extension_plugin_test)
+
+support_matrix_fixture_test = executable(
+  'support_matrix_fixture_test',
+  ['tests/support_matrix_fixture_test.cpp'],
+  include_directories: pakfu_includes,
+  dependencies: [pakfu_core_dep],
+  install: false,
+)
+
+test('support-matrix-fixtures', support_matrix_fixture_test)
+
+if fuzzing_enabled
+  fuzz_test_env = environment()
+  fuzz_test_env.set('ASAN_OPTIONS', 'detect_leaks=0')
+  fuzz_test_env.set('UBSAN_OPTIONS', 'print_stacktrace=1')
+
+  pak_fuzzer = executable(
+    'pak_fuzzer',
+    ['tests/pak_fuzzer.cpp'],
+    include_directories: pakfu_includes,
+    dependencies: [pakfu_core_dep],
+    cpp_args: fuzz_compile_args,
+    link_args: fuzz_link_args,
+    install: false,
+  )
+
+  test(
+    'pak-fuzzer-smoke',
+    pak_fuzzer,
+    args: ['-runs=32', '-max_len=4096'],
+    env: fuzz_test_env,
+    timeout: 60,
+  )
+
+  wad_fuzzer = executable(
+    'wad_fuzzer',
+    ['tests/wad_fuzzer.cpp'],
+    include_directories: pakfu_includes,
+    dependencies: [pakfu_core_dep],
+    cpp_args: fuzz_compile_args,
+    link_args: fuzz_link_args,
+    install: false,
+  )
+
+  test(
+    'wad-fuzzer-smoke',
+    wad_fuzzer,
+    args: ['-runs=32', '-max_len=4096'],
+    env: fuzz_test_env,
+    timeout: 60,
+  )
+
+  zip_fuzzer = executable(
+    'zip_fuzzer',
+    ['tests/zip_fuzzer.cpp'],
+    include_directories: pakfu_includes,
+    dependencies: [pakfu_core_dep],
+    cpp_args: fuzz_compile_args,
+    link_args: fuzz_link_args,
+    install: false,
+  )
+
+  test(
+    'zip-fuzzer-smoke',
+    zip_fuzzer,
+    args: ['-runs=32', '-max_len=4096'],
+    env: fuzz_test_env,
+    timeout: 60,
+  )
+
+  resources_fuzzer = executable(
+    'resources_fuzzer',
+    ['tests/resources_fuzzer.cpp'],
+    include_directories: pakfu_includes,
+    dependencies: [pakfu_core_dep],
+    cpp_args: fuzz_compile_args,
+    link_args: fuzz_link_args,
+    install: false,
+  )
+
+  test(
+    'resources-fuzzer-smoke',
+    resources_fuzzer,
+    args: ['-runs=32', '-max_len=4096'],
+    env: fuzz_test_env,
+    timeout: 60,
+  )
+
+  image_fuzzer = executable(
+    'image_fuzzer',
+    ['tests/image_fuzzer.cpp'],
+    include_directories: pakfu_includes,
+    dependencies: [pakfu_core_dep],
+    cpp_args: fuzz_compile_args,
+    link_args: fuzz_link_args,
+    install: false,
+  )
+
+  test(
+    'image-fuzzer-smoke',
+    image_fuzzer,
+    args: ['-runs=32', '-max_len=4096'],
+    env: fuzz_test_env,
+    timeout: 60,
+  )
+
+  model_fuzzer = executable(
+    'model_fuzzer',
+    ['tests/model_fuzzer.cpp'],
+    include_directories: pakfu_includes,
+    dependencies: [pakfu_core_dep],
+    cpp_args: fuzz_compile_args,
+    link_args: fuzz_link_args,
+    install: false,
+  )
+
+  test(
+    'model-fuzzer-smoke',
+    model_fuzzer,
+    args: ['-runs=32', '-max_len=4096'],
+    env: fuzz_test_env,
+    timeout: 60,
+  )
+
+  cinematic_fuzzer = executable(
+    'cinematic_fuzzer',
+    ['tests/cinematic_fuzzer.cpp'],
+    include_directories: pakfu_includes,
+    dependencies: [pakfu_core_dep],
+    cpp_args: fuzz_compile_args,
+    link_args: fuzz_link_args,
+    install: false,
+  )
+
+  test(
+    'cinematic-fuzzer-smoke',
+    cinematic_fuzzer,
+    args: ['-runs=32', '-max_len=4096'],
+    env: fuzz_test_env,
+    timeout: 60,
+  )
+endif

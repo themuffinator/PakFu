@@ -4,6 +4,7 @@
 #include <QPointer>
 #include <QStringList>
 
+#include "extensions/extension_plugin.h"
 #include "game/game_set.h"
 
 class QAction;
@@ -78,6 +79,8 @@ private:
   void extract_current_selection();
   void extract_current_archive();
   void convert_current_selection();
+  void rebuild_extensions_menu();
+  void run_extension_command_action(const ExtensionCommand& command);
   void open_preferences();
   void update_window_title();
   void close_tab(int index);
@@ -131,6 +134,7 @@ private:
   QAction* preferences_action_ = nullptr;
   QAction* exit_action_ = nullptr;
   QMenu* recent_files_menu_ = nullptr;
+  QMenu* extensions_menu_ = nullptr;
   bool restoring_workspace_ = false;
   bool schedule_updates_ = true;
   int untitled_counter_ = 1;
@@ -139,4 +143,6 @@ private:
   QPointer<VideoViewerWindow> video_viewer_window_;
   QPointer<AudioViewerWindow> audio_viewer_window_;
   QPointer<ModelViewerWindow> model_viewer_window_;
+  QVector<ExtensionCommand> extension_commands_;
+  QStringList extension_warnings_;
 };

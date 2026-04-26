@@ -10,6 +10,7 @@ struct CliOptions {
   bool info = false;
   bool extract = false;
   bool save_as = false;
+  bool list_plugins = false;
   bool quakelive_encrypt_pk3 = false;
   bool check_updates = false;
   bool qa_practical = false;
@@ -21,9 +22,11 @@ struct CliOptions {
   QString save_format;
   QString convert_format;
   QString preview_export_entry;
+  QString run_plugin;
   QString mount_entry;
   QStringList entry_filters;
   QStringList prefix_filters;
+  QStringList plugin_dirs;
   QString pak_path;
   QString update_repo;
   QString update_channel;

@@ -78,6 +78,7 @@
 #include <QVBoxLayout>
 
 #include "archive/path_safety.h"
+#include "extensions/extension_plugin.h"
 #include "formats/bsp_preview.h"
 #include "formats/cinematic.h"
 #include "formats/idtech_asset_loader.h"
@@ -131,6 +132,7 @@ bool is_wad_archive_ext(const QString& ext);
 bool is_mountable_archive_ext(const QString& ext);
 bool is_mountable_archive_file_name(const QString& name);
 bool copy_file_stream(const QString& src_path, const QString& dest_path, QString* error);
+QString archive_format_label(const Archive& archive);
 
 QString format_size(quint32 size) {
   constexpr quint32 kKiB = 1024;
@@ -146,6 +148,24 @@ QString format_size(quint32 size) {
 
 bool is_quake2_game(GameId id) {
   return id == GameId::Quake2 || id == GameId::Quake2Rerelease || id == GameId::Quake2RTX;
+}
+
+QString archive_format_label(const Archive& archive) {
+	switch (archive.format()) {
+		case Archive::Format::Directory:
+			return "directory";
+		case Archive::Format::Pak:
+			return "pak";
+		case Archive::Format::Wad:
+			return "wad";
+		case Archive::Format::Resources:
+			return "resources";
+		case Archive::Format::Zip:
+			return "zip";
+		case Archive::Format::Unknown:
+			break;
+	}
+	return "unknown";
 }
 
 QString glow_path_for_fs(const QString& base_path) {
@@ -4003,6 +4023,129 @@ void PakTab::redo() {
   if (undo_stack_) {
     undo_stack_->redo();
   }
+}
+
+bool PakTab::can_execute_extension_command(const ExtensionCommand& command, QString* error) const {
+  if (error) {
+    error->clear();
+  }
+  if (!loaded_) {
+    if (error) {
+      *error = "No archive is loaded.";
+    }
+    return false;
+  }
+
+  QVector<ExtensionEntryContext> entries;
+  const ReducedSelection selection = reduce_selected_items(selected_items());
+  entries.reserve(selection.dirs.size() + selection.files.size());
+
+  for (const QString& dir_prefix : selection.dirs) {
+    ExtensionEntryContext entry;
+    entry.archive_name = normalize_dir_prefix_path(dir_prefix);
+    entry.is_dir = true;
+    entries.push_back(std::move(entry));
+  }
+
+  const auto append_file_entry = [&](const QString& pak_path) {
+    ExtensionEntryContext entry;
+    entry.archive_name = normalize_pak_path(pak_path);
+    entry.is_dir = false;
+
+    const int added_idx = added_index_by_name_.value(entry.archive_name, -1);
+    if (!is_wad_mounted() && added_idx >= 0 && added_idx < added_files_.size()) {
+      entry.size = added_files_[added_idx].size;
+      entry.mtime_utc_secs = added_files_[added_idx].mtime_utc_secs;
+      entries.push_back(std::move(entry));
+      return;
+    }
+
+    for (const ArchiveEntry& archive_entry : view_archive().entries()) {
+      if (normalize_pak_path(archive_entry.name) != entry.archive_name) {
+        continue;
+      }
+      entry.size = archive_entry.size;
+      entry.mtime_utc_secs = archive_entry.mtime_utc_secs;
+      break;
+    }
+    entries.push_back(std::move(entry));
+  };
+
+  for (const QString& pak_path : selection.files) {
+    append_file_entry(pak_path);
+  }
+
+  return extension_command_accepts_entries(command, entries, error);
+}
+
+bool PakTab::execute_extension_command(const ExtensionCommand& command, ExtensionRunResult* result, QString* error) {
+  if (error) {
+    error->clear();
+  }
+  if (!loaded_) {
+    if (error) {
+      *error = "No archive is loaded.";
+    }
+    return false;
+  }
+
+  QVector<ExtensionEntryContext> entries;
+  const ReducedSelection selection = reduce_selected_items(selected_items());
+  entries.reserve(selection.dirs.size() + selection.files.size());
+
+  for (const QString& dir_prefix : selection.dirs) {
+    ExtensionEntryContext entry;
+    entry.archive_name = normalize_dir_prefix_path(dir_prefix);
+    entry.is_dir = true;
+    QString exported_path;
+    if (!export_path_to_temp(entry.archive_name, true, &exported_path, error)) {
+      return false;
+    }
+    entry.local_path = exported_path;
+    entries.push_back(std::move(entry));
+  }
+
+  for (const QString& pak_path_in : selection.files) {
+    ExtensionEntryContext entry;
+    entry.archive_name = normalize_pak_path(pak_path_in);
+    entry.is_dir = false;
+
+    const int added_idx = added_index_by_name_.value(entry.archive_name, -1);
+    if (!is_wad_mounted() && added_idx >= 0 && added_idx < added_files_.size()) {
+      entry.size = added_files_[added_idx].size;
+      entry.mtime_utc_secs = added_files_[added_idx].mtime_utc_secs;
+    } else {
+      for (const ArchiveEntry& archive_entry : view_archive().entries()) {
+        if (normalize_pak_path(archive_entry.name) != entry.archive_name) {
+          continue;
+        }
+        entry.size = archive_entry.size;
+        entry.mtime_utc_secs = archive_entry.mtime_utc_secs;
+        break;
+      }
+    }
+
+    QString exported_path;
+    if (!export_path_to_temp(entry.archive_name, false, &exported_path, error)) {
+      return false;
+    }
+    entry.local_path = exported_path;
+    entries.push_back(std::move(entry));
+  }
+
+  ExtensionRunContext context;
+  context.archive_path = view_archive().path();
+  context.readable_archive_path = view_archive().readable_path();
+  context.archive_format = archive_format_label(view_archive());
+  context.current_prefix = current_prefix();
+  context.quakelive_encrypted_pk3 = view_archive().is_quakelive_encrypted_pk3();
+  context.wad3 = view_archive().is_wad3();
+  context.doom_wad = view_archive().is_doom_wad();
+  if (is_wad_mounted()) {
+    context.mounted_entry = mounted_archives_.back().mount_name;
+  }
+  context.entries = std::move(entries);
+  return run_extension_command(command, context, result, error);
 }
 
 void PakTab::dragEnterEvent(QDragEnterEvent* event) {

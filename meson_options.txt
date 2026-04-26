@@ -19,3 +19,10 @@ option(
   value: 'auto',
   description: 'Build the Vulkan 3D preview renderer when Qt private RHI headers are available.'
 )
+
+option(
+  'fuzzing',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Build libFuzzer-based parser hardening targets when compiler support is available.'
+)

@@ -1,0 +1,57 @@
+name: parser-hardening
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  sanitize-and-fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CC: clang
+      CXX: clang++
+      ASAN_OPTIONS: detect_leaks=0
+      UBSAN_OPTIONS: print_stacktrace=1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install Meson + Ninja
+        run: python -m pip install --upgrade pip meson ninja
+
+      - name: Install Clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.10.1"
+          arch: "linux_gcc_64"
+          modules: qtmultimedia qtimageformats
+
+      - name: Configure Hardening Build
+        run: >
+          meson setup builddir
+          --backend ninja
+          --buildtype=debugoptimized
+          -Dvulkan_preview=disabled
+          -Dfuzzing=enabled
+          -Db_sanitize=address,undefined
+
+      - name: Build
+        run: meson compile -C builddir
+
+      - name: Run Sanitized Tests
+        run: meson test -C builddir --print-errorlogs

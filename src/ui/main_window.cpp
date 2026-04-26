@@ -4,6 +4,7 @@
 #include <functional>
 
 #include <QAction>
+#include <QApplication>
 #include <QComboBox>
 #include <QDateTime>
 #include <QCheckBox>
@@ -1425,6 +1426,9 @@ void MainWindow::setup_menus() {
   preferences_action_->setShortcut(QKeySequence::Preferences);
   connect(preferences_action_, &QAction::triggered, this, &MainWindow::open_preferences);
 
+  extensions_menu_ = menuBar()->addMenu("Extensions");
+  connect(extensions_menu_, &QMenu::aboutToShow, this, &MainWindow::rebuild_extensions_menu);
+
   auto* help_menu = menuBar()->addMenu("Help");
   auto* check_updates = help_menu->addAction("Check for Updates...");
   check_updates->setIcon(UiIcons::icon(UiIcons::Id::CheckUpdates, style()));
@@ -2246,6 +2250,115 @@ void MainWindow::convert_current_selection() {
     return;
   }
   tab->convert_selected_assets();
+}
+
+void MainWindow::rebuild_extensions_menu() {
+  if (!extensions_menu_) {
+    return;
+  }
+
+  extensions_menu_->clear();
+  extension_commands_.clear();
+  extension_warnings_.clear();
+
+  QString load_err;
+  if (!load_extension_commands(default_extension_search_dirs(), &extension_commands_, &extension_warnings_, &load_err)) {
+    QAction* action = extensions_menu_->addAction(load_err.isEmpty() ? "Unable to load extensions" : load_err);
+    action->setEnabled(false);
+    return;
+  }
+
+  if (extension_commands_.isEmpty()) {
+    QAction* action = extensions_menu_->addAction("(No extensions found)");
+    action->setEnabled(false);
+  } else {
+    PakTab* tab = current_pak_tab();
+    for (const ExtensionCommand& command : extension_commands_) {
+      QAction* action = extensions_menu_->addAction(extension_command_display_name(command));
+      QStringList tooltip_lines;
+      if (!command.command_description.isEmpty()) {
+        tooltip_lines.push_back(command.command_description);
+      }
+      tooltip_lines.push_back(QString("Ref: %1").arg(extension_command_ref(command)));
+
+      QString availability_error;
+      bool enabled = false;
+      if (tab && tab->is_loaded()) {
+        enabled = tab->can_execute_extension_command(command, &availability_error);
+      } else {
+        availability_error = "Open an archive tab to run extensions.";
+      }
+
+      action->setEnabled(enabled);
+      if (!availability_error.isEmpty()) {
+        tooltip_lines.push_back(availability_error);
+      }
+      action->setToolTip(tooltip_lines.join("\n"));
+      action->setStatusTip(tooltip_lines.join(" | "));
+      connect(action, &QAction::triggered, this, [this, command]() { run_extension_command_action(command); });
+    }
+  }
+
+  if (!extension_warnings_.isEmpty()) {
+    extensions_menu_->addSeparator();
+    QAction* warning_action =
+      extensions_menu_->addAction(QString("Manifest warnings (%1)").arg(extension_warnings_.size()));
+    warning_action->setEnabled(false);
+    warning_action->setToolTip(extension_warnings_.join("\n"));
+    warning_action->setStatusTip(extension_warnings_.join(" | "));
+  }
+}
+
+void MainWindow::run_extension_command_action(const ExtensionCommand& command) {
+  PakTab* tab = current_pak_tab();
+  if (!tab || !tab->is_loaded()) {
+    QMessageBox::information(this, "Run Extension", "Open an archive tab before running an extension.");
+    return;
+  }
+
+  QString availability_error;
+  if (!tab->can_execute_extension_command(command, &availability_error)) {
+    QMessageBox::information(
+      this,
+      "Run Extension",
+      availability_error.isEmpty() ? "The current selection is not valid for this extension." : availability_error);
+    return;
+  }
+
+  ExtensionRunResult result;
+  QString error;
+  QApplication::setOverrideCursor(Qt::WaitCursor);
+  const bool ok = tab->execute_extension_command(command, &result, &error);
+  QApplication::restoreOverrideCursor();
+
+  QStringList details;
+  if (!result.std_out.trimmed().isEmpty()) {
+    details.push_back(QString("stdout:\n%1").arg(result.std_out.trimmed()));
+  }
+  if (!result.std_err.trimmed().isEmpty()) {
+    details.push_back(QString("stderr:\n%1").arg(result.std_err.trimmed()));
+  }
+
+  if (!ok) {
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle("Run Extension");
+    box.setText(error.isEmpty() ? "The extension command failed." : error);
+    if (!details.isEmpty()) {
+      box.setDetailedText(details.join("\n\n"));
+    }
+    box.exec();
+    return;
+  }
+
+  QMessageBox box(this);
+  box.setIcon(QMessageBox::Information);
+  box.setWindowTitle("Run Extension");
+  box.setText(QString("%1 completed.").arg(extension_command_display_name(command)));
+  if (!details.isEmpty()) {
+    box.setDetailedText(details.join("\n\n"));
+  }
+  box.exec();
 }
 
 void MainWindow::open_preferences() {

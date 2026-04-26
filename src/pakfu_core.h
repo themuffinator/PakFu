@@ -1,0 +1,17 @@
+#pragma once
+
+#include "archive/archive.h"
+#include "archive/archive_search_index.h"
+#include "extensions/extension_plugin.h"
+#include "formats/bsp_preview.h"
+#include "formats/cinematic.h"
+#include "formats/idtech_asset_loader.h"
+#include "formats/idwav_audio.h"
+#include "formats/image_loader.h"
+#include "formats/image_writer.h"
+#include "formats/model.h"
+#include "formats/quake3_shader.h"
+#include "formats/quake3_skin.h"
+#include "formats/sprite_loader.h"
+#include "game/game_auto_detect.h"
+#include "game/game_set.h"

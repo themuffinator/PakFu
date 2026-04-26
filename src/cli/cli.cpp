@@ -18,6 +18,7 @@
 
 #include "archive/archive.h"
 #include "archive/path_safety.h"
+#include "extensions/extension_plugin.h"
 #include "formats/idwav_audio.h"
 #include "formats/image_loader.h"
 #include "formats/image_writer.h"
@@ -85,6 +86,24 @@ QString format_string(Archive::Format f) {
       break;
   }
   return "Unknown";
+}
+
+QString archive_format_label(const Archive& archive) {
+  switch (archive.format()) {
+    case Archive::Format::Directory:
+      return "directory";
+    case Archive::Format::Pak:
+      return "pak";
+    case Archive::Format::Wad:
+      return "wad";
+    case Archive::Format::Resources:
+      return "resources";
+    case Archive::Format::Zip:
+      return "zip";
+    case Archive::Format::Unknown:
+      break;
+  }
+  return "unknown";
 }
 
 QString change_file_extension(QString path, const QString& format) {
@@ -231,6 +250,31 @@ bool has_selection_filters(const QStringList& entry_filters, const QStringList& 
   return !entry_filters.isEmpty() || !prefix_filters.isEmpty();
 }
 
+QStringList extension_search_dirs_for_options(const CliOptions& options) {
+  QStringList out;
+  QSet<QString> seen;
+  const auto append_dir = [&](const QString& path) {
+    const QString absolute = QFileInfo(path).absoluteFilePath();
+    if (absolute.isEmpty()) {
+      return;
+    }
+    const QString key = QDir::cleanPath(absolute).toLower();
+    if (seen.contains(key)) {
+      return;
+    }
+    seen.insert(key);
+    out.push_back(QDir::cleanPath(absolute));
+  };
+
+  for (const QString& path : options.plugin_dirs) {
+    append_dir(path);
+  }
+  for (const QString& path : default_extension_search_dirs()) {
+    append_dir(path);
+  }
+  return out;
+}
+
 bool entry_matches_filters(const QString& normalized_name,
                            const QStringList& entry_filters,
                            const QStringList& prefix_filters) {
@@ -370,6 +414,59 @@ bool collect_disk_files(const Archive& archive,
   if (error) {
     error->clear();
   }
+  return true;
+}
+
+bool collect_extension_entries(const Archive& archive,
+                               const QStringList& entry_filters,
+                               const QStringList& prefix_filters,
+                               QTemporaryDir* temp,
+                               QVector<ExtensionEntryContext>* out_entries,
+                               QString* error) {
+  if (error) {
+    error->clear();
+  }
+  if (out_entries) {
+    out_entries->clear();
+  }
+  if (!has_selection_filters(entry_filters, prefix_filters)) {
+    return true;
+  }
+
+  const QVector<const ArchiveEntry*> selected = select_entries(archive.entries(), entry_filters, prefix_filters, false);
+  if (selected.isEmpty()) {
+    if (error) {
+      *error = "No file entries matched the extension selection.";
+    }
+    return false;
+  }
+
+  QVector<CliDiskFile> files;
+  QString collect_err;
+  if (!collect_disk_files(archive, selected, temp, &files, &collect_err)) {
+    if (error) {
+      *error = collect_err;
+    }
+    return false;
+  }
+
+  if (out_entries) {
+    out_entries->reserve(files.size());
+    for (int i = 0; i < files.size(); ++i) {
+      ExtensionEntryContext entry;
+      entry.archive_name = files[i].archive_name;
+      entry.local_path = files[i].source_path;
+      entry.is_dir = false;
+      if (i < selected.size() && selected[i]) {
+        entry.size = selected[i]->size;
+        entry.mtime_utc_secs = selected[i]->mtime_utc_secs;
+      } else {
+        entry.mtime_utc_secs = files[i].mtime_utc_secs;
+      }
+      out_entries->push_back(std::move(entry));
+    }
+  }
+
   return true;
 }
 
@@ -847,6 +944,45 @@ int run_preview_export_cli(const Archive& archive,
   return 0;
 }
 
+int run_list_plugins_cli(const CliOptions& options, QTextStream& out, QTextStream& err) {
+  QVector<ExtensionCommand> commands;
+  QStringList warnings;
+  QString load_err;
+  const QStringList search_dirs = extension_search_dirs_for_options(options);
+  if (!load_extension_commands(search_dirs, &commands, &warnings, &load_err)) {
+    err << (load_err.isEmpty() ? "Unable to load extension manifests.\n" : load_err + "\n");
+    return 2;
+  }
+
+  out << "Extension search dirs:\n";
+  for (const QString& dir : search_dirs) {
+    out << "  " << dir << "\n";
+  }
+  if (commands.isEmpty()) {
+    out << "No extensions found.\n";
+  } else {
+    out << "Extensions:\n";
+    for (const ExtensionCommand& command : commands) {
+      out << extension_command_ref(command) << "\t" << extension_command_display_name(command);
+      if (!command.command_description.isEmpty()) {
+        out << "\t" << command.command_description;
+      }
+      out << "\n";
+      out << "  entries: " << (command.requires_entries ? "required" : "optional");
+      out << ", multiple: " << (command.allow_multiple ? "yes" : "no");
+      if (!command.allowed_extensions.isEmpty()) {
+        out << ", extensions: " << command.allowed_extensions.join(", ");
+      }
+      out << "\n";
+    }
+  }
+
+  for (const QString& warning : warnings) {
+    err << "Extension warning: " << warning << "\n";
+  }
+  return 0;
+}
+
 bool mount_archive_entry(const Archive& source,
                          const QString& entry,
                          QTemporaryDir* temp,
@@ -1074,14 +1210,17 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   const QCommandLineOption list_option({"l", "list"}, "List entries in the archive.");
   const QCommandLineOption info_option({"i", "info"}, "Show archive summary information.");
   const QCommandLineOption extract_option({"x", "extract"}, "Extract archive contents.");
-  const QCommandLineOption entry_option("entry", "Limit list/extract/save-as/convert to this exact archive entry (repeatable).", "path");
-  const QCommandLineOption prefix_option("prefix", "Limit list/extract/save-as/convert to entries under this archive prefix (repeatable).", "dir");
+  const QCommandLineOption entry_option("entry", "Limit list/extract/save-as/convert/run-plugin to this exact archive entry (repeatable).", "path");
+  const QCommandLineOption prefix_option("prefix", "Limit list/extract/save-as/convert/run-plugin to entries under this archive prefix (repeatable).", "dir");
   const QCommandLineOption mount_option("mount", "Mount a nested archive entry before running the requested action.", "entry");
   const QCommandLineOption save_as_option("save-as", "Write selected entries to a new archive.", "archive");
   const QCommandLineOption format_option("format", "Archive format for --save-as (pak, sin, zip, pk3, pk4, pkz, wad, wad2).", "format");
   const QCommandLineOption quakelive_encrypt_option("quakelive-encrypt-pk3", "Encrypt ZIP-family --save-as output as a Quake Live Beta PK3.");
   const QCommandLineOption convert_option("convert", "Convert selected image entries to an output image format.", "format");
   const QCommandLineOption preview_export_option("preview-export", "Export the preview rendition of one entry (images become image files; text/binary falls back to bytes).", "entry");
+  const QCommandLineOption list_plugins_option("list-plugins", "List discovered extension commands.");
+  const QCommandLineOption run_plugin_option("run-plugin", "Run an extension command against the current archive.", "plugin[:command]");
+  const QCommandLineOption plugin_dir_option("plugin-dir", "Add an extension search directory (repeatable).", "dir");
   const QCommandLineOption check_updates_option("check-updates", "Check GitHub for new releases.");
   const QCommandLineOption qa_practical_option(
     "qa-practical",
@@ -1127,6 +1266,9 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   parser.addOption(quakelive_encrypt_option);
   parser.addOption(convert_option);
   parser.addOption(preview_export_option);
+  parser.addOption(list_plugins_option);
+  parser.addOption(run_plugin_option);
+  parser.addOption(plugin_dir_option);
   parser.addOption(check_updates_option);
   parser.addOption(qa_practical_option);
   parser.addOption(list_game_sets_option);
@@ -1173,6 +1315,9 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   options.quakelive_encrypt_pk3 = parser.isSet(quakelive_encrypt_option);
   options.convert_format = parser.value(convert_option);
   options.preview_export_entry = parser.value(preview_export_option);
+  options.list_plugins = parser.isSet(list_plugins_option);
+  options.run_plugin = parser.value(run_plugin_option);
+  options.plugin_dirs = parser.values(plugin_dir_option);
   options.check_updates = parser.isSet(check_updates_option);
   options.qa_practical = parser.isSet(qa_practical_option);
   options.list_game_sets = parser.isSet(list_game_sets_option) || parser.isSet(list_game_installs_option);
@@ -1191,8 +1336,9 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   }
 
   const bool any_archive_action = options.list || options.info || options.extract || options.save_as ||
-                                  !options.convert_format.isEmpty() || !options.preview_export_entry.isEmpty();
-  const bool any_action = any_archive_action || options.check_updates ||
+                                  !options.convert_format.isEmpty() || !options.preview_export_entry.isEmpty() ||
+                                  !options.run_plugin.isEmpty();
+  const bool any_action = any_archive_action || options.list_plugins || options.check_updates ||
                           options.qa_practical ||
                           options.list_game_sets || options.auto_detect_game_sets ||
                           !options.select_game_set.isEmpty();
@@ -1208,7 +1354,8 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   }
 
   if ((options.list || options.info || options.extract || options.save_as ||
-       !options.convert_format.isEmpty() || !options.preview_export_entry.isEmpty()) &&
+       !options.convert_format.isEmpty() || !options.preview_export_entry.isEmpty() ||
+       !options.run_plugin.isEmpty()) &&
       options.pak_path.isEmpty()) {
     if (output) {
       *output = normalize_output("Missing archive path.") + '\n' + parser.helpText();
@@ -1217,10 +1364,25 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   }
 
   if ((parser.isSet(entry_option) || parser.isSet(prefix_option)) &&
-      !(options.list || options.extract || options.save_as || !options.convert_format.isEmpty())) {
+      !(options.list || options.extract || options.save_as || !options.convert_format.isEmpty() ||
+        !options.run_plugin.isEmpty())) {
     if (output) {
-      *output = normalize_output("--entry/--prefix can be used with --list, --extract, --save-as, or --convert.") +
+      *output = normalize_output("--entry/--prefix can be used with --list, --extract, --save-as, --convert, or --run-plugin.") +
                 '\n' + parser.helpText();
+    }
+    return CliParseResult::ExitError;
+  }
+
+  if (parser.isSet(run_plugin_option) && options.run_plugin.trimmed().isEmpty()) {
+    if (output) {
+      *output = normalize_output("--run-plugin requires a plugin or plugin:command value.") + '\n' + parser.helpText();
+    }
+    return CliParseResult::ExitError;
+  }
+
+  if (!options.plugin_dirs.isEmpty() && !options.list_plugins && options.run_plugin.trimmed().isEmpty()) {
+    if (output) {
+      *output = normalize_output("--plugin-dir can be used with --list-plugins or --run-plugin.") + '\n' + parser.helpText();
     }
     return CliParseResult::ExitError;
   }
@@ -1263,6 +1425,7 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   if (options.qa_practical) {
     const bool has_conflict = options.list || options.info || options.extract || options.save_as ||
                               !options.convert_format.isEmpty() || !options.preview_export_entry.isEmpty() ||
+                              options.list_plugins || !options.run_plugin.isEmpty() ||
                               !options.mount_entry.isEmpty() || options.check_updates ||
                               options.list_game_sets || options.auto_detect_game_sets ||
                               !options.select_game_set.isEmpty() || !options.pak_path.isEmpty();
@@ -1381,6 +1544,13 @@ int run_cli(const CliOptions& options) {
       case UpdateCheckState::Error:
         err << (result.message.isEmpty() ? "Update check failed.\n" : result.message + '\n');
         return 2;
+    }
+  }
+
+  if (options.list_plugins) {
+    const int rc = run_list_plugins_cli(options, out, err);
+    if (rc != 0 || options.run_plugin.isEmpty()) {
+      return rc;
     }
   }
 
@@ -1562,6 +1732,82 @@ int run_cli(const CliOptions& options) {
     const int rc = run_preview_export_cli(*active_archive, options, out, err);
     if (rc != 0) {
       return rc;
+    }
+  }
+
+  if (!options.run_plugin.isEmpty()) {
+    QVector<ExtensionCommand> commands;
+    QStringList warnings;
+    QString load_err;
+    if (!load_extension_commands(extension_search_dirs_for_options(options), &commands, &warnings, &load_err)) {
+      err << (load_err.isEmpty() ? "Unable to load extension manifests.\n" : load_err + "\n");
+      return 2;
+    }
+    for (const QString& warning : warnings) {
+      err << "Extension warning: " << warning << "\n";
+    }
+
+    QString command_err;
+    const ExtensionCommand* command = find_extension_command(commands, options.run_plugin, &command_err);
+    if (!command) {
+      err << (command_err.isEmpty() ? "Extension command not found.\n" : command_err + "\n");
+      return 2;
+    }
+
+    QTemporaryDir extension_temp;
+    QVector<ExtensionEntryContext> extension_entries;
+    QString selection_err;
+    if (!collect_extension_entries(*active_archive,
+                                   entry_filters,
+                                   prefix_filters,
+                                   &extension_temp,
+                                   &extension_entries,
+                                   &selection_err)) {
+      err << (selection_err.isEmpty() ? "Unable to prepare extension input files.\n" : selection_err + "\n");
+      return 2;
+    }
+
+    ExtensionRunContext context;
+    context.archive_path = active_archive->path();
+    context.readable_archive_path = active_archive->readable_path();
+    context.archive_format = archive_format_label(*active_archive);
+    context.mounted_entry = options.mount_entry;
+    context.quakelive_encrypted_pk3 = active_archive->is_quakelive_encrypted_pk3();
+    context.wad3 = active_archive->is_wad3();
+    context.doom_wad = active_archive->is_doom_wad();
+    context.entries = std::move(extension_entries);
+
+    ExtensionRunResult result;
+    QString run_err;
+    if (!run_extension_command(*command, context, &result, &run_err)) {
+      err << (run_err.isEmpty() ? "Extension command failed.\n" : run_err + "\n");
+      if (!result.std_err.trimmed().isEmpty()) {
+        err << result.std_err;
+        if (!result.std_err.endsWith('\n')) {
+          err << "\n";
+        }
+      }
+      if (!result.std_out.trimmed().isEmpty()) {
+        out << result.std_out;
+        if (!result.std_out.endsWith('\n')) {
+          out << "\n";
+        }
+      }
+      return 2;
+    }
+
+    out << "Extension completed: " << extension_command_ref(*command) << "\n";
+    if (!result.std_out.trimmed().isEmpty()) {
+      out << result.std_out;
+      if (!result.std_out.endsWith('\n')) {
+        out << "\n";
+      }
+    }
+    if (!result.std_err.trimmed().isEmpty()) {
+      err << result.std_err;
+      if (!result.std_err.endsWith('\n')) {
+        err << "\n";
+      }
     }
   }
 

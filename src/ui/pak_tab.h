@@ -42,6 +42,8 @@ class QDragEnterEvent;
 class QDragMoveEvent;
 class QDropEvent;
 class QTimer;
+struct ExtensionCommand;
+struct ExtensionRunResult;
 
 class PakTabDetailsView;
 class PakTabIconView;
@@ -112,6 +114,8 @@ public:
   [[nodiscard]] bool can_extract_all() const;
   void undo();
   void redo();
+  [[nodiscard]] bool can_execute_extension_command(const ExtensionCommand& command, QString* error) const;
+  bool execute_extension_command(const ExtensionCommand& command, ExtensionRunResult* result, QString* error);
   // Drop helpers used by tab views and main-window tab-bar integration.
   bool can_accept_mime(const QMimeData* mime) const;
   bool handle_drop_event(QDropEvent* event, const QString& dest_prefix);
