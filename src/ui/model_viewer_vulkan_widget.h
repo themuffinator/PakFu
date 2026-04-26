@@ -1,5 +1,9 @@
 #pragma once
 
+#include "pakfu_config.h"
+
+#if PAKFU_WITH_VULKAN_PREVIEW
+
 #include <QtWidgets/qrhiwidget.h>
 #include <QColor>
 #include <QElapsedTimer>
@@ -265,3 +269,65 @@ private:
 	bool animation_interpolate_ = true;
 	bool skeleton_overlay_enabled_ = false;
 };
+
+#else
+
+#include <QColor>
+#include <QImage>
+#include <QString>
+#include <QVector>
+#include <QWidget>
+
+#include "formats/model.h"
+#include "ui/preview_3d_options.h"
+
+class ModelViewerVulkanWidget final : public QWidget {
+public:
+	explicit ModelViewerVulkanWidget(QWidget* parent = nullptr) : QWidget(parent) {}
+	~ModelViewerVulkanWidget() override = default;
+
+	[[nodiscard]] bool has_model() const { return false; }
+	[[nodiscard]] QString model_format() const { return {}; }
+	[[nodiscard]] ModelMesh mesh() const { return {}; }
+
+	void set_texture_smoothing(bool) {}
+	void set_palettes(const QVector<QRgb>&, const QVector<QRgb>&) {}
+	void set_grid_mode(PreviewGridMode) {}
+	void set_background_mode(PreviewBackgroundMode, const QColor&) {}
+	void set_wireframe_enabled(bool) {}
+	void set_textured_enabled(bool) {}
+	void set_glow_enabled(bool) {}
+	void set_fov_degrees(int) {}
+	void set_animation_playing(bool) {}
+	void set_animation_loop_enabled(bool) {}
+	void set_animation_speed_multiplier(float) {}
+	void set_animation_frame(int) {}
+	void set_skeleton_overlay_enabled(bool) {}
+	[[nodiscard]] int animation_frame_count() const { return 0; }
+	[[nodiscard]] int animation_current_frame() const { return 0; }
+	[[nodiscard]] bool animation_playing() const { return false; }
+	[[nodiscard]] bool animation_loop_enabled() const { return false; }
+	[[nodiscard]] float animation_speed_multiplier() const { return 1.0f; }
+	[[nodiscard]] bool skeleton_overlay_enabled() const { return false; }
+	[[nodiscard]] bool has_native_animation() const { return false; }
+	[[nodiscard]] bool has_native_skeleton() const { return false; }
+	[[nodiscard]] int skeleton_joint_count() const { return 0; }
+	[[nodiscard]] PreviewCameraState camera_state() const { return {}; }
+	void set_camera_state(const PreviewCameraState&) {}
+
+	[[nodiscard]] bool load_file(const QString&, QString* error = nullptr) {
+		if (error) {
+			*error = "Vulkan preview is not available in this build.";
+		}
+		return false;
+	}
+	[[nodiscard]] bool load_file(const QString&, const QString&, QString* error) {
+		if (error) {
+			*error = "Vulkan preview is not available in this build.";
+		}
+		return false;
+	}
+	void unload() {}
+};
+
+#endif

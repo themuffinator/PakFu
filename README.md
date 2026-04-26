@@ -59,6 +59,10 @@ Get PakFu from GitHub Releases:
 - macOS: `installer.pkg` (recommended) or `portable.zip`
 - Linux: `installer.AppImage` (recommended) or `portable.tar.gz`
 
+The Linux portable archive is a deployed runtime tree with Qt and non-Qt
+runtime libraries bundled. After extracting it, run `./pakfu` from the extracted
+directory.
+
 PakFu can also check for updates at runtime (GUI) and via CLI (`--check-updates`).
 
 ## Highlights
@@ -121,6 +125,11 @@ Notes:
 - Meson + Ninja
 - Qt6 (Core, Gui, Network, Widgets, OpenGL, OpenGLWidgets, Multimedia, MultimediaWidgets)
 - Windows: `DbgHelp` (system library, used for crash reporting)
+
+The Vulkan 3D preview renderer is optional at build time. If Qt private RHI
+headers are unavailable, Meson builds the OpenGL preview path instead; use
+`-Dvulkan_preview=enabled` to require Vulkan or `-Dvulkan_preview=disabled` to
+force the portable OpenGL-only build.
 
 See `docs/DEPENDENCIES.md` for full dependency details and packaging toolchain requirements.
 

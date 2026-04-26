@@ -12,3 +12,10 @@ option(
   value: 'stable',
   description: 'Update channel selection.'
 )
+
+option(
+  'vulkan_preview',
+  type: 'feature',
+  value: 'auto',
+  description: 'Build the Vulkan 3D preview renderer when Qt private RHI headers are available.'
+)

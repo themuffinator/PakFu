@@ -13,6 +13,10 @@
   - OpenGLWidgets (model preview: MDL/MD2/MD3/MDC/MD4/MDR/SKB/SKD/MDM/GLM/IQM/MD5/LWO/OBJ)
   - Multimedia (audio/video playback via available backend codecs; prefers FFmpeg when available)
   - MultimediaWidgets (video output: QVideoWidget)
+- Vulkan preview builds additionally need Qt's private RHI headers
+  (`rhi/qrhi.h` and `rhi/qshader.h`, for example from `qt6-base-private-dev`
+  on Debian-family distributions). When they are not available, Meson disables
+  the Vulkan preview automatically and keeps the OpenGL preview renderer.
 
 ## Release Packaging Toolchain
 - Windows:
@@ -22,7 +26,7 @@
   - `macdeployqt` (Qt deployment)
   - `pkgbuild` (native `.pkg` installer generation)
 - Linux:
-  - `linuxdeployqt` (downloaded in CI for AppImage packaging)
+  - `linuxdeployqt` (downloaded in CI for AppImage and portable runtime packaging)
   - AppImage runtime tooling (`APPIMAGE_EXTRACT_AND_RUN` flow in CI)
 
 ## Planned / Optional

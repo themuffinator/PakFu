@@ -52,15 +52,6 @@ icon_file="${app_dir}/usr/share/icons/hicolor/256x256/apps/pakfu-app.png"
 linuxdeployqt_tool="${out_dir}/linuxdeployqt-${linuxdeploy_arch}.AppImage"
 
 rm -rf "${portable_dir}" "${portable_archive}" "${installer_appimage}" "${app_dir}"
-mkdir -p "${portable_dir}"
-cp "${binary}" "${portable_dir}/pakfu"
-chmod +x "${portable_dir}/pakfu"
-if [[ -d "${root_dir}/assets" ]]; then
-  cp -R "${root_dir}/assets" "${portable_dir}/assets"
-fi
-tar -czf "${portable_archive}" -C "${out_dir}" "$(basename "${portable_dir}")"
-echo "Packaged portable archive: ${portable_archive}"
-
 mkdir -p "$(dirname "${desktop_file}")" "$(dirname "${icon_file}")" "${app_dir}/usr/bin" "${app_dir}/usr/share/pakfu"
 cp "${binary}" "${app_dir}/usr/bin/pakfu"
 chmod +x "${app_dir}/usr/bin/pakfu"
@@ -93,7 +84,7 @@ if [[ ! -f "${linuxdeployqt_tool}" ]]; then
   chmod +x "${linuxdeployqt_tool}"
 fi
 
-find "${out_dir}" . -maxdepth 1 -type f -name "*.AppImage" ! -name "$(basename "${linuxdeployqt_tool}")" -delete
+find "${out_dir}" -maxdepth 1 -type f -name "*.AppImage" ! -name "$(basename "${linuxdeployqt_tool}")" -delete
 
 disabled_plugins=()
 restore_disabled_plugins() {
@@ -120,16 +111,55 @@ if [[ -n "${qt_plugins_dir}" && -d "${qt_plugins_dir}" ]]; then
   done < <(find "${qt_plugins_dir}" -type f -name "*.so" | sort)
 fi
 
-export VERSION="${version}"
-APPIMAGE_EXTRACT_AND_RUN=1 "${linuxdeployqt_tool}" \
-  "${desktop_file}" \
-  -qmake="${qmake_bin}" \
-  -unsupported-allow-new-glibc \
-  -no-copy-copyright-files \
-  -bundle-non-qt-libs \
-  -appimage
+(
+  cd "${out_dir}"
+  export VERSION="${version}"
+  APPIMAGE_EXTRACT_AND_RUN=1 "./$(basename "${linuxdeployqt_tool}")" \
+    "PakFu.AppDir/usr/share/applications/pakfu.desktop" \
+    -qmake="${qmake_bin}" \
+    -unsupported-allow-new-glibc \
+    -no-copy-copyright-files \
+    -bundle-non-qt-libs \
+    -appimage
+)
 
-generated_appimage="$(find "${out_dir}" . -maxdepth 1 -type f -name "*.AppImage" ! -name "$(basename "${linuxdeployqt_tool}")" | head -n1)"
+if [[ ! -e "${app_dir}/usr/lib/libQt6Core.so.6" ]]; then
+  echo "linuxdeployqt did not bundle libQt6Core.so.6 into ${app_dir}." >&2
+  exit 1
+fi
+
+pakfu_ldd="$(ldd "${app_dir}/usr/bin/pakfu" 2>/dev/null || true)"
+if printf "%s\n" "${pakfu_ldd}" | grep -q "not found"; then
+  echo "Packaged pakfu binary still has unresolved runtime dependencies:" >&2
+  printf "%s\n" "${pakfu_ldd}" >&2
+  exit 1
+fi
+
+app_dir_abs="$(cd "${app_dir}" && pwd)"
+if ! printf "%s\n" "${pakfu_ldd}" | grep -F "libQt6Core.so.6 => ${app_dir_abs}/" >/dev/null; then
+  echo "Packaged pakfu binary is not resolving Qt Core from the deployed AppDir." >&2
+  printf "%s\n" "${pakfu_ldd}" >&2
+  exit 1
+fi
+
+if [[ ! -x "${app_dir}/AppRun" ]]; then
+  echo "linuxdeployqt did not create an executable AppRun launcher in ${app_dir}." >&2
+  exit 1
+fi
+
+mkdir -p "${portable_dir}"
+cp -a "${app_dir}/." "${portable_dir}/"
+cat > "${portable_dir}/pakfu" <<'LAUNCHER'
+#!/usr/bin/env sh
+set -eu
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec "$HERE/AppRun" "$@"
+LAUNCHER
+chmod +x "${portable_dir}/pakfu"
+tar -czf "${portable_archive}" -C "${out_dir}" "$(basename "${portable_dir}")"
+echo "Packaged portable archive: ${portable_archive}"
+
+generated_appimage="$(find "${out_dir}" -maxdepth 1 -type f -name "*.AppImage" ! -name "$(basename "${linuxdeployqt_tool}")" | sort | head -n1)"
 if [[ -z "${generated_appimage}" ]]; then
   echo "linuxdeployqt did not produce an AppImage." >&2
   exit 1

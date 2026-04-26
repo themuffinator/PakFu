@@ -5,12 +5,6 @@ conf.set('PAKFU_UPDATE_CHANNEL', get_option('update_channel'))
 
 cpp_compiler = meson.get_compiler('cpp')
 
-configure_file(
-  input: 'pakfu_config.h.in',
-  output: 'pakfu_config.h',
-  configuration: conf,
-)
-
 miniz_lib = static_library(
   'pakfu_miniz',
   files(
@@ -30,8 +24,10 @@ qt_libs = qt6_dep.get_variable(configtool: 'QT_INSTALL_LIBS', default_value: '')
 qt_version = qt6_dep.get_variable(configtool: 'QT_VERSION', default_value: '')
 
 fs = import('fs')
+vulkan_preview_opt = get_option('vulkan_preview')
 qt_rhi_includes = []
 qt_rhi_candidates = []
+qt_rhi_headers_found = false
 if qt_headers != '' and qt_version != ''
   qt_rhi_candidates += join_paths(qt_headers, 'QtGui', qt_version, 'QtGui')
   qt_rhi_candidates += join_paths(qt_headers, 'QtGui.framework', 'Headers', qt_version, 'QtGui')
@@ -50,11 +46,31 @@ if qt_libs != ''
 endif
 
 foreach path : qt_rhi_candidates
-  if fs.exists(join_paths(path, 'rhi', 'qshader.h'))
+  if fs.exists(join_paths(path, 'rhi', 'qrhi.h')) and fs.exists(join_paths(path, 'rhi', 'qshader.h'))
+    qt_rhi_headers_found = true
     qt_rhi_includes += include_directories(path)
     break
   endif
 endforeach
+
+if vulkan_preview_opt.enabled() and not qt_rhi_headers_found
+  error('Vulkan preview requires Qt private RHI headers (rhi/qrhi.h and rhi/qshader.h). Install the Qt private development headers or configure with -Dvulkan_preview=disabled.')
+endif
+
+vulkan_preview_enabled = qt_rhi_headers_found and not vulkan_preview_opt.disabled()
+conf.set('PAKFU_WITH_VULKAN_PREVIEW', vulkan_preview_enabled ? 1 : 0)
+
+if vulkan_preview_enabled
+  message('Vulkan preview renderer enabled.')
+else
+  message('Vulkan preview renderer disabled; OpenGL preview remains available.')
+endif
+
+configure_file(
+  input: 'pakfu_config.h.in',
+  output: 'pakfu_config.h',
+  configuration: conf,
+)
 
 pakfu_includes = [include_directories('.')] + qt_rhi_includes
 
@@ -111,9 +127,7 @@ sources = files(
   'ui/cinematic_player_widget.cpp',
   'ui/video_player_widget.cpp',
   'ui/bsp_preview_widget.cpp',
-  'ui/bsp_preview_vulkan_widget.cpp',
   'ui/model_viewer_widget.cpp',
-  'ui/model_viewer_vulkan_widget.cpp',
   'ui/shader_viewer_widget.cpp',
   'ui/preview_pane.cpp',
   'ui/pak_tab.cpp',
@@ -124,23 +138,40 @@ sources = files(
   'update/update_service.cpp',
 )
 
+if vulkan_preview_enabled
+  sources += files(
+    'ui/bsp_preview_vulkan_widget.cpp',
+    'ui/model_viewer_vulkan_widget.cpp',
+  )
+endif
+
 rcc_sources = qt6.preprocess(
   qresources: ['resources.qrc'],
 )
 
-moc_sources = qt6.preprocess(
-  moc_headers: [
-    'update/update_service.h',
-    'ui/splash_screen.h',
-    'ui/breadcrumb_bar.h',
-    'ui/cinematic_player_widget.h',
-    'ui/video_player_widget.h',
+moc_headers = [
+  'update/update_service.h',
+  'ui/splash_screen.h',
+  'ui/breadcrumb_bar.h',
+  'ui/cinematic_player_widget.h',
+  'ui/video_player_widget.h',
+  'ui/preview_pane.h',
+  'ui/pak_tab.h',
+  'ui/preferences_tab.h',
+]
+moc_extra_arguments = []
+
+if vulkan_preview_enabled
+  moc_headers += [
     'ui/bsp_preview_vulkan_widget.h',
     'ui/model_viewer_vulkan_widget.h',
-    'ui/preview_pane.h',
-    'ui/pak_tab.h',
-    'ui/preferences_tab.h',
-  ],
+  ]
+  moc_extra_arguments += ['-DPAKFU_WITH_VULKAN_PREVIEW=1']
+endif
+
+moc_sources = qt6.preprocess(
+  moc_headers: moc_headers,
+  moc_extra_arguments: moc_extra_arguments,
 )
 sources += rcc_sources
 sources += moc_sources

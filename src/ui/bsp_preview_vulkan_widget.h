@@ -1,5 +1,9 @@
 #pragma once
 
+#include "pakfu_config.h"
+
+#if PAKFU_WITH_VULKAN_PREVIEW
+
 #include <QtWidgets/qrhiwidget.h>
 #include <QColor>
 #include <QElapsedTimer>
@@ -212,3 +216,33 @@ private:
 	bool pipeline_dirty_ = true;
 	bool uniform_dirty_ = true;
 };
+
+#else
+
+#include <QColor>
+#include <QHash>
+#include <QImage>
+#include <QString>
+#include <QWidget>
+
+#include "formats/bsp_preview.h"
+#include "ui/preview_3d_options.h"
+
+class BspPreviewVulkanWidget final : public QWidget {
+public:
+	explicit BspPreviewVulkanWidget(QWidget* parent = nullptr) : QWidget(parent) {}
+	~BspPreviewVulkanWidget() override = default;
+
+	void set_mesh(BspMesh, QHash<QString, QImage>) {}
+	void set_lightmap_enabled(bool) {}
+	void set_grid_mode(PreviewGridMode) {}
+	void set_background_mode(PreviewBackgroundMode, const QColor&) {}
+	void set_wireframe_enabled(bool) {}
+	void set_textured_enabled(bool) {}
+	void set_fov_degrees(int) {}
+	[[nodiscard]] PreviewCameraState camera_state() const { return {}; }
+	void set_camera_state(const PreviewCameraState&) {}
+	void clear() {}
+};
+
+#endif

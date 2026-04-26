@@ -1,8 +1,10 @@
 #include "ui/preview_renderer.h"
 
+#include "pakfu_config.h"
+
 #include <QSettings>
 
-#if defined(QT_FEATURE_vulkan) && QT_FEATURE_vulkan
+#if PAKFU_WITH_VULKAN_PREVIEW && defined(QT_FEATURE_vulkan) && QT_FEATURE_vulkan
 #include <QtGui/QVulkanInstance>
 #define PAKFU_HAS_QT_VULKAN 1
 #else

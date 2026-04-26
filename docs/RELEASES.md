@@ -43,6 +43,10 @@ Required assets per platform:
 Current updater behavior prefers installer assets and falls back to portable
 archives when needed.
 
+Linux portable archives are produced from the same deployed AppDir used for the
+AppImage, so Qt and other runtime libraries are bundled in both Linux assets.
+The archive includes a top-level `pakfu` launcher for extracted-directory use.
+
 The release pipeline also emits:
 - `pakfu-<version>-release-manifest.json` (checksums + distribution metadata)
 - `CHANGELOG-<version>.md`

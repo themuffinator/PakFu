@@ -10,6 +10,8 @@ All notable changes to PakFu are documented here.
 - Fix stale folder listings when navigating newly added folders in a new PAK tab by using canonical archive paths for navigation/listing.
 - Revise all open/save file and folder dialogs to use platform-native navigation by default, with persistent recent locations, filters, and sidebar bookmarks across sessions.
 - Fix potential GUI hangs when opening file dialogs on systems with slow/unreachable volumes by removing synchronous volume probing from dialog state restore.
+- Bundle the deployed Linux runtime into portable tarballs and fail packaging if Qt Core is missing from the deployed AppDir.
+- Allow distro builds without Qt private RHI headers by auto-disabling the Vulkan preview renderer and keeping the OpenGL renderer available.
 
 ## [0.1.18.1] - 2026-02-19
 ### Other
