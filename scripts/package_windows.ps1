@@ -94,6 +94,34 @@ function Ensure-WixTools {
   }
 }
 
+function Resolve-PythonTool {
+  $python = Get-Command python.exe -ErrorAction SilentlyContinue
+  if ($python) {
+    return $python.Source
+  }
+
+  $py = Get-Command py.exe -ErrorAction SilentlyContinue
+  if ($py) {
+    return $py.Source
+  }
+
+  throw "Python is required to generate the packaged HTML user guide."
+}
+
+function Build-UserGuide {
+  param(
+    [string]$Destination,
+    [string]$GuideVersion
+  )
+
+  $python = Resolve-PythonTool
+  $guideScript = Join-Path $PSScriptRoot "build_user_guide.py"
+  & $python $guideScript --output $Destination --version $GuideVersion
+  if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+  }
+}
+
 if (-not $Version) {
   $Version = (Get-Content VERSION).Trim()
 }
@@ -141,6 +169,8 @@ $assets = Join-Path $repoRoot "assets"
 if (Test-Path $assets) {
   Copy-Item -Recurse -Force $assets (Join-Path $portableDir "assets")
 }
+
+Build-UserGuide -Destination (Join-Path $portableDir "Documentation") -GuideVersion $Version
 
 $portableZip = Join-Path $OutDir "pakfu-$Version-windows-$Arch-portable.zip"
 if (Test-Path $portableZip) {

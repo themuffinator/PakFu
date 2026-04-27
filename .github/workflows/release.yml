@@ -179,11 +179,6 @@ jobs:
             --version "${PAKFU_VERSION}" \
             --output "dist/pakfu-${PAKFU_VERSION}-release-manifest.json"
 
-      - name: Snapshot Changelog
-        shell: bash
-        run: |
-          cp CHANGELOG.md "dist/CHANGELOG-${PAKFU_VERSION}.md"
-
       - name: Prepare Release Notes
         shell: bash
         run: |

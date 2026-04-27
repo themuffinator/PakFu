@@ -21,6 +21,16 @@ case "${raw_arch}" in
     ;;
 esac
 
+python_cmd=""
+if command -v python3 >/dev/null 2>&1; then
+  python_cmd="python3"
+elif command -v python >/dev/null 2>&1; then
+  python_cmd="python"
+else
+  echo "Python is required to generate the packaged HTML user guide." >&2
+  exit 1
+fi
+
 if ! command -v qmake6 >/dev/null 2>&1; then
   if [[ -f "${root_dir}/scripts/ensure_qt6.sh" ]]; then
     "${root_dir}/scripts/ensure_qt6.sh"
@@ -49,10 +59,11 @@ installer_appimage="${out_dir}/pakfu-${version}-linux-${arch}-installer.AppImage
 app_dir="${out_dir}/PakFu.AppDir"
 desktop_file="${app_dir}/usr/share/applications/pakfu.desktop"
 icon_file="${app_dir}/usr/share/icons/hicolor/256x256/apps/pakfu-app.png"
+guide_dir="${app_dir}/usr/share/doc/pakfu"
 linuxdeployqt_tool="${out_dir}/linuxdeployqt-${linuxdeploy_arch}.AppImage"
 
 rm -rf "${portable_dir}" "${portable_archive}" "${installer_appimage}" "${app_dir}"
-mkdir -p "$(dirname "${desktop_file}")" "$(dirname "${icon_file}")" "${app_dir}/usr/bin" "${app_dir}/usr/share/pakfu"
+mkdir -p "$(dirname "${desktop_file}")" "$(dirname "${icon_file}")" "${app_dir}/usr/bin" "${app_dir}/usr/share/pakfu" "${guide_dir}"
 cp "${binary}" "${app_dir}/usr/bin/pakfu"
 chmod +x "${app_dir}/usr/bin/pakfu"
 if [[ -d "${root_dir}/assets" ]]; then
@@ -67,6 +78,7 @@ if [[ -f "/usr/share/doc/libc6/copyright" ]]; then
 else
   printf "Bundled by PakFu nightly build.\n" > "${app_dir}/usr/share/doc/libc6/copyright"
 fi
+"${python_cmd}" "${root_dir}/scripts/build_user_guide.py" --output "${guide_dir}" --version "${version}"
 
 cat > "${desktop_file}" <<DESKTOP
 [Desktop Entry]
@@ -160,6 +172,7 @@ fi
 
 mkdir -p "${portable_dir}"
 cp -a "${app_dir}/." "${portable_dir}/"
+cp -a "${guide_dir}" "${portable_dir}/Documentation"
 cat > "${portable_dir}/pakfu" <<'LAUNCHER'
 #!/usr/bin/env sh
 set -eu

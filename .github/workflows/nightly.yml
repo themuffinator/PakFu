@@ -369,6 +369,7 @@ jobs:
       - name: Download Package Artifacts
         uses: actions/download-artifact@v8
         with:
+          pattern: pakfu-dist-*
           path: dist
           merge-multiple: true
 
@@ -382,7 +383,6 @@ jobs:
         run: |
           release_date="$(date -u +%F)"
           python scripts/update_changelog.py --version "${{ needs.prepare.outputs.version }}" --date "$release_date"
-          cp CHANGELOG.md "dist/CHANGELOG-${{ needs.prepare.outputs.version }}.md"
 
       - name: Build Nightly Release Notes
         shell: bash
@@ -390,8 +390,60 @@ jobs:
           python scripts/nightly_release_notes.py \
             --version "v${{ needs.prepare.outputs.version }}" \
             --commit-range "${{ needs.prepare.outputs.commit_range }}" \
-            --include-full-changelog \
             --output release_notes.md
+
+      - name: Check Copilot Release Notes Availability
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+        run: |
+          if [[ -n "${COPILOT_GITHUB_TOKEN:-}" && -n "${{ needs.prepare.outputs.latest_nightly_tag }}" ]]; then
+            echo "PAKFU_USE_COPILOT_RELEASE_NOTES=true" >> "$GITHUB_ENV"
+          else
+            echo "PAKFU_USE_COPILOT_RELEASE_NOTES=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Generate Copilot Release Notes
+        id: copilot-notes
+        if: env.PAKFU_USE_COPILOT_RELEASE_NOTES == 'true'
+        continue-on-error: true
+        uses: github/copilot-release-notes@v1.0.1
+        with:
+          base-ref: ${{ needs.prepare.outputs.latest_nightly_tag }}
+          head-ref: ${{ needs.prepare.outputs.head_sha }}
+          instructions: .github/release-notes-instructions.md
+          pr-strategy: github-api
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Use Copilot Release Notes
+        if: env.PAKFU_USE_COPILOT_RELEASE_NOTES == 'true' && steps.copilot-notes.outputs.release-notes != ''
+        shell: bash
+        env:
+          COPILOT_RELEASE_NOTES: ${{ steps.copilot-notes.outputs.release-notes }}
+          PAKFU_COMMIT_RANGE: ${{ needs.prepare.outputs.commit_range }}
+          PAKFU_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          python - <<'PY'
+          import datetime as dt
+          import os
+          from pathlib import Path
+
+          body = os.environ["COPILOT_RELEASE_NOTES"].strip()
+          version = os.environ["PAKFU_VERSION"]
+          commit_range = os.environ.get("PAKFU_COMMIT_RANGE", "")
+          generated = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M UTC")
+          lines = [
+              f"# PakFu Nightly v{version}",
+              "",
+              f"Generated: {generated}",
+          ]
+          if commit_range:
+              lines.append(f"Commit range: `{commit_range}`")
+          lines.extend(["", body, ""])
+          Path("release_notes.md").write_text("\n".join(lines), encoding="utf-8")
+          PY
 
       - name: Generate Distribution Manifest
         shell: bash

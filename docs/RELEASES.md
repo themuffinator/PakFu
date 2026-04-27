@@ -23,9 +23,16 @@ Stable/beta/dev manual version generation:
 
 ## Changelog Policy
 - `CHANGELOG.md` remains the source of truth.
-- Nightly release notes include:
-1. The generated nightly changelog entry.
-2. The full `CHANGELOG.md` content.
+- Release notes are user-facing summaries generated from the current release's
+  changelog entry, not full historical changelog dumps.
+- Technical-only changes are omitted unless they affect downloads, installs,
+  startup behavior, performance, memory use, format support, previews, archive
+  behavior, or CLI workflows.
+- Related commits should be grouped into one user benefit instead of listed as
+  separate implementation steps.
+- If the `COPILOT_GITHUB_TOKEN` secret is configured, nightly releases can use
+  `github/copilot-release-notes` with `.github/release-notes-instructions.md` as
+  an editorial pass. The deterministic local scripts remain the fallback path.
 - Changelog/release-note rendering scripts:
 1. `scripts/update_changelog.py`
 2. `scripts/nightly_release_notes.py`
@@ -54,12 +61,26 @@ The archive includes a top-level `pakfu` launcher for extracted-directory use.
 
 The release pipeline also emits:
 - `pakfu-<version>-release-manifest.json` (checksums + distribution metadata)
-- `CHANGELOG-<version>.md`
+
+Standalone raw binaries (`pakfu`, `pakfu.exe`) and standalone changelog assets
+(`CHANGELOG-<version>.md`) are not release assets. `scripts/validate_release_assets.py`
+fails the release if unexpected files are present in `dist`.
+
+Each installer and portable package includes a packaged HTML user guide generated
+from the user-facing sections of `README.md` by `scripts/build_user_guide.py`.
+The guide is stored where users expect product documentation:
+- Windows portable/MSI payload: `Documentation/index.html`
+- macOS portable archive: `Documentation/index.html` beside `PakFu.app`
+- macOS installer app bundle: `PakFu.app/Contents/Resources/Documentation/index.html`
+- Linux portable archive: `Documentation/index.html` at the archive root, plus
+  `/usr/share/doc/pakfu/index.html` in the bundled runtime tree
+- Linux AppImage: `/usr/share/doc/pakfu/index.html` inside the AppDir
 
 Validation tooling:
 - `scripts/validate_build.py`
 - `scripts/validate_release_assets.py`
 - `scripts/release_manifest.py`
+- `scripts/build_user_guide.py`
 
 ## Workflows
 Nightly automation:
@@ -70,7 +91,7 @@ Nightly automation:
 2. `build`: compile on Windows/macOS/Linux
 3. `validate`: run CLI smoke checks on each platform build (and optionally `--run-practical-qa` for UI file-ops smoke checks)
 4. `package`: build installer + portable assets per platform
-5. `release`: tag, validate completeness, publish nightly release with full changelog context
+5. `release`: tag, validate completeness, publish nightly release with curated user-facing notes
 
 Manual release channels:
 - Workflow: `.github/workflows/auto_version.yml`
@@ -89,4 +110,9 @@ python scripts/next_version.py --channel dev
 Preview nightly decision/version:
 ```sh
 python scripts/nightly_version.py --format json
+```
+
+Preview the packaged HTML user guide:
+```sh
+python scripts/build_user_guide.py --output dist/Documentation
 ```

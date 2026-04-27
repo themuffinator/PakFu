@@ -18,6 +18,16 @@ case "${raw_arch}" in
     ;;
 esac
 
+python_cmd=""
+if command -v python3 >/dev/null 2>&1; then
+  python_cmd="python3"
+elif command -v python >/dev/null 2>&1; then
+  python_cmd="python"
+else
+  echo "Python is required to generate the packaged HTML user guide." >&2
+  exit 1
+fi
+
 if ! command -v qmake6 >/dev/null 2>&1; then
   if [[ -f "${root_dir}/scripts/ensure_qt6.sh" ]]; then
     "${root_dir}/scripts/ensure_qt6.sh"
@@ -37,8 +47,10 @@ app_dir="${out_dir}/${app_name}"
 portable_zip="${out_dir}/pakfu-${version}-macos-${arch}-portable.zip"
 installer_pkg="${out_dir}/pakfu-${version}-macos-${arch}-installer.pkg"
 pkg_root="${out_dir}/pkgroot"
+portable_root="${out_dir}/pakfu-${version}-macos-${arch}-portable"
+guide_dir="${out_dir}/Documentation"
 
-rm -rf "${app_dir}" "${pkg_root}" "${portable_zip}" "${installer_pkg}"
+rm -rf "${app_dir}" "${pkg_root}" "${portable_root}" "${guide_dir}" "${portable_zip}" "${installer_pkg}"
 mkdir -p "${app_dir}/Contents/MacOS" "${app_dir}/Contents/Resources"
 cp "${binary}" "${app_dir}/Contents/MacOS/PakFu"
 chmod +x "${app_dir}/Contents/MacOS/PakFu"
@@ -86,9 +98,15 @@ else
   exit 1
 fi
 
-ditto -c -k --sequesterRsrc --keepParent "${app_dir}" "${portable_zip}"
+"${python_cmd}" "${root_dir}/scripts/build_user_guide.py" --output "${guide_dir}" --version "${version}"
+
+mkdir -p "${portable_root}"
+cp -R "${app_dir}" "${portable_root}/PakFu.app"
+cp -R "${guide_dir}" "${portable_root}/Documentation"
+ditto -c -k --sequesterRsrc --keepParent "${portable_root}" "${portable_zip}"
 echo "Packaged portable archive: ${portable_zip}"
 
+cp -R "${guide_dir}" "${app_dir}/Contents/Resources/Documentation"
 mkdir -p "${pkg_root}/Applications"
 cp -R "${app_dir}" "${pkg_root}/Applications/PakFu.app"
 pkgbuild \
@@ -99,4 +117,4 @@ pkgbuild \
   "${installer_pkg}"
 echo "Packaged installer: ${installer_pkg}"
 
-rm -rf "${app_dir}" "${pkg_root}"
+rm -rf "${app_dir}" "${pkg_root}" "${portable_root}" "${guide_dir}"

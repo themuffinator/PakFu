@@ -24,6 +24,13 @@ def extract_changelog_entry(lines: list[str], version: str) -> str:
     return "\n".join(lines[start:end]).rstrip()
 
 
+def strip_entry_heading(entry: str) -> str:
+    lines = entry.splitlines()
+    if lines and lines[0].startswith("## ["):
+        return "\n".join(lines[1:]).strip()
+    return entry.strip()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create nightly release notes from CHANGELOG.md.")
     parser.add_argument("--version", required=True, help="Version or tag (e.g. v1.2.3.4).")
@@ -36,7 +43,7 @@ def main() -> int:
     parser.add_argument(
         "--include-full-changelog",
         action="store_true",
-        help="Append the full changelog content to the notes.",
+        help="Deprecated. Kept for compatibility; full changelog dumps are no longer appended.",
     )
     args = parser.parse_args()
 
@@ -64,19 +71,18 @@ def main() -> int:
     notes.extend(
         [
             "",
-            "## Nightly Changes",
+            "## What's New",
             "",
-            entry,
+            strip_entry_heading(entry),
+            "",
+            "Technical build and repository-only changes are omitted unless they affect downloads, installs, or everyday use.",
         ]
     )
-
     if args.include_full_changelog:
         notes.extend(
             [
                 "",
-                "## Full Changelog",
-                "",
-                "\n".join(lines).rstrip(),
+                "<!-- Full changelog output was intentionally suppressed for user-facing release notes. -->",
             ]
         )
 

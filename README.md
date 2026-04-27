@@ -64,6 +64,10 @@ runtime libraries bundled. After extracting it, run `./pakfu` from the extracted
 directory.
 
 PakFu can also check for updates at runtime (GUI) and via CLI (`--check-updates`).
+Every installer and portable package includes an offline HTML user guide in a
+`Documentation` folder (or the platform's app documentation location). The guide
+is generated from the user-facing sections of this README, so packaged help stays
+aligned without carrying build instructions or repository maintenance notes.
 
 ## Highlights
 - Archive and folder support in both GUI and CLI.
@@ -329,6 +333,7 @@ For full policy details, see `docs/RELEASES.md`.
 - `docs/FILE_ASSOCIATION_ICONS.md` : file association icon mapping and implementation notes.
 - `docs/CREDITS.md` : project attributions, compatibility acknowledgements, and third-party credits.
 - `CHANGELOG.md` : release-by-release change history.
+- `scripts/build_user_guide.py` : generates the packaged HTML user guide from the user-facing README sections.
 
 ## Credits
 - Creator: themuffinator (DarkMatter Productions)

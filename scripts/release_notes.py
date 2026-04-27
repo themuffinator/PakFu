@@ -2,8 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import sys
 from pathlib import Path
+
+
+def strip_entry_heading(entry: str) -> str:
+    lines = entry.splitlines()
+    if lines and lines[0].startswith("## ["):
+        return "\n".join(lines[1:]).strip()
+    return entry.strip()
 
 
 def main() -> int:
@@ -34,7 +42,21 @@ def main() -> int:
             end = idx
             break
 
-    notes = "\n".join(lines[start:end]).rstrip() + "\n"
+    entry = "\n".join(lines[start:end]).rstrip()
+    generated = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M UTC")
+    notes = "\n".join(
+        [
+            f"# PakFu v{version}",
+            "",
+            f"Generated: {generated}",
+            "",
+            "## What's New",
+            "",
+            strip_entry_heading(entry),
+            "",
+            "Technical build and repository-only changes are omitted unless they affect downloads, installs, or everyday use.",
+        ]
+    ).rstrip() + "\n"
 
     if args.output:
         Path(args.output).write_text(notes, encoding="utf-8")

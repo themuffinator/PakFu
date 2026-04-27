@@ -20,6 +20,21 @@ def collect_assets(dist_dir: Path):
     return assets
 
 
+def unexpected_release_files(dist_dir: Path, version: str) -> list[str]:
+    allowed_manifest = f"pakfu-{version}-release-manifest.json"
+    unexpected = []
+    for path in sorted(dist_dir.iterdir()):
+        if not path.is_file():
+            continue
+        parsed = parse_asset_name(path.name)
+        if parsed and parsed.version == version:
+            continue
+        if path.name == allowed_manifest:
+            continue
+        unexpected.append(path.name)
+    return unexpected
+
+
 def validate_assets(
     assets,
     version: str,
@@ -92,6 +107,17 @@ def main() -> int:
     dist_dir = Path(args.dist).resolve()
     if not dist_dir.exists():
         print(f"Distribution directory not found: {dist_dir}", file=sys.stderr)
+        return 1
+
+    unexpected = unexpected_release_files(dist_dir, args.version)
+    if unexpected:
+        print("Unexpected file(s) in release dist directory:", file=sys.stderr)
+        for name in unexpected:
+            print(f"- {name}", file=sys.stderr)
+        print(
+            "Only canonical package assets and the release manifest may be published.",
+            file=sys.stderr,
+        )
         return 1
 
     assets = collect_assets(dist_dir)
