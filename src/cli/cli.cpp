@@ -973,6 +973,8 @@ int run_list_plugins_cli(const CliOptions& options, QTextStream& out, QTextStrea
       if (!command.allowed_extensions.isEmpty()) {
         out << ", extensions: " << command.allowed_extensions.join(", ");
       }
+      out << ", capabilities: "
+          << (command.capabilities.isEmpty() ? QString("none") : command.capabilities.join(", "));
       out << "\n";
     }
   }
@@ -1755,16 +1757,22 @@ int run_cli(const CliOptions& options) {
     }
 
     QTemporaryDir extension_temp;
-    QVector<ExtensionEntryContext> extension_entries;
-    QString selection_err;
-    if (!collect_extension_entries(*active_archive,
-                                   entry_filters,
-                                   prefix_filters,
-                                   &extension_temp,
-                                   &extension_entries,
-                                   &selection_err)) {
-      err << (selection_err.isEmpty() ? "Unable to prepare extension input files.\n" : selection_err + "\n");
+    if (!extension_temp.isValid()) {
+      err << "Unable to create extension temporary directory.\n";
       return 2;
+    }
+    QVector<ExtensionEntryContext> extension_entries;
+    if (extension_command_has_capability(*command, "entries.read")) {
+      QString selection_err;
+      if (!collect_extension_entries(*active_archive,
+                                     entry_filters,
+                                     prefix_filters,
+                                     &extension_temp,
+                                     &extension_entries,
+                                     &selection_err)) {
+        err << (selection_err.isEmpty() ? "Unable to prepare extension input files.\n" : selection_err + "\n");
+        return 2;
+      }
     }
 
     ExtensionRunContext context;
@@ -1776,6 +1784,13 @@ int run_cli(const CliOptions& options) {
     context.wad3 = active_archive->is_wad3();
     context.doom_wad = active_archive->is_doom_wad();
     context.entries = std::move(extension_entries);
+    if (extension_command_has_capability(*command, "entries.import")) {
+      context.import_root = QDir(extension_temp.path()).filePath("imports");
+      if (!QDir().mkpath(context.import_root)) {
+        err << "Unable to create extension import directory: " << context.import_root << "\n";
+        return 2;
+      }
+    }
 
     ExtensionRunResult result;
     QString run_err;
@@ -1808,6 +1823,15 @@ int run_cli(const CliOptions& options) {
       if (!result.std_err.endsWith('\n')) {
         err << "\n";
       }
+    }
+    if (!result.imports.isEmpty()) {
+      extension_temp.setAutoRemove(false);
+      out << "Extension imports requested: " << result.imports.size() << " file(s)\n";
+      out << "Import files retained in: " << extension_temp.path() << "\n";
+      for (const ExtensionImportEntry& import : result.imports) {
+        out << "  " << import.archive_name << " <- " << import.local_path << "\n";
+      }
+      out << "CLI write-back is not applied automatically; use the GUI archive tab or consume the reported import paths.\n";
     }
   }
 

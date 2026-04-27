@@ -284,9 +284,11 @@ void ImageViewerWindow::show_current_image() {
 	if (!preview_) {
 		return;
 	}
+	preview_->clear_asset_context();
 
 	const QString image_path = current_image_path();
 	if (image_path.isEmpty()) {
+		preview_->set_current_file_info({}, -1, -1);
 		preview_->show_message("Image Viewer", "No supported images found in this folder.");
 		update_status();
 		update_window_title();
@@ -295,6 +297,7 @@ void ImageViewerWindow::show_current_image() {
 
 	const QFileInfo info(image_path);
 	if (!info.exists() || !info.isFile()) {
+		preview_->set_current_file_info(info.absoluteFilePath(), -1, -1);
 		preview_->show_message("Image Viewer", "Image file not found.");
 		update_status();
 		update_window_title();
@@ -304,13 +307,21 @@ void ImageViewerWindow::show_current_image() {
 	const QString ext = file_ext_lower(info.fileName());
 	const bool supports_mips = (ext == "wal" || ext == "swl" || ext == "m8" || ext == "mip");
 	preview_->set_image_mip_controls(supports_mips, preview_->image_mip_level(), ext == "m8" ? 16 : 4);
+	preview_->set_current_file_info(info.absoluteFilePath(),
+	                                info.size(),
+	                                info.lastModified().toUTC().toSecsSinceEpoch());
+	preview_->clear_asset_context();
 
 	ImageDecodeOptions options;
 	options.mip_level = supports_mips ? preview_->image_mip_level() : 0;
+	PreviewAssetContext asset_context;
 
 	if (ext == "wal") {
 		QString pal_err;
 		if (!ensure_quake2_palette(image_path, &pal_err)) {
+			asset_context.palette_provenance = "Quake II pics/colormap.pcx not resolved.";
+			asset_context.preview_fallback = "WAL preview requires an external Quake II palette.";
+			preview_->set_asset_context(asset_context);
 			preview_->show_message(info.fileName(),
 			                       pal_err.isEmpty() ? "Unable to locate Quake II palette required for WAL preview." : pal_err);
 			update_status();
@@ -318,21 +329,37 @@ void ImageViewerWindow::show_current_image() {
 			return;
 		}
 		options.palette = &quake2_palette_;
+		asset_context.palette_provenance =
+			quake2_palette_source_.isEmpty() ? QString("Quake II pics/colormap.pcx") : quake2_palette_source_;
 	} else if (ext == "lmp" || ext == "mip") {
 		QString pal_err;
 		if (ensure_quake1_palette(image_path, &pal_err)) {
 			options.palette = &quake1_palette_;
+			asset_context.palette_provenance =
+				quake1_palette_source_.isEmpty() ? QString("Quake gfx/palette.lmp") : quake1_palette_source_;
+		} else {
+			asset_context.palette_provenance =
+				"Embedded palette when present; external Quake gfx/palette.lmp not resolved.";
+			asset_context.preview_fallback =
+				(ext == "mip")
+					? QString("Raw MIP textures need an embedded palette or external Quake palette.")
+					: QString("Some LMP images need an embedded palette or external Quake palette.");
 		}
+	} else if (ext == "m8") {
+		asset_context.palette_provenance = "Embedded Heretic II M8 palette.";
+	} else if (ext == "swl") {
+		asset_context.palette_provenance = "Embedded SWL palette.";
+	} else if (ext == "pcx") {
+		asset_context.palette_provenance = "Embedded PCX palette when present.";
+	} else if (ext == "tga") {
+		asset_context.palette_provenance = "Embedded TGA color map when indexed.";
 	}
+	preview_->set_asset_context(asset_context);
 
 	ImageDecodeResult decoded = decode_image_file(image_path, options);
 	if (!decoded.ok() && options.palette && ext != "wal") {
 		decoded = decode_image_file(image_path, ImageDecodeOptions{});
 	}
-
-	preview_->set_current_file_info(info.absoluteFilePath(),
-	                                info.size(),
-	                                info.lastModified().toUTC().toSecsSinceEpoch());
 
 	if (!decoded.ok()) {
 		preview_->show_message(info.fileName(),
@@ -530,6 +557,7 @@ bool ImageViewerWindow::ensure_quake1_palette(const QString& image_path, QString
 	quake1_palette_lookup_base_ = lookup_base;
 	quake1_palette_.clear();
 	quake1_palette_error_.clear();
+	quake1_palette_source_.clear();
 	QStringList attempts;
 
 	const auto try_lmp_bytes = [&](const QByteArray& lmp_bytes, const QString& where) -> bool {
@@ -540,6 +568,7 @@ bool ImageViewerWindow::ensure_quake1_palette(const QString& image_path, QString
 			return false;
 		}
 		quake1_palette_ = std::move(palette);
+		quake1_palette_source_ = where;
 		return true;
 	};
 
@@ -635,6 +664,7 @@ bool ImageViewerWindow::ensure_quake2_palette(const QString& image_path, QString
 	quake2_palette_lookup_base_ = lookup_base;
 	quake2_palette_.clear();
 	quake2_palette_error_.clear();
+	quake2_palette_source_.clear();
 	QStringList attempts;
 
 	const auto try_pcx_bytes = [&](const QByteArray& pcx_bytes, const QString& where) -> bool {
@@ -645,6 +675,7 @@ bool ImageViewerWindow::ensure_quake2_palette(const QString& image_path, QString
 			return false;
 		}
 		quake2_palette_ = std::move(palette);
+		quake2_palette_source_ = where;
 		return true;
 	};
 

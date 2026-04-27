@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.themuffinator.PakFu</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>PakFu</name>
+  <summary>idTech archive manager and asset viewer</summary>
+  <description>
+    <p>PakFu opens, previews, extracts, and rebuilds classic idTech archive and asset formats including PAK, PK3, PK4, WAD, textures, audio, video, models, maps, and scripts.</p>
+  </description>
+  <launchable type="desktop-id">io.github.themuffinator.PakFu.desktop</launchable>
+  <provides>
+    <binary>pakfu</binary>
+    <mediatype>application/x-idtech-pak</mediatype>
+    <mediatype>application/x-idtech-pk3</mediatype>
+    <mediatype>application/x-idtech-pk4</mediatype>
+    <mediatype>application/x-doom-wad</mediatype>
+    <mediatype>application/x-quake-bsp</mediatype>
+    <mediatype>text/x-idtech-map</mediatype>
+    <mediatype>image/x-idtech-wal</mediatype>
+    <mediatype>video/x-roq</mediatype>
+    <mediatype>audio/x-idwav</mediatype>
+    <mediatype>model/x-idtech-md3</mediatype>
+  </provides>
+  <content_rating type="oars-1.1" />
+  <url type="homepage">https://github.com/themuffinator/PakFu</url>
+</component>

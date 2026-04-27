@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from sync_doc_versions import sync_doc_versions
+
 VERSION_RE = re.compile(r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?$")
 FEATURE_RE = re.compile(r"^feat(\(.+\))?:", re.IGNORECASE)
 BREAKING_RE = re.compile(r"^\w+(\(.+\))?!:")
@@ -165,7 +167,8 @@ def main() -> int:
     version = format_version(version_parts)
 
     if args.write:
-        (repo / "VERSION").write_text(version + "\n", encoding="utf-8")
+        (repo / "VERSION").write_bytes((version + "\n").encode("utf-8"))
+        sync_doc_versions(repo, version)
 
     print(version)
     return 0

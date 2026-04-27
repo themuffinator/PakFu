@@ -26,6 +26,7 @@ Keep them aligned with the goals in `README.md`.
 - Update `docs/DEPENDENCIES.md` when adding or changing libraries.
 - When porting, translating, or deriving code or format logic from another project, preserve license-compatible attribution in nearby code comments or docs and link the source repository/revision when practical; Heretic II references should credit [0lvin/heretic2](https://github.com/0lvin/heretic2).
 - Keep `VERSION` and GitHub release assets in sync with the updater rules.
+- When changing `VERSION`, run `python scripts/sync_doc_versions.py` so the README version badge and current documentation version declarations stay aligned.
 - Follow `.editorconfig` for formatting (tabs for C++, spaces for config files).
 
 ## Contribution Boundaries

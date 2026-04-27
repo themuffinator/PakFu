@@ -40,17 +40,24 @@ __pycache__/
 
 # Meson build outputs
 build/
-builddir/
+builddir*/
 meson-private/
 meson-logs/
+install/
 
 # Release outputs
 dist/
+_artifact_ubuntu/
+squashfs-root/
 
 # Local reference checkouts (too large for repo)
 .tmp_refs/ffmpeg/
 tmp/
 dist-wsl-test/
 
+# Local packaging/debug logs
 *.log
 _log_*
+_linuxdeploy_*
+_wsl_linuxpkg.log
+aqtinstall.log

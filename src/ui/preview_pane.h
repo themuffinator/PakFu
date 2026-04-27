@@ -4,6 +4,7 @@
 #include <QColor>
 #include <QHash>
 #include <QImage>
+#include <QString>
 #include <QVector>
 #include <QWidget>
 
@@ -36,6 +37,16 @@ class QSyntaxHighlighter;
 class QTextOption;
 class ShaderViewerWidget;
 
+struct PreviewAssetContext {
+	QString palette_provenance;
+	QString companion_resolution;
+	QString texture_dependencies;
+	QString shader_dependencies;
+	QString renderer_state;
+	QString preview_fallback;
+	QString performance_profile;
+};
+
 class PreviewPane : public QWidget {
 	Q_OBJECT
 
@@ -63,6 +74,8 @@ public:
 	[[nodiscard]] int image_mip_level() const { return image_mip_level_; }
 
 	void set_current_file_info(const QString& pak_path, qint64 size, qint64 mtime_utc_secs);
+	void set_asset_context(const PreviewAssetContext& context);
+	void clear_asset_context();
 
 	void show_placeholder();
 	void show_message(const QString& title, const QString& body);
@@ -119,7 +132,11 @@ private:
 	void set_text_highlighter(TextSyntax syntax);
 	void clear_overview_fields();
 	void populate_basic_overview();
+	void apply_asset_context_overview();
+	[[nodiscard]] QString renderer_state_summary() const;
+	[[nodiscard]] QString renderer_fallback_note() const;
 	void set_overview_value(const QString& label, const QString& value);
+	void remove_overview_value(const QString& label);
 	void show_overview_block(bool show);
 	void show_content_block(const QString& title, QWidget* page);
 	void hide_content_block();
@@ -195,6 +212,7 @@ private:
 	QString current_pak_path_;
 	qint64 current_file_size_ = -1;
 	qint64 current_mtime_utc_secs_ = -1;
+	PreviewAssetContext asset_context_;
 
 	QWidget* placeholder_page_ = nullptr;
 	QLabel* placeholder_label_ = nullptr;

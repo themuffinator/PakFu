@@ -1,0 +1,105 @@
+name: pr-ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: build-test-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
+      - name: Install Meson + Ninja
+        shell: bash
+        run: python -m pip install --upgrade pip meson ninja
+
+      - name: Setup MSVC
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.10.1"
+          arch: ${{ matrix.os == 'windows-latest' && 'win64_msvc2022_64' || matrix.os == 'macos-latest' && 'clang_64' || 'linux_gcc_64' }}
+          modules: qtmultimedia qtimageformats
+
+      - name: Configure (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        env:
+          CC: cl
+          CXX: cl
+        run: >
+          meson setup builddir
+          --backend ninja
+          --buildtype=debugoptimized
+          -Dvulkan_preview=disabled
+          -Dgithub_repo=${{ github.repository }}
+          -Dupdate_channel=dev
+
+      - name: Configure (Unix)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: >
+          meson setup builddir
+          --backend ninja
+          --buildtype=debugoptimized
+          -Dvulkan_preview=disabled
+          -Dgithub_repo=${{ github.repository }}
+          -Dupdate_channel=dev
+
+      - name: Build
+        shell: bash
+        run: meson compile -C builddir
+
+      - name: Run Support Matrix Fixtures
+        shell: bash
+        run: meson test -C builddir support-matrix-fixtures --print-errorlogs
+
+      - name: Run Meson Tests
+        shell: bash
+        run: meson test -C builddir --print-errorlogs
+
+      - name: Configure macOS Runtime Paths
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          echo "DYLD_FRAMEWORK_PATH=${QT_ROOT_DIR}/lib" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=${QT_ROOT_DIR}/lib" >> "$GITHUB_ENV"
+          echo "DYLD_FALLBACK_FRAMEWORK_PATH=${QT_ROOT_DIR}/lib" >> "$GITHUB_ENV"
+
+      - name: Validate CLI Binary
+        shell: bash
+        run: |
+          binary="builddir/src/pakfu"
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            binary="builddir/src/pakfu.exe"
+          fi
+          python scripts/validate_build.py \
+            --binary "$binary" \
+            --expected-version "$(cat VERSION)"

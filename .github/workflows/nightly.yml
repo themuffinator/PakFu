@@ -105,6 +105,7 @@ jobs:
         shell: bash
         run: |
           printf "%s\n" "${{ needs.prepare.outputs.version }}" > VERSION
+          python scripts/sync_doc_versions.py --version "${{ needs.prepare.outputs.version }}"
 
       - name: Configure (Windows)
         if: matrix.os == 'windows-latest'
@@ -284,6 +285,7 @@ jobs:
         shell: bash
         run: |
           printf "%s\n" "${{ needs.prepare.outputs.version }}" > VERSION
+          python scripts/sync_doc_versions.py --version "${{ needs.prepare.outputs.version }}"
 
       - name: Detect Package Architecture (Unix)
         if: matrix.os != 'windows-latest'
@@ -377,6 +379,7 @@ jobs:
         shell: bash
         run: |
           printf "%s\n" "${{ needs.prepare.outputs.version }}" > VERSION
+          python scripts/sync_doc_versions.py --version "${{ needs.prepare.outputs.version }}"
 
       - name: Update Changelog Snapshot
         shell: bash

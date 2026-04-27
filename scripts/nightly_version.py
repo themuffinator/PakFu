@@ -7,6 +7,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from sync_doc_versions import sync_doc_versions
+
 VERSION_RE = re.compile(r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?$")
 FEATURE_RE = re.compile(r"^feat(\(.+\))?:", re.IGNORECASE)
 BREAKING_RE = re.compile(r"^\w+(\(.+\))?!:")
@@ -199,7 +201,9 @@ def main() -> int:
     }
 
     if args.write:
-        Path(args.write).write_text(version + "\n", encoding="utf-8")
+        Path(args.write).write_bytes((version + "\n").encode("utf-8"))
+        if Path(args.write).resolve() == (repo / "VERSION").resolve():
+            sync_doc_versions(repo, version)
 
     if args.format == "json":
         print(json.dumps(payload, indent=2))

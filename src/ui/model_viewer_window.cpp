@@ -26,6 +26,7 @@
 #include "archive/archive.h"
 #include "formats/lmp_image.h"
 #include "formats/pcx_image.h"
+#include "formats/quake3_skin.h"
 #include "ui/preview_pane.h"
 #include "ui/ui_icons.h"
 
@@ -279,9 +280,11 @@ void ModelViewerWindow::show_current_model() {
 	if (!preview_) {
 		return;
 	}
+	preview_->clear_asset_context();
 
 	const QString model_path = current_model_path();
 	if (model_path.isEmpty()) {
+		preview_->set_current_file_info({}, -1, -1);
 		preview_->show_message("Model Viewer", "No supported models found in this folder.");
 		update_status();
 		update_window_title();
@@ -290,6 +293,7 @@ void ModelViewerWindow::show_current_model() {
 
 	const QFileInfo info(model_path);
 	if (!info.exists() || !info.isFile()) {
+		preview_->set_current_file_info(info.absoluteFilePath(), -1, -1);
 		preview_->show_message("Model Viewer", "Model file not found.");
 		update_status();
 		update_window_title();
@@ -306,6 +310,74 @@ void ModelViewerWindow::show_current_model() {
 	preview_->set_current_file_info(info.absoluteFilePath(),
 	                                info.size(),
 	                                info.lastModified().toUTC().toSecsSinceEpoch());
+	PreviewAssetContext asset_context;
+	QStringList palette_sources;
+	if (quake1_palette_.size() == 256) {
+		palette_sources.push_back(QString("Quake: %1").arg(
+			quake1_palette_source_.isEmpty() ? QString("gfx/palette.lmp") : quake1_palette_source_));
+	}
+	if (quake2_palette_.size() == 256) {
+		palette_sources.push_back(QString("Quake II: %1").arg(
+			quake2_palette_source_.isEmpty() ? QString("pics/colormap.pcx") : quake2_palette_source_));
+	}
+	if (!palette_sources.isEmpty()) {
+		asset_context.palette_provenance = palette_sources.join('\n');
+	} else {
+		asset_context.palette_provenance =
+			"Embedded model textures when available; indexed Quake skins use grayscale fallback without a palette.";
+	}
+
+	QStringList companion_notes;
+	if (!skin_path.isEmpty()) {
+		companion_notes.push_back(QString("Skin: %1").arg(QFileInfo(skin_path).fileName()));
+		if (file_ext_lower(QFileInfo(skin_path).fileName()) == "skin") {
+			Quake3SkinMapping mapping;
+			QString skin_err;
+			if (parse_quake3_skin_file(skin_path, &mapping, &skin_err)) {
+				QSet<QString> unique_shaders;
+				for (auto it = mapping.surface_to_shader.cbegin(); it != mapping.surface_to_shader.cend(); ++it) {
+					if (!it.value().trimmed().isEmpty()) {
+						unique_shaders.insert(it.value().trimmed().toLower());
+					}
+				}
+				asset_context.shader_dependencies =
+					QString("%1 .skin mappings, %2 shader refs").arg(mapping.surface_to_shader.size()).arg(unique_shaders.size());
+			}
+		}
+	}
+	const QDir model_dir(info.absolutePath());
+	if (ext == "mdl") {
+		const QString base = info.completeBaseName();
+		const QStringList candidates = {model_dir.filePath(base + "T.mdl"), model_dir.filePath(base + "t.mdl")};
+		for (const QString& candidate : candidates) {
+			if (QFileInfo::exists(candidate)) {
+				companion_notes.push_back(QString("GoldSrc textures: %1").arg(QFileInfo(candidate).fileName()));
+				break;
+			}
+		}
+	}
+	if (ext == "mdm") {
+		const QString mdx = model_dir.filePath(info.completeBaseName() + ".mdx");
+		if (QFileInfo::exists(mdx)) {
+			companion_notes.push_back(QString("Skeleton: %1").arg(QFileInfo(mdx).fileName()));
+		} else {
+			asset_context.preview_fallback = "MDM companion .mdx not found; preview may use guide skeleton data.";
+		}
+	}
+	if (ext == "glm") {
+		const QString gla = model_dir.filePath(info.completeBaseName() + ".gla");
+		if (QFileInfo::exists(gla)) {
+			companion_notes.push_back(QString("Animation base: %1").arg(QFileInfo(gla).fileName()));
+		}
+	}
+	asset_context.companion_resolution =
+		companion_notes.isEmpty() ? QString("No external companion files resolved.") : companion_notes.join('\n');
+	if (asset_context.shader_dependencies.isEmpty() && (ext == "md3" || ext == "mdc" || ext == "mdr")) {
+		asset_context.shader_dependencies = skin_path.isEmpty()
+		                                      ? QString("No .skin file resolved; using embedded shader names and same-folder lookup.")
+		                                      : QString("Surface textures resolved through skin/model hints and same-folder lookup.");
+	}
+	preview_->set_asset_context(asset_context);
 	const QString subtitle = QString("%1  |  %2/%3")
 	                         .arg(QDir::toNativeSeparators(info.absoluteFilePath()))
 	                         .arg(current_index_ + 1)
@@ -594,6 +666,7 @@ bool ModelViewerWindow::ensure_quake1_palette(const QString& model_path, QString
 	quake1_palette_lookup_base_ = lookup_base;
 	quake1_palette_.clear();
 	quake1_palette_error_.clear();
+	quake1_palette_source_.clear();
 	QStringList attempts;
 
 	const auto try_lmp_bytes = [&](const QByteArray& lmp_bytes, const QString& where) -> bool {
@@ -604,6 +677,7 @@ bool ModelViewerWindow::ensure_quake1_palette(const QString& model_path, QString
 			return false;
 		}
 		quake1_palette_ = std::move(palette);
+		quake1_palette_source_ = where;
 		return true;
 	};
 
@@ -699,6 +773,7 @@ bool ModelViewerWindow::ensure_quake2_palette(const QString& model_path, QString
 	quake2_palette_lookup_base_ = lookup_base;
 	quake2_palette_.clear();
 	quake2_palette_error_.clear();
+	quake2_palette_source_.clear();
 	QStringList attempts;
 
 	const auto try_pcx_bytes = [&](const QByteArray& pcx_bytes, const QString& where) -> bool {
@@ -709,6 +784,7 @@ bool ModelViewerWindow::ensure_quake2_palette(const QString& model_path, QString
 			return false;
 		}
 		quake2_palette_ = std::move(palette);
+		quake2_palette_source_ = where;
 		return true;
 	};
 

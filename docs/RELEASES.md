@@ -9,6 +9,8 @@ Rules:
 - Git tags are always `v<version>`.
 - Stable releases use `MAJOR.MINOR.PATCH`.
 - Nightly releases use `MAJOR.MINOR.PATCH.BUILD`.
+- `scripts/sync_doc_versions.py` keeps the README version badge and current
+  documentation version declarations aligned with `VERSION`.
 
 Nightly version generation:
 - Computed by `scripts/nightly_version.py`.
@@ -55,6 +57,13 @@ folder or launching an installer handoff.
 Linux portable archives are produced from the same deployed AppDir used for the
 AppImage, so Qt and other runtime libraries are bundled in both Linux assets.
 The archive includes a top-level `pakfu` launcher for extracted-directory use.
+The AppDir also carries the PakFu desktop entry, shared-mime-info package,
+AppStream metadata, and hicolor icon so AppImage/desktop integration can expose
+the same supported file types as the app.
+
+macOS bundles declare PakFu document types in `Contents/Info.plist`, and Windows
+builds keep file associations user-managed through the in-app Open With
+registration UI.
 
 The release pipeline also emits:
 - `pakfu-<version>-release-manifest.json` (checksums + distribution metadata)
@@ -74,12 +83,23 @@ The guide is stored where users expect product documentation:
 - Linux AppImage: `/usr/share/doc/pakfu/index.html` inside the AppDir
 
 Validation tooling:
+- `scripts/sync_doc_versions.py`
 - `scripts/validate_build.py`
 - `scripts/validate_release_assets.py`
 - `scripts/release_manifest.py`
 - `scripts/build_user_guide.py`
 
 ## Workflows
+Pull request gates:
+- Workflow: `.github/workflows/pr-ci.yml`
+- Trigger: pull requests, pushes to `main`, and manual dispatch
+- Required checks to configure in branch protection:
+1. `build-test-windows-latest`
+2. `build-test-macos-latest`
+3. `build-test-ubuntu-latest`
+4. `sanitize-and-fuzz` from `.github/workflows/hardening.yml`
+- Coverage: each platform configures a non-packaging Meson build, compiles the app and core tests, runs the support-matrix fixture explicitly, runs the full Meson test suite, and validates the CLI binary. The hardening gate runs the sanitizer/libFuzzer smoke build where Clang support is available.
+
 Nightly automation:
 - Workflow: `.github/workflows/nightly.yml`
 - Trigger: scheduled nightly + manual dispatch (`force` optional)
@@ -107,6 +127,11 @@ python scripts/next_version.py --channel dev
 Preview nightly decision/version:
 ```sh
 python scripts/nightly_version.py --format json
+```
+
+Check documentation version declarations:
+```sh
+python scripts/sync_doc_versions.py --check
 ```
 
 Preview the packaged HTML user guide:

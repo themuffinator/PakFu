@@ -29,6 +29,7 @@
 #include <QPlainTextEdit>
 #include <QShortcut>
 #include <QSettings>
+#include <QSet>
 #include <QPainter>
 #include <QResizeEvent>
 #include <QScrollArea>
@@ -195,6 +196,43 @@ QString font_container_label(quint32 signature) {
 		default:
 			return "Unknown/unsupported SFNT";
 	}
+}
+
+QString on_off_label(bool enabled) {
+	return enabled ? "on" : "off";
+}
+
+QString grid_mode_label(PreviewGridMode mode) {
+	switch (mode) {
+		case PreviewGridMode::Floor:
+			return "floor";
+		case PreviewGridMode::Grid:
+			return "grid";
+		case PreviewGridMode::None:
+			return "none";
+	}
+	return "floor";
+}
+
+QString background_mode_label(PreviewBackgroundMode mode) {
+	switch (mode) {
+		case PreviewBackgroundMode::Themed:
+			return "themed";
+		case PreviewBackgroundMode::Grey:
+			return "grey";
+		case PreviewBackgroundMode::Custom:
+			return "custom";
+	}
+	return "themed";
+}
+
+QString normalize_dependency_key(QString key) {
+	key = key.trimmed().toLower();
+	key.replace('\\', '/');
+	while (key.startsWith('/')) {
+		key.remove(0, 1);
+	}
+	return key;
 }
 
 BspPreviewWidget* as_gl_bsp_widget(QWidget* widget) {
@@ -399,6 +437,17 @@ void PreviewPane::set_current_file_info(const QString& pak_path, qint64 size, qi
 	current_pak_path_ = pak_path;
 	current_file_size_ = size;
 	current_mtime_utc_secs_ = mtime_utc_secs;
+}
+
+void PreviewPane::set_asset_context(const PreviewAssetContext& context) {
+	asset_context_ = context;
+	if (overview_card_ && overview_card_->isVisible()) {
+		apply_asset_context_overview();
+	}
+}
+
+void PreviewPane::clear_asset_context() {
+	asset_context_ = {};
 }
 
 /*
@@ -1779,6 +1828,7 @@ void PreviewPane::build_ui() {
 			if (bsp_widget_) {
 				apply_bsp_lightmap(bsp_widget_, bsp_lightmapping_enabled_);
 			}
+			apply_asset_context_overview();
 		});
 	}
 
@@ -1825,6 +1875,9 @@ void PreviewPane::set_preview_renderer(PreviewRenderer renderer) {
 	renderer_requested_ = renderer;
 	const PreviewRenderer effective = resolve_preview_renderer(renderer_requested_);
 	if (renderer_effective_ == effective) {
+		if (current_content_kind_ == ContentKind::Bsp || current_content_kind_ == ContentKind::Model) {
+			apply_asset_context_overview();
+		}
 		return;
 	}
 	renderer_effective_ = effective;
@@ -1971,6 +2024,7 @@ void PreviewPane::show_placeholder() {
 	current_pak_path_.clear();
 	current_file_size_ = -1;
 	current_mtime_utc_secs_ = -1;
+	clear_asset_context();
 
 	clear_overview_fields();
 	show_overview_block(false);
@@ -2010,6 +2064,7 @@ void PreviewPane::show_message(const QString& title, const QString& body) {
 	show_overview_block(have_file_info);
 	if (have_file_info) {
 		populate_basic_overview();
+		apply_asset_context_overview();
 	}
 
 	show_content_block("Insights", message_page_);
@@ -2037,6 +2092,7 @@ void PreviewPane::show_text(const QString& title, const QString& subtitle, const
 	show_overview_block(true);
 	populate_basic_overview();
 	set_overview_value("Type", "Text");
+	apply_asset_context_overview();
 	if (text_view_) {
 		text_view_->setPlainText(text);
 	}
@@ -2058,6 +2114,7 @@ void PreviewPane::show_c(const QString& title, const QString& subtitle, const QS
 	show_overview_block(true);
 	populate_basic_overview();
 	set_overview_value("Type", "C");
+	apply_asset_context_overview();
 	if (text_view_) {
 		text_view_->setPlainText(text);
 	}
@@ -2079,6 +2136,7 @@ void PreviewPane::show_txt(const QString& title, const QString& subtitle, const 
 	show_overview_block(true);
 	populate_basic_overview();
 	set_overview_value("Type", "Text");
+	apply_asset_context_overview();
 	if (text_view_) {
 		text_view_->setPlainText(text);
 	}
@@ -2100,6 +2158,7 @@ void PreviewPane::show_cfg(const QString& title, const QString& subtitle, const 
 	show_overview_block(true);
 	populate_basic_overview();
 	set_overview_value("Type", "CFG");
+	apply_asset_context_overview();
 	if (text_view_) {
 		text_view_->setPlainText(text);
 	}
@@ -2125,6 +2184,7 @@ void PreviewPane::show_font_from_bytes(const QString& title, const QString& subt
 	populate_basic_overview();
 	set_overview_value("Type", "Font");
 	set_overview_value("Bytes", format_size(bytes.size()));
+	apply_asset_context_overview();
 
 	const auto set_fallback_text = [&](const QString& text) {
 		if (!font_page_) {
@@ -2356,6 +2416,7 @@ void PreviewPane::show_binary(const QString& title,
 	populate_basic_overview();
 	set_overview_value("Type", "Binary");
 	set_overview_value("Bytes shown", format_size(bytes.size()));
+	apply_asset_context_overview();
 	if (text_view_) {
 		text_view_->setPlainText(hex_dump(bytes, 256));
 	}
@@ -2379,6 +2440,7 @@ void PreviewPane::show_image(const QString& title, const QString& subtitle, cons
 	if (!image.isNull()) {
 		set_overview_value("Dimensions", QString("%1x%2").arg(image.width()).arg(image.height()));
 	}
+	apply_asset_context_overview();
 
 	if (image_card_) {
 		image_card_->setVisible(true);
@@ -2432,6 +2494,7 @@ void PreviewPane::show_sprite(const QString& title,
 			set_overview_value("Loop duration", format_duration(total_ms));
 		}
 	}
+	apply_asset_context_overview();
 
 	if (image_card_) {
 		image_card_->setVisible(true);
@@ -2481,6 +2544,7 @@ void PreviewPane::show_bsp(const QString& title, const QString& subtitle, BspMes
 	set_overview_value("Vertices", QString::number(mesh.vertices.size()));
 	set_overview_value("Triangles", QString::number(mesh.indices.size() / 3));
 	set_overview_value("Surfaces", QString::number(mesh.surfaces.size()));
+	apply_asset_context_overview();
 
 	show_content_block("3D Panel", bsp_page_);
 	if (three_d_controls_) {
@@ -2736,6 +2800,83 @@ void PreviewPane::populate_basic_overview() {
 	}
 }
 
+void PreviewPane::apply_asset_context_overview() {
+	if (!asset_context_.palette_provenance.isEmpty()) {
+		set_overview_value("Palette", asset_context_.palette_provenance);
+	}
+	if (!asset_context_.companion_resolution.isEmpty()) {
+		set_overview_value("Companions", asset_context_.companion_resolution);
+	}
+	if (!asset_context_.texture_dependencies.isEmpty()) {
+		set_overview_value("Texture deps", asset_context_.texture_dependencies);
+	}
+	if (!asset_context_.shader_dependencies.isEmpty()) {
+		set_overview_value("Shader deps", asset_context_.shader_dependencies);
+	}
+	if (!asset_context_.performance_profile.isEmpty()) {
+		set_overview_value("Preview profile", asset_context_.performance_profile);
+	}
+
+	QString renderer = asset_context_.renderer_state;
+	if (renderer.isEmpty() && (current_content_kind_ == ContentKind::Bsp || current_content_kind_ == ContentKind::Model)) {
+		renderer = renderer_state_summary();
+	}
+	if (!renderer.isEmpty()) {
+		set_overview_value("Renderer", renderer);
+	} else {
+		remove_overview_value("Renderer");
+	}
+
+	QStringList notes;
+	if (!asset_context_.preview_fallback.isEmpty()) {
+		notes.push_back(asset_context_.preview_fallback);
+	}
+	const QString renderer_note = renderer_fallback_note();
+	if (!renderer_note.isEmpty()) {
+		notes.push_back(renderer_note);
+	}
+	if (!notes.isEmpty()) {
+		notes.removeDuplicates();
+		set_overview_value("Preview note", notes.join('\n'));
+	} else {
+		remove_overview_value("Preview note");
+	}
+}
+
+QString PreviewPane::renderer_state_summary() const {
+	if (current_content_kind_ != ContentKind::Bsp && current_content_kind_ != ContentKind::Model) {
+		return {};
+	}
+
+	QStringList details;
+	details.push_back(QString("FOV %1").arg(three_d_fov_degrees_));
+	details.push_back(QString("textures %1").arg(on_off_label(three_d_textured_enabled_)));
+	details.push_back(QString("wireframe %1").arg(on_off_label(three_d_wireframe_enabled_)));
+	details.push_back(QString("grid %1").arg(grid_mode_label(three_d_grid_mode_)));
+	details.push_back(QString("background %1").arg(background_mode_label(three_d_bg_mode_)));
+	if (current_content_kind_ == ContentKind::Bsp) {
+		details.push_back(QString("lightmaps %1").arg(on_off_label(bsp_lightmapping_enabled_)));
+	} else if (current_content_kind_ == ContentKind::Model) {
+		details.push_back(QString("smoothing %1").arg(on_off_label(model_texture_smoothing_)));
+		details.push_back(QString("glow %1").arg(on_off_label(glow_enabled_)));
+	}
+
+	QString renderer = preview_renderer_display_name(renderer_effective_);
+	if (renderer_requested_ != renderer_effective_) {
+		renderer += QString(" (requested %1)").arg(preview_renderer_display_name(renderer_requested_));
+	}
+	return QString("%1 - %2").arg(renderer, details.join(", "));
+}
+
+QString PreviewPane::renderer_fallback_note() const {
+	if ((current_content_kind_ != ContentKind::Bsp && current_content_kind_ != ContentKind::Model) ||
+	    renderer_requested_ == renderer_effective_) {
+		return {};
+	}
+	return QString("%1 preview is unavailable; using %2.")
+		.arg(preview_renderer_display_name(renderer_requested_), preview_renderer_display_name(renderer_effective_));
+}
+
 void PreviewPane::set_overview_value(const QString& label, const QString& value) {
 	if (!overview_form_) {
 		return;
@@ -2762,6 +2903,32 @@ void PreviewPane::set_overview_value(const QString& label, const QString& value)
 	}
 
 	value_label->setText(value);
+}
+
+void PreviewPane::remove_overview_value(const QString& label) {
+	if (!overview_form_) {
+		return;
+	}
+	QLabel* value = overview_values_.take(label);
+	if (!value) {
+		return;
+	}
+
+	auto delete_item_widget = [](QLayoutItem* item) {
+		if (!item) {
+			return;
+		}
+		if (QWidget* widget = item->widget()) {
+			delete widget;
+		} else if (QLayout* layout = item->layout()) {
+			delete layout;
+		}
+		delete item;
+	};
+
+	const QFormLayout::TakeRowResult row = overview_form_->takeRow(value);
+	delete_item_widget(row.labelItem);
+	delete_item_widget(row.fieldItem);
 }
 
 void PreviewPane::update_audio_overview() {
@@ -3118,6 +3285,7 @@ void PreviewPane::show_audio_from_file(const QString& title,
 	show_overview_block(true);
 	populate_basic_overview();
 	set_overview_value("Type", "Audio");
+	apply_asset_context_overview();
 
 	QString load_error;
 	if (!set_audio_source(file_path, &load_error)) {
@@ -3142,6 +3310,7 @@ void PreviewPane::show_cinematic_from_file(const QString& title, const QString& 
 	show_overview_block(true);
 	populate_basic_overview();
 	set_overview_value("Type", "Cinematic");
+	apply_asset_context_overview();
 
 	if (!cinematic_widget_ || !cinematic_page_) {
 		show_message(title, "Cinematic preview is not available.");
@@ -3172,6 +3341,7 @@ void PreviewPane::show_video_from_file(const QString& title, const QString& subt
 	show_overview_block(true);
 	populate_basic_overview();
 	set_overview_value("Type", "Video");
+	apply_asset_context_overview();
 
 	if (!video_widget_ || !video_page_) {
 		show_message(title, "Video preview is not available.");
@@ -3290,6 +3460,7 @@ void PreviewPane::show_model_from_file(const QString& title,
 	set_overview_value("Vertices", QString::number(mesh.vertices.size()));
 	set_overview_value("Triangles", QString::number(mesh.indices.size() / 3));
 	refresh_model_overview();
+	apply_asset_context_overview();
 }
 
 void PreviewPane::set_model_texture_smoothing(bool enabled) {
@@ -3536,6 +3707,9 @@ void PreviewPane::apply_3d_settings() {
 	apply(model_widget_);
 	apply(three_d_fullscreen_widget_);
 	apply_model_animation_settings();
+	if (current_content_kind_ == ContentKind::Bsp || current_content_kind_ == ContentKind::Model) {
+		apply_asset_context_overview();
+	}
 }
 
 void PreviewPane::start_playback_from_beginning() {
@@ -3841,6 +4015,7 @@ void PreviewPane::show_json(const QString& title, const QString& subtitle, const
 	show_overview_block(true);
 	populate_basic_overview();
 	set_overview_value("Type", "JSON");
+	apply_asset_context_overview();
 	if (text_view_) {
 		text_view_->setPlainText(text);
 	}
@@ -3862,6 +4037,7 @@ void PreviewPane::show_menu(const QString& title, const QString& subtitle, const
 	show_overview_block(true);
 	populate_basic_overview();
 	set_overview_value("Type", "Menu");
+	apply_asset_context_overview();
 	if (text_view_) {
 		text_view_->setPlainText(text);
 	}
@@ -3888,6 +4064,30 @@ void PreviewPane::show_shader(const QString& title,
 	populate_basic_overview();
 	set_overview_value("Type", "Shader Script");
 	set_overview_value("Shaders", QString::number(document.shaders.size()));
+	QSet<QString> refs;
+	for (const Quake3ShaderBlock& shader : document.shaders) {
+		refs.unite(collect_quake3_shader_texture_refs(shader));
+	}
+	int resolved_refs = 0;
+	for (const QString& ref : refs) {
+		const QString normalized = normalize_dependency_key(ref);
+		if (normalized.isEmpty()) {
+			continue;
+		}
+		const QFileInfo ref_info(normalized);
+		const QString leaf = ref_info.fileName().toLower();
+		const QString base = ref_info.completeBaseName().toLower();
+		if (textures.contains(normalized) ||
+		    (!leaf.isEmpty() && textures.contains(leaf)) ||
+		    (!base.isEmpty() && textures.contains(base))) {
+			++resolved_refs;
+		}
+	}
+	set_overview_value("Shader deps",
+	                   refs.isEmpty()
+	                     ? QString("No texture stages referenced")
+	                     : QString("%1 texture refs, %2 resolved").arg(refs.size()).arg(resolved_refs));
+	apply_asset_context_overview();
 	if (shader_widget_) {
 		shader_widget_->set_document(text, document, std::move(textures));
 		update_shader_viewport_width();

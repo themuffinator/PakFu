@@ -62,34 +62,17 @@ if [[ -f "${root_dir}/assets/img/pakfu-icon-256.icns" ]]; then
   cp "${root_dir}/assets/img/pakfu-icon-256.icns" "${app_dir}/Contents/Resources/pakfu.icns"
 fi
 
-cat > "${app_dir}/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleName</key>
-  <string>PakFu</string>
-  <key>CFBundleDisplayName</key>
-  <string>PakFu</string>
-  <key>CFBundleIdentifier</key>
-  <string>com.pakfu.app</string>
-  <key>CFBundleVersion</key>
-  <string>${version}</string>
-  <key>CFBundleShortVersionString</key>
-  <string>${version}</string>
-  <key>CFBundleExecutable</key>
-  <string>PakFu</string>
-  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-  <key>LSMinimumSystemVersion</key>
-  <string>11.0</string>
-  <key>NSHighResolutionCapable</key>
-  <true/>
-  <key>CFBundleIconFile</key>
-  <string>pakfu.icns</string>
-</dict>
-</plist>
-PLIST
+info_plist_template="${root_dir}/packaging/macos/Info.plist.in"
+if [[ ! -f "${info_plist_template}" ]]; then
+  echo "Info.plist template not found: ${info_plist_template}" >&2
+  exit 1
+fi
+"${python_cmd}" - "${info_plist_template}" "${app_dir}/Contents/Info.plist" "${version}" <<'PY'
+import sys
+from pathlib import Path
+template = Path(sys.argv[1]).read_text(encoding="utf-8")
+Path(sys.argv[2]).write_text(template.replace("@PAKFU_VERSION@", sys.argv[3]), encoding="utf-8")
+PY
 
 if command -v macdeployqt >/dev/null 2>&1; then
   macdeployqt "${app_dir}" -always-overwrite -verbose=1

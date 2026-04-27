@@ -43,6 +43,7 @@ class QDragMoveEvent;
 class QDropEvent;
 class QTimer;
 struct ExtensionCommand;
+struct ExtensionImportEntry;
 struct ExtensionRunResult;
 
 class PakTabDetailsView;
@@ -199,6 +200,7 @@ private:
                                       QStringList* failures,
                                       QProgressDialog* progress = nullptr);
   bool add_file_mapping(const QString& pak_name, const QString& source_path, QString* error);
+  bool apply_extension_imports(const QVector<ExtensionImportEntry>& imports, QString* error);
   bool apply_external_move_deletions(const QVector<QPair<QString, bool>>& raw_items, QString* error);
   void reset_collision_prompt_state();
   CollisionChoice choose_collision_action(const QString& pak_path, bool is_dir);
@@ -233,6 +235,15 @@ private:
   void clear_deletions_under(const QString& pak_name);
   QString ensure_export_root();
   bool export_path_to_temp(const QString& pak_path, bool is_dir, QString* out_fs_path, QString* error);
+  bool export_path_to_temp_cached(const QString& pak_path,
+                                  bool is_dir,
+                                  qint64 size,
+                                  qint64 mtime_utc_secs,
+                                  QString* out_fs_path,
+                                  QString* error,
+                                  bool* cache_hit = nullptr);
+  QString preview_export_cache_key(const QString& pak_path, bool is_dir) const;
+  void clear_preview_temp_cache();
   bool export_dir_prefix_to_fs(const QString& dir_prefix, const QString& dest_dir, QString* error);
   bool open_entry_with_associated_app(const QString& pak_path, const QString& display_name);
   void activate_entry(const QString& item_name, bool is_dir, const QString& pak_path);
@@ -285,6 +296,14 @@ private:
   QUndoStack* undo_stack_ = nullptr;
   QScopedPointer<QTemporaryDir> export_temp_dir_;
   int export_seq_ = 1;
+  struct PreviewTempExport {
+    QString fs_path;
+    QString source_path;
+    qint64 size = -1;
+    qint64 mtime_utc_secs = -1;
+    bool is_dir = false;
+  };
+  QHash<QString, PreviewTempExport> preview_temp_exports_;
   QStringList current_dir_;
   Archive archive_;
   struct MountedArchiveLayer {
@@ -307,9 +326,11 @@ private:
   bool quake1_palette_loaded_ = false;
   QVector<QRgb> quake1_palette_;
   QString quake1_palette_error_;
+  QString quake1_palette_source_;
   bool quake2_palette_loaded_ = false;
   QVector<QRgb> quake2_palette_;
   QString quake2_palette_error_;
+  QString quake2_palette_source_;
   bool pure_pak_protector_enabled_ = true;
   bool official_archive_ = false;
   bool image_texture_smoothing_ = false;

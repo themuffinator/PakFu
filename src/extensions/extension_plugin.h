@@ -14,6 +14,7 @@ struct ExtensionCommand {
 	QString manifest_path;
 	QString working_directory;
 	QStringList argv;
+	QStringList capabilities;
 	QStringList allowed_extensions;
 	bool requires_entries = false;
 	bool allow_multiple = true;
@@ -33,20 +34,31 @@ struct ExtensionRunContext {
 	QString archive_format;
 	QString mounted_entry;
 	QString current_prefix;
+	QString import_root;
 	bool quakelive_encrypted_pk3 = false;
 	bool wad3 = false;
 	bool doom_wad = false;
 	QVector<ExtensionEntryContext> entries;
 };
 
+struct ExtensionImportEntry {
+	QString archive_name;
+	QString local_path;
+	QString mode = "add_or_replace";
+	qint64 mtime_utc_secs = -1;
+};
+
 struct ExtensionRunResult {
 	int exit_code = -1;
 	QString std_out;
 	QString std_err;
+	QVector<ExtensionImportEntry> imports;
 };
 
 [[nodiscard]] QString extension_command_ref(const ExtensionCommand& command);
 [[nodiscard]] QString extension_command_display_name(const ExtensionCommand& command);
+[[nodiscard]] QStringList extension_host_capabilities();
+[[nodiscard]] bool extension_command_has_capability(const ExtensionCommand& command, const QString& capability);
 [[nodiscard]] QStringList default_extension_search_dirs();
 [[nodiscard]] bool load_extension_commands(const QStringList& search_dirs,
                                           QVector<ExtensionCommand>* out,

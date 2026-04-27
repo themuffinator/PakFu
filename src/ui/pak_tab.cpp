@@ -21,6 +21,7 @@
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileIconProvider>
@@ -82,6 +83,7 @@
 #include "formats/bsp_preview.h"
 #include "formats/cinematic.h"
 #include "formats/idtech_asset_loader.h"
+#include "formats/idtech4_map.h"
 #include "formats/idwav_audio.h"
 #include "formats/image_loader.h"
 #include "formats/image_writer.h"
@@ -133,6 +135,23 @@ bool is_mountable_archive_ext(const QString& ext);
 bool is_mountable_archive_file_name(const QString& name);
 bool copy_file_stream(const QString& src_path, const QString& dest_path, QString* error);
 QString archive_format_label(const Archive& archive);
+
+QString elapsed_label(qint64 ms) {
+  return ms <= 0 ? QString("<1 ms") : QString("%1 ms").arg(ms);
+}
+
+void add_preview_profile_step(QStringList* steps, const QString& label, qint64 elapsed_ms, bool cache_hit = false) {
+  if (!steps || label.isEmpty()) {
+    return;
+  }
+  steps->push_back(QString("%1 %2%3").arg(label, elapsed_label(elapsed_ms), cache_hit ? QString(" (cached)") : QString()));
+}
+
+QString preview_profile_text(QStringList steps, qint64 total_ms) {
+  steps.removeAll({});
+  add_preview_profile_step(&steps, "total", total_ms);
+  return steps.join("; ");
+}
 
 QString format_size(quint32 size) {
   constexpr quint32 kKiB = 1024;
@@ -1406,7 +1425,7 @@ bool is_plain_text_script_ext(const QString& ext) {
   static const QSet<QString> kPlainTextScriptExts = {
     "txt", "log", "md", "ini", "xml", "lst", "lang", "tik", "anim", "cam", "camera", "char", "voice", "gui", "bgui", "efx", "guide", "lipsync", "viseme", "vdf",
     "st", "lip", "tlk", "mus", "snd", "ritualfont",
-    "def", "mtr", "sndshd", "af", "pd", "decl", "ent", "map", "sab", "siege", "veh", "npc", "jts", "bset", "weap", "ammo",
+    "def", "mtr", "sndshd", "af", "pd", "decl", "ent", "map", "proc", "sab", "siege", "veh", "npc", "jts", "bset", "weap", "ammo",
     "campaign"
   };
   return kPlainTextScriptExts.contains(ext);
@@ -1416,7 +1435,7 @@ bool is_text_file_name(const QString& name) {
   const QString ext = file_ext_lower(name);
   static const QSet<QString> kTextExts = {
     "cfg", "config", "rc", "arena", "bot", "skin", "shaderlist", "txt", "log", "md", "ini", "json", "xml", "shader", "menu", "script",
-    "lst", "lang", "tik", "anim", "cam", "camera", "char", "voice", "gui", "bgui", "efx", "guide", "lipsync", "viseme", "vdf", "st", "lip", "tlk", "mus", "snd", "ritualfont", "def", "mtr", "sndshd", "af", "pd", "decl", "ent", "map",
+    "lst", "lang", "tik", "anim", "cam", "camera", "char", "voice", "gui", "bgui", "efx", "guide", "lipsync", "viseme", "vdf", "st", "lip", "tlk", "mus", "snd", "ritualfont", "def", "mtr", "sndshd", "af", "pd", "decl", "ent", "map", "proc",
     "qc", "sab", "siege", "veh", "npc", "jts", "bset", "weap", "ammo", "campaign", "c", "h"
   };
   return kTextExts.contains(ext);
@@ -1936,7 +1955,7 @@ ConversionCategory classify_conversion_category(const QString& file_name) {
   if (is_model_file_name(file_name)) {
     return ConversionCategory::Model;
   }
-  if (is_bsp_file_name(file_name) || ext == "map") {
+  if (is_bsp_file_name(file_name) || is_idtech4_map_text_file(file_name)) {
     return ConversionCategory::Map;
   }
   if (is_text_file_name(file_name)) {
@@ -2544,7 +2563,7 @@ private:
     QFrame* card = qobject_cast<QFrame*>(card_layout->parentWidget());
     map_enabled_ = new QCheckBox("Process map assets", card);
     map_mode_ = new QComboBox(card);
-    map_mode_->addItem("Render BSP preview image", "preview");
+    map_mode_->addItem("Preview image / summary", "preview");
     map_mode_->addItem("Map summary text", "summary");
     map_mode_->addItem("Copy source file", "copy");
     tune_field(map_mode_);
@@ -2558,7 +2577,7 @@ private:
     card_layout->addWidget(map_enabled_);
     auto* form = make_form_layout();
     form->addRow(make_form_label("Conversion mode", card), map_mode_);
-    map_preview_size_label_ = make_form_label("Preview size", card);
+    map_preview_size_label_ = make_form_label("BSP preview size", card);
     form->addRow(map_preview_size_label_, map_preview_size_);
     card_layout->addLayout(form);
     (void)apply_tab_meta(tab, ConversionCategory::Map, map_enabled_);
@@ -2853,6 +2872,21 @@ QString bsp_summary_text(const QByteArray& bytes, const QString& file_name) {
   }
 
   return text;
+}
+
+QString map_summary_text(const QByteArray& bytes, const QString& file_name) {
+  if (is_bsp_file_name(file_name)) {
+    return bsp_summary_text(bytes, file_name);
+  }
+  if (is_idtech4_map_text_file(file_name)) {
+    const IdTech4MapInspectResult inspected = inspect_idtech4_map_bytes(bytes, file_name);
+    if (inspected.ok()) {
+      return inspected.summary;
+    }
+    return QString("File: %1\nType: idTech4/source map artifact\nScope: text/metadata inspection only; 3D rendering is currently limited to Quake-family .bsp maps.\nInspect error: %2\n")
+      .arg(file_name, inspected.error.isEmpty() ? QString("Unable to inspect map artifact.") : inspected.error);
+  }
+  return QString("File: %1\nType: Map\nInspect error: unsupported map artifact.\n").arg(file_name);
 }
 }  // namespace
 
@@ -3953,7 +3987,7 @@ void PakTab::convert_selected_assets() {
     } else if (item.category == ConversionCategory::Map) {
       if (options.map_mode == "copy") {
         ok = copy_file_stream(source_path, target_path, &err);
-      } else if (options.map_mode == "preview") {
+      } else if (options.map_mode == "preview" && is_bsp_file_name(item.display_name)) {
         const BspPreviewResult preview = render_bsp_preview_bytes(source_bytes, item.display_name, BspPreviewStyle::Lightmapped, options.map_preview_size);
         if (!preview.ok()) {
           failures.push_back(preview.error.isEmpty() ? QString("Unable to render map preview: %1").arg(item.display_name) : preview.error);
@@ -3968,7 +4002,7 @@ void PakTab::convert_selected_assets() {
         ok = preview.image.save(target_path, "PNG");
       } else {
         target_path = change_file_extension(target_path, "txt");
-        ok = write_bytes_file(target_path, bsp_summary_text(source_bytes, item.display_name).toUtf8(), &err);
+        ok = write_bytes_file(target_path, map_summary_text(source_bytes, item.display_name).toUtf8(), &err);
       }
       if (!ok) {
         failures.push_back(err.isEmpty() ? QString("Unable to convert map: %1").arg(item.display_name) : err);
@@ -4040,6 +4074,25 @@ bool PakTab::can_execute_extension_command(const ExtensionCommand& command, QStr
     return false;
   }
 
+  if (extension_command_has_capability(command, "entries.import") && !is_editable()) {
+    if (error) {
+      if (archive_.is_loaded() && archive_.format() == Archive::Format::Directory) {
+        *error = "Folder views are read-only. Pack it into an archive via Save As before importing extension output.";
+      } else if (is_wad_mounted()) {
+        *error = "Mounted archive views are read-only. Use breadcrumbs to go back before importing extension output.";
+      } else if (pure_pak_protector_enabled_ && official_archive_) {
+        *error = "Pure PAK Protector is enabled for this official archive. Disable it in Preferences or use Save As to create a copy.";
+      } else {
+        *error = "This archive is not editable.";
+      }
+    }
+    return false;
+  }
+
+  if (!extension_command_has_capability(command, "entries.read")) {
+    return extension_command_accepts_entries(command, QVector<ExtensionEntryContext>{}, error);
+  }
+
   QVector<ExtensionEntryContext> entries;
   const ReducedSelection selection = reduce_selected_items(selected_items());
   entries.reserve(selection.dirs.size() + selection.files.size());
@@ -4093,48 +4146,59 @@ bool PakTab::execute_extension_command(const ExtensionCommand& command, Extensio
     return false;
   }
 
-  QVector<ExtensionEntryContext> entries;
-  const ReducedSelection selection = reduce_selected_items(selected_items());
-  entries.reserve(selection.dirs.size() + selection.files.size());
-
-  for (const QString& dir_prefix : selection.dirs) {
-    ExtensionEntryContext entry;
-    entry.archive_name = normalize_dir_prefix_path(dir_prefix);
-    entry.is_dir = true;
-    QString exported_path;
-    if (!export_path_to_temp(entry.archive_name, true, &exported_path, error)) {
-      return false;
+  const bool can_read_entries = extension_command_has_capability(command, "entries.read");
+  const bool can_import_entries = extension_command_has_capability(command, "entries.import");
+  if (can_import_entries && !ensure_editable("Run Extension")) {
+    if (error) {
+      *error = "This archive is not editable.";
     }
-    entry.local_path = exported_path;
-    entries.push_back(std::move(entry));
+    return false;
   }
 
-  for (const QString& pak_path_in : selection.files) {
-    ExtensionEntryContext entry;
-    entry.archive_name = normalize_pak_path(pak_path_in);
-    entry.is_dir = false;
+  QVector<ExtensionEntryContext> entries;
+  if (can_read_entries) {
+    const ReducedSelection selection = reduce_selected_items(selected_items());
+    entries.reserve(selection.dirs.size() + selection.files.size());
 
-    const int added_idx = added_index_by_name_.value(entry.archive_name, -1);
-    if (!is_wad_mounted() && added_idx >= 0 && added_idx < added_files_.size()) {
-      entry.size = added_files_[added_idx].size;
-      entry.mtime_utc_secs = added_files_[added_idx].mtime_utc_secs;
-    } else {
-      for (const ArchiveEntry& archive_entry : view_archive().entries()) {
-        if (normalize_pak_path(archive_entry.name) != entry.archive_name) {
-          continue;
-        }
-        entry.size = archive_entry.size;
-        entry.mtime_utc_secs = archive_entry.mtime_utc_secs;
-        break;
+    for (const QString& dir_prefix : selection.dirs) {
+      ExtensionEntryContext entry;
+      entry.archive_name = normalize_dir_prefix_path(dir_prefix);
+      entry.is_dir = true;
+      QString exported_path;
+      if (!export_path_to_temp(entry.archive_name, true, &exported_path, error)) {
+        return false;
       }
+      entry.local_path = exported_path;
+      entries.push_back(std::move(entry));
     }
 
-    QString exported_path;
-    if (!export_path_to_temp(entry.archive_name, false, &exported_path, error)) {
-      return false;
+    for (const QString& pak_path_in : selection.files) {
+      ExtensionEntryContext entry;
+      entry.archive_name = normalize_pak_path(pak_path_in);
+      entry.is_dir = false;
+
+      const int added_idx = added_index_by_name_.value(entry.archive_name, -1);
+      if (!is_wad_mounted() && added_idx >= 0 && added_idx < added_files_.size()) {
+        entry.size = added_files_[added_idx].size;
+        entry.mtime_utc_secs = added_files_[added_idx].mtime_utc_secs;
+      } else {
+        for (const ArchiveEntry& archive_entry : view_archive().entries()) {
+          if (normalize_pak_path(archive_entry.name) != entry.archive_name) {
+            continue;
+          }
+          entry.size = archive_entry.size;
+          entry.mtime_utc_secs = archive_entry.mtime_utc_secs;
+          break;
+        }
+      }
+
+      QString exported_path;
+      if (!export_path_to_temp(entry.archive_name, false, &exported_path, error)) {
+        return false;
+      }
+      entry.local_path = exported_path;
+      entries.push_back(std::move(entry));
     }
-    entry.local_path = exported_path;
-    entries.push_back(std::move(entry));
   }
 
   ExtensionRunContext context;
@@ -4148,8 +4212,106 @@ bool PakTab::execute_extension_command(const ExtensionCommand& command, Extensio
   if (is_wad_mounted()) {
     context.mounted_entry = mounted_archives_.back().mount_name;
   }
+  if (can_import_entries) {
+    const QString root = ensure_export_root();
+    if (root.isEmpty()) {
+      if (error) {
+        *error = "Unable to create extension scratch directory.";
+      }
+      return false;
+    }
+    const QString import_root = QDir(root).filePath(QString("extension-import-%1").arg(export_seq_++));
+    if (!QDir().mkpath(import_root)) {
+      if (error) {
+        *error = QString("Unable to create extension import directory: %1").arg(import_root);
+      }
+      return false;
+    }
+    context.import_root = import_root;
+  }
   context.entries = std::move(entries);
-  return run_extension_command(command, context, result, error);
+  ExtensionRunResult local_result;
+  ExtensionRunResult* effective_result = result ? result : &local_result;
+  if (!run_extension_command(command, context, effective_result, error)) {
+    return false;
+  }
+  if (!effective_result->imports.isEmpty()) {
+    return apply_extension_imports(effective_result->imports, error);
+  }
+  return true;
+}
+
+bool PakTab::apply_extension_imports(const QVector<ExtensionImportEntry>& imports, QString* error) {
+  if (error) {
+    error->clear();
+  }
+  if (imports.isEmpty()) {
+    return true;
+  }
+  if (!is_editable()) {
+    if (error) {
+      *error = "This archive is not editable.";
+    }
+    return false;
+  }
+
+  const QVector<AddedFile> before_added = added_files_;
+  const QSet<QString> before_virtual = virtual_dirs_;
+  const QSet<QString> before_deleted_files = deleted_files_;
+  const QSet<QString> before_deleted_dirs = deleted_dir_prefixes_;
+
+  const auto restore_before = [&]() {
+    added_files_ = before_added;
+    virtual_dirs_ = before_virtual;
+    deleted_files_ = before_deleted_files;
+    deleted_dir_prefixes_ = before_deleted_dirs;
+    rebuild_added_index();
+  };
+
+  for (const ExtensionImportEntry& import : imports) {
+    if (import.mode != "add_or_replace") {
+      restore_before();
+      if (error) {
+        *error = QString("Unsupported extension import mode for %1: %2").arg(import.archive_name, import.mode);
+      }
+      return false;
+    }
+
+    QString add_err;
+    if (!add_file_mapping(import.archive_name, import.local_path, &add_err)) {
+      restore_before();
+      if (error) {
+        *error = add_err.isEmpty()
+                   ? QString("Unable to import extension output: %1").arg(import.archive_name)
+                   : QString("Unable to import extension output %1: %2").arg(import.archive_name, add_err);
+      }
+      return false;
+    }
+    if (import.mtime_utc_secs >= 0) {
+      const int idx = added_index_by_name_.value(normalize_pak_path(import.archive_name), -1);
+      if (idx >= 0 && idx < added_files_.size()) {
+        added_files_[idx].mtime_utc_secs = import.mtime_utc_secs;
+      }
+    }
+  }
+
+  if (undo_stack_) {
+    undo_stack_->push(new PakTabStateCommand(this,
+                                             "Import Extension Output",
+                                             before_added,
+                                             before_virtual,
+                                             before_deleted_files,
+                                             before_deleted_dirs,
+                                             added_files_,
+                                             virtual_dirs_,
+                                             deleted_files_,
+                                             deleted_dir_prefixes_));
+  } else {
+    set_dirty(true);
+  }
+
+  refresh_listing();
+  return true;
 }
 
 void PakTab::dragEnterEvent(QDragEnterEvent* event) {
@@ -6148,6 +6310,84 @@ bool PakTab::export_path_to_temp(const QString& pak_path_in, bool is_dir, QStrin
 
   if (out_fs_path) {
     *out_fs_path = dest_file;
+  }
+  return true;
+}
+
+QString PakTab::preview_export_cache_key(const QString& pak_path, bool is_dir) const {
+  QString scope = QFileInfo(pak_path_).absoluteFilePath();
+  if (scope.isEmpty()) {
+    scope = "archive";
+  }
+  if (is_wad_mounted()) {
+    for (const MountedArchiveLayer& layer : mounted_archives_) {
+      scope += QString("|mounted:%1:%2").arg(layer.mount_name, layer.mount_fs_path);
+    }
+  }
+  return QString("%1|%2|%3").arg(scope, is_dir ? QString("dir") : QString("file"), normalize_pak_path(pak_path));
+}
+
+void PakTab::clear_preview_temp_cache() {
+  preview_temp_exports_.clear();
+}
+
+bool PakTab::export_path_to_temp_cached(const QString& pak_path_in,
+                                        bool is_dir,
+                                        qint64 size,
+                                        qint64 mtime_utc_secs,
+                                        QString* out_fs_path,
+                                        QString* error,
+                                        bool* cache_hit) {
+  if (cache_hit) {
+    *cache_hit = false;
+  }
+  if (out_fs_path) {
+    out_fs_path->clear();
+  }
+
+  const QString pak_path = normalize_pak_path(pak_path_in);
+  const int added_idx = added_index_by_name_.value(pak_path, -1);
+  const QString source_path = (!is_wad_mounted() && added_idx >= 0 && added_idx < added_files_.size())
+                                ? added_files_[added_idx].source_path
+                                : QString();
+  const QString key = preview_export_cache_key(pak_path, is_dir);
+  const PreviewTempExport cached = preview_temp_exports_.value(key);
+  if (!cached.fs_path.isEmpty() && cached.is_dir == is_dir && cached.size == size &&
+      cached.mtime_utc_secs == mtime_utc_secs && cached.source_path == source_path) {
+    const QFileInfo cached_info(cached.fs_path);
+    const bool exists = is_dir ? cached_info.isDir() : cached_info.isFile();
+    if (exists) {
+      if (out_fs_path) {
+        *out_fs_path = cached.fs_path;
+      }
+      if (cache_hit) {
+        *cache_hit = true;
+      }
+      return true;
+    }
+  }
+
+  QString exported;
+  if (!export_path_to_temp(pak_path, is_dir, &exported, error)) {
+    preview_temp_exports_.remove(key);
+    return false;
+  }
+
+  PreviewTempExport entry;
+  entry.fs_path = exported;
+  entry.source_path = source_path;
+  entry.size = size;
+  entry.mtime_utc_secs = mtime_utc_secs;
+  entry.is_dir = is_dir;
+  preview_temp_exports_.insert(key, entry);
+
+  constexpr int kMaxPreviewTempExports = 16;
+  while (preview_temp_exports_.size() > kMaxPreviewTempExports) {
+    preview_temp_exports_.erase(preview_temp_exports_.begin());
+  }
+
+  if (out_fs_path) {
+    *out_fs_path = exported;
   }
   return true;
 }
@@ -8424,6 +8664,7 @@ void PakTab::refresh_listing() {
   }
 
   stop_thumbnail_generation();
+  clear_preview_temp_cache();
   if (details_view_) {
     details_view_->clear();
   }
@@ -9105,6 +9346,7 @@ bool PakTab::ensure_quake2_palette(QString* error) {
   quake2_palette_loaded_ = true;
   quake2_palette_.clear();
   quake2_palette_error_.clear();
+  quake2_palette_source_.clear();
 
   QStringList attempts;
 
@@ -9116,6 +9358,7 @@ bool PakTab::ensure_quake2_palette(QString* error) {
       return false;
     }
     quake2_palette_ = std::move(palette);
+    quake2_palette_source_ = where;
     return true;
   };
 
@@ -9244,6 +9487,7 @@ bool PakTab::ensure_quake1_palette(QString* error) {
   quake1_palette_loaded_ = true;
   quake1_palette_.clear();
   quake1_palette_error_.clear();
+  quake1_palette_source_.clear();
 
   QStringList attempts;
 
@@ -9255,6 +9499,7 @@ bool PakTab::ensure_quake1_palette(QString* error) {
       return false;
     }
     quake1_palette_ = std::move(palette);
+    quake1_palette_source_ = where;
     return true;
   };
 
@@ -9470,6 +9715,7 @@ void PakTab::update_preview() {
   }
 
   preview_->set_current_file_info(pak_path, size, mtime);
+  preview_->clear_asset_context();
 
   const QString leaf = pak_leaf_name(pak_path);
   const QString subtitle = (!is_dir && size >= 0)
@@ -9537,6 +9783,7 @@ void PakTab::update_preview() {
 
   if (is_image_file_name(leaf)) {
     ImageDecodeOptions decode_options;
+    PreviewAssetContext asset_context;
     const bool supports_mips = (ext == "wal" || ext == "swl" || ext == "m8" || ext == "mip");
     if (preview_) {
       preview_->set_image_mip_controls(supports_mips, preview_->image_mip_level(), ext == "m8" ? 16 : 4);
@@ -9545,23 +9792,50 @@ void PakTab::update_preview() {
     if (ext == "wal") {
       QString pal_err;
       if (!ensure_quake2_palette(&pal_err)) {
+        asset_context.palette_provenance = "Quake II pics/colormap.pcx not resolved.";
+        asset_context.preview_fallback = "WAL preview requires an external Quake II palette.";
+        preview_->set_asset_context(asset_context);
         preview_->show_message(leaf, pal_err.isEmpty() ? "Unable to locate Quake II palette required for WAL preview." : pal_err);
         return;
       }
       decode_options.palette = &quake2_palette_;
+      asset_context.palette_provenance =
+        quake2_palette_source_.isEmpty() ? QString("Quake II pics/colormap.pcx") : quake2_palette_source_;
     }
     if (ext == "lmp") {
       QString pal_err;
       if (ensure_quake1_palette(&pal_err)) {
         decode_options.palette = &quake1_palette_;
+        asset_context.palette_provenance =
+          quake1_palette_source_.isEmpty() ? QString("Quake gfx/palette.lmp") : quake1_palette_source_;
+      } else {
+        asset_context.palette_provenance =
+          "Embedded palette when present; external Quake gfx/palette.lmp not resolved.";
+        asset_context.preview_fallback = "Some LMP images need an embedded palette or external Quake palette.";
       }
     }
     if (ext == "mip") {
       QString pal_err;
       if (ensure_quake1_palette(&pal_err)) {
         decode_options.palette = &quake1_palette_;
+        asset_context.palette_provenance =
+          quake1_palette_source_.isEmpty() ? QString("Quake gfx/palette.lmp") : quake1_palette_source_;
+      } else {
+        asset_context.palette_provenance =
+          "Embedded palette when present; external Quake gfx/palette.lmp not resolved.";
+        asset_context.preview_fallback = "Raw MIP textures need an embedded palette or external Quake palette.";
       }
     }
+    if (ext == "m8") {
+      asset_context.palette_provenance = "Embedded Heretic II M8 palette.";
+    } else if (ext == "swl") {
+      asset_context.palette_provenance = "Embedded SWL palette.";
+    } else if (ext == "pcx") {
+      asset_context.palette_provenance = "Embedded PCX palette when present.";
+    } else if (ext == "tga") {
+      asset_context.palette_provenance = "Embedded TGA color map when indexed.";
+    }
+    preview_->set_asset_context(asset_context);
 
     const bool allow_glow = is_quake2_game(game_id_);
     const auto apply_glow_from_file = [&](const QString& path, const QImage& base_image) -> QImage {
@@ -9654,18 +9928,35 @@ void PakTab::update_preview() {
   }
 
   if (is_video) {
+    QElapsedTimer preview_timer;
+    preview_timer.start();
+    QStringList profile_steps;
+    PreviewAssetContext asset_context;
     QString video_path = source_path;
     if (video_path.isEmpty()) {
       QString err;
-      if (!export_path_to_temp(pak_path, false, &video_path, &err)) {
+      bool cache_hit = false;
+      QElapsedTimer step_timer;
+      step_timer.start();
+      if (!export_path_to_temp_cached(pak_path, false, size, mtime, &video_path, &err, &cache_hit)) {
+        add_preview_profile_step(&profile_steps, "temp export", step_timer.elapsed(), cache_hit);
+        asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+        preview_->set_asset_context(asset_context);
         preview_->show_message(leaf, err.isEmpty() ? "Unable to export video for preview." : err);
         return;
       }
+      add_preview_profile_step(&profile_steps, "temp export", step_timer.elapsed(), cache_hit);
+    } else {
+      add_preview_profile_step(&profile_steps, "source file", 0);
     }
     if (video_path.isEmpty()) {
+      asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+      preview_->set_asset_context(asset_context);
       preview_->show_message(leaf, "Unable to export video for preview.");
       return;
     }
+    asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+    preview_->set_asset_context(asset_context);
 
     const bool is_cinematic = (ext == "cin" || ext == "roq");
     if (is_cinematic) {
@@ -9677,25 +9968,50 @@ void PakTab::update_preview() {
   }
 
   if (is_audio) {
+    QElapsedTimer preview_timer;
+    preview_timer.start();
+    QStringList profile_steps;
+    PreviewAssetContext asset_context;
     QString audio_path = source_path;
     if (audio_path.isEmpty()) {
       QString err;
-      if (!export_path_to_temp(pak_path, false, &audio_path, &err)) {
+      bool cache_hit = false;
+      QElapsedTimer step_timer;
+      step_timer.start();
+      if (!export_path_to_temp_cached(pak_path, false, size, mtime, &audio_path, &err, &cache_hit)) {
+        add_preview_profile_step(&profile_steps, "temp export", step_timer.elapsed(), cache_hit);
+        asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+        preview_->set_asset_context(asset_context);
         preview_->show_message(leaf, err.isEmpty() ? "Unable to export audio for preview." : err);
         return;
       }
+      add_preview_profile_step(&profile_steps, "temp export", step_timer.elapsed(), cache_hit);
+    } else {
+      add_preview_profile_step(&profile_steps, "source file", 0);
     }
     if (audio_path.isEmpty()) {
+      asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+      preview_->set_asset_context(asset_context);
       preview_->show_message(leaf, "Unable to export audio for preview.");
       return;
     }
+    asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+    preview_->set_asset_context(asset_context);
     preview_->show_audio_from_file(leaf, subtitle, audio_path);
     return;
   }
 
   if (is_model) {
+    QElapsedTimer preview_timer;
+    preview_timer.start();
+    QStringList profile_steps;
     QString model_path = source_path;
     QString skin_path;
+    PreviewAssetContext asset_context;
+    QStringList companion_notes;
+    QStringList preview_notes;
+    QSet<QString> texture_refs_seen;
+    QSet<QString> texture_refs_resolved;
 
     const auto file_base_name = [](const QString& name) -> QString {
       const int dot = name.lastIndexOf('.');
@@ -9865,12 +10181,21 @@ void PakTab::update_preview() {
 
     if (model_path.isEmpty()) {
       QString err;
-      if (!export_path_to_temp(pak_path, false, &model_path, &err)) {
+      bool cache_hit = false;
+      QElapsedTimer step_timer;
+      step_timer.start();
+      if (!export_path_to_temp_cached(pak_path, false, size, mtime, &model_path, &err, &cache_hit)) {
+        add_preview_profile_step(&profile_steps, "temp export", step_timer.elapsed(), cache_hit);
+        asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+        preview_->set_asset_context(asset_context);
         preview_->show_message(leaf, err.isEmpty() ? "Unable to export model for preview." : err);
         return;
       }
+      add_preview_profile_step(&profile_steps, "temp export", step_timer.elapsed(), cache_hit);
 
       const QString op_dir = QFileInfo(model_path).absolutePath();
+      QElapsedTimer companion_timer;
+      companion_timer.start();
 
       auto extract_entry_to_model_dir = [&](const QString& found_entry) -> QString {
         const QString entry_leaf = pak_leaf_name(found_entry);
@@ -9922,6 +10247,9 @@ void PakTab::update_preview() {
       const QString skin_pak = find_skin_in_archive(pak_path);
       if (!skin_pak.isEmpty()) {
         skin_path = extract_entry_to_model_dir(skin_pak);
+        if (!skin_path.isEmpty()) {
+          companion_notes.push_back(QString("Skin: %1").arg(pak_leaf_name(skin_pak)));
+        }
 
         if (!skin_path.isEmpty() && is_quake2_game(game_id_)) {
           const QString skin_ext = file_ext_lower(QFileInfo(skin_path).fileName());
@@ -9932,6 +10260,29 @@ void PakTab::update_preview() {
               (void)extract_entry_to_model_dir(glow_found);
             }
           }
+        }
+      }
+
+      if (model_ext == "mdl" && !model_base.isEmpty()) {
+        const QString normalized_model = normalize_pak_path(pak_path);
+        const int slash = normalized_model.lastIndexOf('/');
+        const QString model_dir_prefix = (slash >= 0) ? normalized_model.left(slash + 1) : QString();
+        const QStringList wants = {
+          model_dir_prefix + model_base + "T.mdl",
+          model_dir_prefix + model_base + "t.mdl",
+          model_base + "T.mdl",
+          model_base + "t.mdl",
+        };
+        for (const QString& want : wants) {
+          const QString found = find_entry_ci_slow(want);
+          if (found.isEmpty()) {
+            continue;
+          }
+          const QString extracted = extract_entry_to_model_dir(found);
+          if (!extracted.isEmpty()) {
+            companion_notes.push_back(QString("GoldSrc textures: %1").arg(pak_leaf_name(found)));
+          }
+          break;
         }
       }
 
@@ -9991,7 +10342,12 @@ void PakTab::update_preview() {
             wants.push_back(model_dir_prefix + base + ".MDX");
             wants.push_back(base + ".mdx");
             wants.push_back(base + ".MDX");
-            (void)extract_first_existing(wants);
+            const QString mdx_path = extract_first_existing(wants);
+            if (!mdx_path.isEmpty()) {
+              companion_notes.push_back(QString("Skeleton: %1").arg(QFileInfo(mdx_path).fileName()));
+            } else {
+              preview_notes.push_back("MDM companion .mdx not found; preview may use guide skeleton data.");
+            }
           }
         }
 
@@ -10041,7 +10397,10 @@ void PakTab::update_preview() {
             if (found.isEmpty()) {
               continue;
             }
-            (void)extract_entry_to_model_dir(found);
+            const QString gla_path = extract_entry_to_model_dir(found);
+            if (!gla_path.isEmpty()) {
+              companion_notes.push_back(QString("Animation base: %1").arg(QFileInfo(gla_path).fileName()));
+            }
           }
         }
 
@@ -10155,6 +10514,10 @@ void PakTab::update_preview() {
             while (sh.startsWith('/')) {
               sh.remove(0, 1);
             }
+            const QString ref_key = normalize_pak_path(sh).toLower();
+            if (!ref_key.isEmpty()) {
+              texture_refs_seen.insert(ref_key);
+            }
 
             const QFileInfo sfi(sh);
             const QString leaf_name = sfi.fileName();
@@ -10222,16 +10585,19 @@ void PakTab::update_preview() {
                 continue;
               }
               const QString leaf_lower = pak_leaf_name(found).toLower();
-            if (leaf_lower.isEmpty() || extracted_lower.contains(leaf_lower)) {
-              continue;
+              if (leaf_lower.isEmpty() || extracted_lower.contains(leaf_lower)) {
+                continue;
+              }
+              extracted_lower.insert(leaf_lower);
+              if (!ref_key.isEmpty()) {
+                texture_refs_resolved.insert(ref_key);
+              }
+              extract_entry_to_model_dir(found);
+              extract_glow_for_entry(found);
+              if (extracted_lower.size() >= 32) {
+                break;
+              }
             }
-            extracted_lower.insert(leaf_lower);
-            extract_entry_to_model_dir(found);
-            extract_glow_for_entry(found);
-            if (extracted_lower.size() >= 32) {
-              break;
-            }
-          }
           };
 
           for (const ModelSurface& s : loaded_model->surfaces) {
@@ -10260,55 +10626,164 @@ void PakTab::update_preview() {
           }
         }
       }
+      add_preview_profile_step(&profile_steps, "companions", companion_timer.elapsed());
+    } else {
+      add_preview_profile_step(&profile_steps, "source file", 0);
     }
     if (model_path.isEmpty()) {
+      asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+      preview_->set_asset_context(asset_context);
       preview_->show_message(leaf, "Unable to export model for preview.");
       return;
     }
     if (!source_path.isEmpty()) {
       skin_path = find_skin_on_disk(model_path);
+      if (!skin_path.isEmpty()) {
+        companion_notes.push_back(QString("Skin: %1").arg(QFileInfo(skin_path).fileName()));
+      }
+      if (model_ext == "mdl" && !model_base.isEmpty()) {
+        const QDir model_dir(QFileInfo(model_path).absolutePath());
+        const QStringList candidates = {model_dir.filePath(model_base + "T.mdl"), model_dir.filePath(model_base + "t.mdl")};
+        for (const QString& candidate : candidates) {
+          if (QFileInfo::exists(candidate)) {
+            companion_notes.push_back(QString("GoldSrc textures: %1").arg(QFileInfo(candidate).fileName()));
+            break;
+          }
+        }
+      }
+      if (model_ext == "mdm") {
+        const QString mdx_path = QDir(QFileInfo(model_path).absolutePath()).filePath(model_base + ".mdx");
+        if (QFileInfo::exists(mdx_path)) {
+          companion_notes.push_back(QString("Skeleton: %1").arg(QFileInfo(mdx_path).fileName()));
+        } else {
+          preview_notes.push_back("MDM companion .mdx not found; preview may use guide skeleton data.");
+        }
+      }
+      if (model_ext == "glm") {
+        const QString gla_path = QDir(QFileInfo(model_path).absolutePath()).filePath(model_base + ".gla");
+        if (QFileInfo::exists(gla_path)) {
+          companion_notes.push_back(QString("Animation base: %1").arg(QFileInfo(gla_path).fileName()));
+        }
+      }
     }
     (void)ensure_quake1_palette(nullptr);
     (void)ensure_quake2_palette(nullptr);
     preview_->set_model_palettes(quake1_palette_, quake2_palette_);
+    QStringList palette_sources;
+    if (quake1_palette_.size() == 256) {
+      palette_sources.push_back(QString("Quake: %1").arg(
+        quake1_palette_source_.isEmpty() ? QString("gfx/palette.lmp") : quake1_palette_source_));
+    }
+    if (quake2_palette_.size() == 256) {
+      palette_sources.push_back(QString("Quake II: %1").arg(
+        quake2_palette_source_.isEmpty() ? QString("pics/colormap.pcx") : quake2_palette_source_));
+    }
+    asset_context.palette_provenance =
+      palette_sources.isEmpty()
+        ? QString("Embedded model textures when available; indexed Quake skins use grayscale fallback without a palette.")
+        : palette_sources.join('\n');
+    companion_notes.removeDuplicates();
+    asset_context.companion_resolution =
+      companion_notes.isEmpty() ? QString("No external companion files resolved.") : companion_notes.join('\n');
+    if (!texture_refs_seen.isEmpty()) {
+      asset_context.shader_dependencies =
+        QString("%1 surface texture refs, %2 resolved").arg(texture_refs_seen.size()).arg(texture_refs_resolved.size());
+    } else if (model_ext == "md3" || model_ext == "mdc" || model_ext == "mdr") {
+      asset_context.shader_dependencies =
+        skin_path.isEmpty()
+          ? QString("No .skin file resolved; using embedded shader names and same-folder lookup.")
+          : QString("Surface textures resolved through skin/model hints and same-folder lookup.");
+    }
+    preview_notes.removeDuplicates();
+    asset_context.preview_fallback = preview_notes.join('\n');
+    asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+    preview_->set_asset_context(asset_context);
+    QElapsedTimer load_timer;
+    load_timer.start();
     preview_->show_model_from_file(leaf, subtitle, model_path, skin_path);
+    add_preview_profile_step(&profile_steps, "model load", load_timer.elapsed());
+    asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+    preview_->set_asset_context(asset_context);
     return;
   }
 
   if (is_bsp) {
+    QElapsedTimer preview_timer;
+    preview_timer.start();
+    QStringList profile_steps;
+    PreviewAssetContext asset_context;
+    QStringList preview_notes;
     BspMesh mesh;
     QString err;
     bool ok = false;
     QByteArray bsp_bytes;
     if (!source_path.isEmpty()) {
+      QElapsedTimer read_timer;
+      read_timer.start();
       QFile f(source_path);
       if (!f.open(QIODevice::ReadOnly)) {
+        asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+        preview_->set_asset_context(asset_context);
         preview_->show_message(leaf, "Unable to open BSP file.");
         return;
       }
       constexpr qint64 kMaxBspBytes = 128LL * 1024 * 1024;
       const qint64 size_on_disk = f.size();
       if (size_on_disk > kMaxBspBytes) {
+        asset_context.preview_fallback = QString("BSP preview is capped at %1; selected file is %2.")
+                                           .arg(format_size(static_cast<quint32>(kMaxBspBytes)),
+                                                format_size(static_cast<quint32>(qMin<qint64>(size_on_disk, std::numeric_limits<quint32>::max()))));
+        asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+        preview_->set_asset_context(asset_context);
         preview_->show_message(leaf, "BSP file is too large to preview.");
         return;
       }
       bsp_bytes = f.readAll();
+      add_preview_profile_step(&profile_steps, "read", read_timer.elapsed());
+      QElapsedTimer mesh_timer;
+      mesh_timer.start();
       ok = load_bsp_mesh_bytes(bsp_bytes, leaf, &mesh, &err, true);
+      add_preview_profile_step(&profile_steps, "mesh", mesh_timer.elapsed());
     } else {
       constexpr qint64 kMaxBspBytes = 128LL * 1024 * 1024;
+      if (size > kMaxBspBytes) {
+        asset_context.preview_fallback = QString("BSP preview is capped at %1; selected entry is %2.")
+                                           .arg(format_size(static_cast<quint32>(kMaxBspBytes)),
+                                                format_size(static_cast<quint32>(qMin<qint64>(size, std::numeric_limits<quint32>::max()))));
+        asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+        preview_->set_asset_context(asset_context);
+        preview_->show_message(leaf, "BSP file is too large to preview.");
+        return;
+      }
+      QElapsedTimer read_timer;
+      read_timer.start();
       const qint64 max_bytes = (size > 0) ? std::min(size, kMaxBspBytes) : kMaxBspBytes;
       if (!view_archive().read_entry_bytes(pak_path, &bsp_bytes, &err, max_bytes)) {
+        add_preview_profile_step(&profile_steps, "read", read_timer.elapsed());
+        asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+        preview_->set_asset_context(asset_context);
         preview_->show_message(leaf, err.isEmpty() ? "Unable to read BSP from archive." : err);
         return;
       }
+      add_preview_profile_step(&profile_steps, "read", read_timer.elapsed());
+      QElapsedTimer mesh_timer;
+      mesh_timer.start();
       ok = load_bsp_mesh_bytes(bsp_bytes, leaf, &mesh, &err, true);
+      add_preview_profile_step(&profile_steps, "mesh", mesh_timer.elapsed());
     }
 
     if (!ok) {
+      asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+      preview_->set_asset_context(asset_context);
       preview_->show_message(leaf, err.isEmpty() ? "Unable to render BSP preview." : err);
       return;
     }
     QHash<QString, QImage> textures;
+    QElapsedTimer texture_timer;
+    texture_timer.start();
+    int wanted_texture_refs = 0;
+    int attempted_texture_refs = 0;
+    int resolved_texture_refs = 0;
     if (view_archive().is_loaded()) {
       (void)ensure_quake1_palette(nullptr);
       (void)ensure_quake2_palette(nullptr);
@@ -10328,6 +10803,8 @@ void PakTab::update_preview() {
       }
 
       if (!wanted.isEmpty()) {
+        wanted_texture_refs = wanted.size();
+        constexpr int kMaxBspTexturePreviewRefs = 256;
         const BspFamily bsp_family = bsp_family_bytes(bsp_bytes);
         const QStringList exts_q3 = {"ftx", "tga", "jpg", "jpeg", "png", "dds"};
         const QStringList exts_q2 = {"wal", "swl", "m8", "png", "tga", "jpg", "jpeg", "dds"};
@@ -10388,6 +10865,11 @@ void PakTab::update_preview() {
         attempted.reserve(wanted.size());
 
         for (const QString& tex : wanted) {
+          if (attempted_texture_refs >= kMaxBspTexturePreviewRefs) {
+            preview_notes.push_back(QString("Texture preview capped at %1 BSP refs to keep large maps responsive.").arg(kMaxBspTexturePreviewRefs));
+            break;
+          }
+          ++attempted_texture_refs;
           const QString tex_key = tex.toLower();
           if (attempted.contains(tex_key)) {
             continue;
@@ -10460,13 +10942,31 @@ void PakTab::update_preview() {
               continue;
             }
             textures.insert(tex_key, decoded.image);
+            ++resolved_texture_refs;
             break;
           }
         }
       }
     }
 
+    add_preview_profile_step(&profile_steps, "textures", texture_timer.elapsed());
+    if (wanted_texture_refs > 0) {
+      asset_context.texture_dependencies =
+        QString("%1 BSP texture refs, %2 attempted, %3 resolved")
+          .arg(wanted_texture_refs)
+          .arg(attempted_texture_refs)
+          .arg(resolved_texture_refs);
+    }
+    preview_notes.removeDuplicates();
+    asset_context.preview_fallback = preview_notes.join('\n');
+    asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+    preview_->set_asset_context(asset_context);
+    QElapsedTimer show_timer;
+    show_timer.start();
     preview_->show_bsp(leaf, subtitle, std::move(mesh), std::move(textures));
+    add_preview_profile_step(&profile_steps, "viewer setup", show_timer.elapsed());
+    asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+    preview_->set_asset_context(asset_context);
     return;
   }
 
@@ -10752,8 +11252,23 @@ void PakTab::update_preview() {
       return;
     }
     const QString sub = truncated ? (subtitle + "  (Content truncated)") : subtitle;
-    if (ext == "shader") {
-      preview_->show_text(leaf, sub, text);
+    if (is_idtech4_map_text_file(leaf)) {
+      PreviewAssetContext asset_context;
+      asset_context.preview_fallback =
+        "idTech4 map/proc preview is text and metadata inspection; native 3D rendering is limited to Quake-family BSP.";
+      preview_->set_asset_context(asset_context);
+      const IdTech4MapInspectResult inspected = inspect_idtech4_map_bytes(bytes, leaf);
+      if (inspected.ok()) {
+        preview_->show_txt(leaf, sub, inspected.summary + "\nSource preview:\n\n" + text);
+      } else {
+        preview_->show_txt(leaf,
+                           sub,
+                           QString("Type: idTech4/source map artifact\n"
+                                   "Scope: text/metadata inspection only; 3D rendering is currently limited to Quake-family .bsp maps.\n"
+                                   "Inspect error: %1\n\n"
+                                   "Source preview:\n\n%2")
+                             .arg(inspected.error.isEmpty() ? QString("Unable to inspect map artifact.") : inspected.error, text));
+      }
       return;
     }
     if (is_cfg_like_text_ext(ext)) {

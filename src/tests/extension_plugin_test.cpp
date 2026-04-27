@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QTemporaryDir>
 #include <QTextStream>
 
@@ -42,6 +43,15 @@ bool write_file(const QString& path, const QByteArray& bytes, QString* error) {
 	return true;
 }
 
+bool json_array_contains(const QJsonArray& array, const QString& value) {
+	for (const QJsonValue& entry : array) {
+		if (entry.toString() == value) {
+			return true;
+		}
+	}
+	return false;
+}
+
 int run_child_mode(QString* error) {
 	QFile input;
 	if (!input.open(stdin, QIODevice::ReadOnly, QFileDevice::DontCloseHandle)) {
@@ -65,13 +75,24 @@ int run_child_mode(QString* error) {
 	const QJsonObject command = root.value("command").toObject();
 	const QString plugin_id = command.value("plugin_id").toString();
 	const QString command_id = command.value("command_id").toString();
+	const QJsonArray command_capabilities = command.value("capabilities").toArray();
+	const QJsonObject host = root.value("host").toObject();
+	const QJsonArray host_capabilities = host.value("capabilities").toArray();
 	if (plugin_id != "fixture") {
 		set_error(error, "Child mode received the wrong plugin id.");
 		return 1;
 	}
+	if (host.value("schema").toString() != "pakfu-extension/v1" ||
+	    !json_array_contains(host_capabilities, "archive.read") ||
+	    !json_array_contains(host_capabilities, "entries.read") ||
+	    !json_array_contains(host_capabilities, "entries.import")) {
+		set_error(error, "Child mode received unexpected host capabilities.");
+		return 1;
+	}
 	if (qEnvironmentVariable("PAKFU_EXTENSION_PLUGIN_ID") != plugin_id ||
 	    qEnvironmentVariable("PAKFU_EXTENSION_COMMAND_ID") != command_id ||
-	    qEnvironmentVariable("PAKFU_EXTENSION_SCHEMA") != "pakfu-extension/v1") {
+	    qEnvironmentVariable("PAKFU_EXTENSION_SCHEMA") != "pakfu-extension/v1" ||
+	    !qEnvironmentVariable("PAKFU_EXTENSION_HOST_CAPABILITIES").contains("archive.read")) {
 		set_error(error, "Child mode received unexpected extension environment variables.");
 		return 1;
 	}
@@ -99,9 +120,55 @@ int run_child_mode(QString* error) {
 			set_error(error, "Inspect command did not receive a materialized file path.");
 			return 1;
 		}
+		if (!json_array_contains(command_capabilities, "entries.read")) {
+			set_error(error, "Inspect command did not receive entry-read capability metadata.");
+			return 1;
+		}
 	} else if (command_id == "archive-info") {
 		if (!entries.isEmpty()) {
 			set_error(error, "Archive-info command should not receive entries in this test.");
+			return 1;
+		}
+	} else if (command_id == "generate") {
+		if (!entries.isEmpty()) {
+			set_error(error, "Generate command should not receive selected entries.");
+			return 1;
+		}
+		if (!json_array_contains(command_capabilities, "entries.import") ||
+		    !qEnvironmentVariable("PAKFU_EXTENSION_COMMAND_CAPABILITIES").contains("entries.import")) {
+			set_error(error, "Generate command did not receive import capability metadata.");
+			return 1;
+		}
+
+		const QString import_root = qEnvironmentVariable("PAKFU_EXTENSION_IMPORT_ROOT");
+		const QString imports_path = qEnvironmentVariable("PAKFU_EXTENSION_IMPORTS_PATH");
+		if (import_root.isEmpty() || imports_path.isEmpty() ||
+		    host.value("import_root").toString() != import_root ||
+		    host.value("import_manifest_path").toString() != imports_path) {
+			set_error(error, "Generate command did not receive import paths.");
+			return 1;
+		}
+
+		QString write_err;
+		const QString generated_rel = "generated/out.cfg";
+		const QString generated_path = QDir(import_root).filePath(generated_rel);
+		if (!write_file(generated_path, "set generated 1\n", &write_err)) {
+			set_error(error, write_err);
+			return 1;
+		}
+
+		QJsonObject import_entry;
+		import_entry.insert("archive_name", "scripts/generated.cfg");
+		import_entry.insert("local_path", generated_rel);
+		import_entry.insert("mode", "add_or_replace");
+		import_entry.insert("mtime_utc_secs", 1714156800);
+		QJsonArray imports;
+		imports.append(import_entry);
+		QJsonObject import_manifest;
+		import_manifest.insert("schema", "pakfu-extension-imports/v1");
+		import_manifest.insert("imports", imports);
+		if (!write_file(imports_path, QJsonDocument(import_manifest).toJson(QJsonDocument::Indented), &write_err)) {
+			set_error(error, write_err);
 			return 1;
 		}
 	} else {
@@ -135,6 +202,10 @@ bool run_test(QString* error) {
 	inspect.insert("requires_entries", true);
 	inspect.insert("allow_multiple", false);
 	inspect.insert("command", child_command);
+	QJsonArray inspect_capabilities;
+	inspect_capabilities.append("archive.read");
+	inspect_capabilities.append("entries.read");
+	inspect.insert("capabilities", inspect_capabilities);
 	QJsonArray inspect_extensions;
 	inspect_extensions.append("cfg");
 	inspect.insert("extensions", inspect_extensions);
@@ -145,6 +216,16 @@ bool run_test(QString* error) {
 	archive_info.insert("description", "Fixture command that inspects archive metadata only.");
 	archive_info.insert("command", child_command);
 
+	QJsonObject generate;
+	generate.insert("id", "generate");
+	generate.insert("name", "Generate CFG");
+	generate.insert("description", "Fixture command that imports a generated file.");
+	generate.insert("command", child_command);
+	QJsonArray generate_capabilities;
+	generate_capabilities.append("archive.read");
+	generate_capabilities.append("entries.import");
+	generate.insert("capabilities", generate_capabilities);
+
 	QJsonObject manifest;
 	manifest.insert("schema_version", 1);
 	manifest.insert("id", "fixture");
@@ -153,6 +234,7 @@ bool run_test(QString* error) {
 	QJsonArray commands_array;
 	commands_array.append(inspect);
 	commands_array.append(archive_info);
+	commands_array.append(generate);
 	manifest.insert("commands", commands_array);
 
 	QString write_err;
@@ -172,8 +254,8 @@ bool run_test(QString* error) {
 		set_error(error, QString("Unexpected extension manifest warning: %1").arg(warnings.first()));
 		return false;
 	}
-	if (commands.size() != 2) {
-		set_error(error, QString("Expected two extension commands, found %1.").arg(commands.size()));
+	if (commands.size() != 3) {
+		set_error(error, QString("Expected three extension commands, found %1.").arg(commands.size()));
 		return false;
 	}
 
@@ -192,6 +274,19 @@ bool run_test(QString* error) {
 	const ExtensionCommand* archive_info_command = find_extension_command(commands, "fixture:archive-info", &find_err);
 	if (!archive_info_command) {
 		set_error(error, find_err.isEmpty() ? "Archive-info command lookup failed." : find_err);
+		return false;
+	}
+	const ExtensionCommand* generate_command = find_extension_command(commands, "fixture:generate", &find_err);
+	if (!generate_command) {
+		set_error(error, find_err.isEmpty() ? "Generate command lookup failed." : find_err);
+		return false;
+	}
+	if (!extension_host_capabilities().contains("entries.import") ||
+	    !extension_command_has_capability(*inspect_command, "entries.read") ||
+	    !extension_command_has_capability(*archive_info_command, "entries.read") ||
+	    !extension_command_has_capability(*generate_command, "entries.import") ||
+	    extension_command_has_capability(*generate_command, "entries.read")) {
+		set_error(error, "Extension capabilities were not negotiated as expected.");
 		return false;
 	}
 
@@ -267,6 +362,36 @@ bool run_test(QString* error) {
 	if (!archive_info_result.std_out.contains("child-ok:archive-info:0") ||
 	    !archive_info_result.std_err.contains("child-stderr:archive-info")) {
 		set_error(error, "Archive-info command did not produce the expected child output.");
+		return false;
+	}
+
+	ExtensionRunContext generate_context;
+	generate_context.archive_path = inspect_context.archive_path;
+	generate_context.readable_archive_path = inspect_context.readable_archive_path;
+	generate_context.archive_format = "zip";
+	generate_context.import_root = QDir(temp.path()).filePath("imports");
+	if (!QDir().mkpath(generate_context.import_root)) {
+		set_error(error, "Unable to create import root for generate command.");
+		return false;
+	}
+
+	ExtensionRunResult generate_result;
+	if (!run_extension_command(*generate_command, generate_context, &generate_result, &run_err)) {
+		set_error(error, run_err.isEmpty() ? "Generate command execution failed." : run_err);
+		return false;
+	}
+	if (!generate_result.std_out.contains("child-ok:generate:0") ||
+	    !generate_result.std_err.contains("child-stderr:generate") ||
+	    generate_result.imports.size() != 1) {
+		set_error(error, "Generate command did not produce the expected output/imports.");
+		return false;
+	}
+	const ExtensionImportEntry import = generate_result.imports.first();
+	if (import.archive_name != "scripts/generated.cfg" ||
+	    import.mode != "add_or_replace" ||
+	    import.mtime_utc_secs != 1714156800 ||
+	    !QFileInfo(import.local_path).isFile()) {
+		set_error(error, "Generate command import manifest was not parsed as expected.");
 		return false;
 	}
 

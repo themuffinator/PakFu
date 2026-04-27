@@ -2,6 +2,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QFileOpenEvent>
 #include <QIcon>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -9,6 +10,7 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QMenuBar>
+#include <QObject>
 #include <QPixmap>
 #include <QPointer>
 #include <QScreen>
@@ -19,12 +21,15 @@
 #include <QThread>
 #include <QTextStream>
 #include <QToolButton>
+#include <QUrl>
 #include <QWidget>
 
 #include <QCryptographicHash>
 
 #include <memory>
+#include <functional>
 #include <string>
+#include <utility>
 
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -38,9 +43,11 @@
 
 #include "cli/cli.h"
 #include "formats/idtech_asset_loader.h"
+#include "formats/idtech4_map.h"
 #include "game/game_set.h"
 #include "pakfu_config.h"
 #include "platform/crash_handler.h"
+#include "platform/file_associations.h"
 #include "ui/game_set_dialog.h"
 #include "ui/audio_viewer_window.h"
 #include "ui/image_viewer_window.h"
@@ -154,10 +161,23 @@ bool is_archive_path(const QString& path) {
   return kExts.contains(ext);
 }
 
+QString file_ext_lower(const QString& path) {
+  const QString lower = QFileInfo(path).fileName().toLower();
+  const int dot = lower.lastIndexOf('.');
+  return dot >= 0 ? lower.mid(dot + 1) : QString();
+}
+
 bool is_openable_path(const QString& path) {
+  const QFileInfo info(path);
+  if (info.exists() && info.isDir()) {
+    return true;
+  }
+
+  const QString ext = file_ext_lower(path);
   return is_archive_path(path) || ImageViewerWindow::is_supported_image_path(path) ||
          VideoViewerWindow::is_supported_video_path(path) || AudioViewerWindow::is_supported_audio_path(path) ||
-         ModelViewerWindow::is_supported_model_path(path) || is_supported_idtech_asset_file(QFileInfo(path).fileName());
+         ModelViewerWindow::is_supported_model_path(path) || is_supported_idtech_asset_file(QFileInfo(path).fileName()) ||
+         is_idtech4_map_text_file(QFileInfo(path).fileName()) || FileAssociations::managed_extensions().contains(ext);
 }
 
 QStringList find_initial_open_paths(int argc, char** argv) {
@@ -168,7 +188,7 @@ QStringList find_initial_open_paths(int argc, char** argv) {
       continue;
     }
     const QFileInfo info(arg);
-    if (!info.exists() || !info.isFile()) {
+    if (!info.exists() || (!info.isFile() && !info.isDir())) {
       continue;
     }
     const QString abs = info.absoluteFilePath();
@@ -408,6 +428,43 @@ void run_tab_smoke_test(MainWindow& window) {
     }
   });
 }
+
+class FileOpenEventFilter : public QObject {
+public:
+  explicit FileOpenEventFilter(std::function<void(const QStringList&, bool)> handler, QObject* parent = nullptr)
+      : QObject(parent), handler_(std::move(handler)) {}
+
+protected:
+  bool eventFilter(QObject* watched, QEvent* event) override {
+    if (!event || event->type() != QEvent::FileOpen) {
+      return QObject::eventFilter(watched, event);
+    }
+
+    auto* open_event = static_cast<QFileOpenEvent*>(event);
+    QString path = open_event->file();
+    if (path.isEmpty()) {
+      const QUrl url = open_event->url();
+      if (url.isLocalFile()) {
+        path = url.toLocalFile();
+      }
+    }
+    if (path.trimmed().isEmpty()) {
+      return QObject::eventFilter(watched, event);
+    }
+
+    const QString absolute = QFileInfo(path).absoluteFilePath();
+    if (!absolute.isEmpty() && is_openable_path(absolute) && handler_) {
+      handler_(QStringList{absolute}, true);
+      event->accept();
+      return true;
+    }
+
+    return QObject::eventFilter(watched, event);
+  }
+
+private:
+  std::function<void(const QStringList&, bool)> handler_;
+};
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -493,6 +550,43 @@ int main(int argc, char** argv) {
   QLocalServer* ipc_server = nullptr;
   QStringList pending_paths;
   bool pending_focus = false;
+  auto handle_shell_open = [&](const QStringList& paths, bool focus) {
+    QStringList accepted_paths;
+    accepted_paths.reserve(paths.size());
+    for (const QString& path : paths) {
+      if (path.trimmed().isEmpty()) {
+        continue;
+      }
+      const QString absolute = QFileInfo(path).absoluteFilePath();
+      if (!absolute.isEmpty() && is_openable_path(absolute)) {
+        accepted_paths.push_back(absolute);
+      }
+    }
+
+    if (!accepted_paths.isEmpty() && main_window && main_shown) {
+      main_window->open_archives(accepted_paths);
+    } else if (!accepted_paths.isEmpty()) {
+      pending_paths.append(accepted_paths);
+    }
+
+    if (!focus) {
+      return;
+    }
+    if (main_window && main_shown) {
+      if (main_window->isMinimized()) {
+        main_window->showNormal();
+      }
+      main_window->show();
+      main_window->raise();
+      main_window->activateWindow();
+    } else {
+      pending_focus = true;
+    }
+  };
+
+  FileOpenEventFilter file_open_filter(handle_shell_open, &app);
+  app.installEventFilter(&file_open_filter);
+
   if (!allow_multi_instance) {
     ipc_server = new QLocalServer(&app);
     ipc_server->setSocketOptions(QLocalServer::UserAccessOption);

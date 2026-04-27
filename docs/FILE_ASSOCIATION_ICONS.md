@@ -16,6 +16,9 @@ PakFu uses a per-extension icon set for managed archive, image, video, audio, mo
 | Archive | `.wad` | `#8E24AA` |
 | Archive | `.wad2` | `#F4511E` |
 | Archive | `.wad3` | `#00838F` |
+| Asset | `.bsp` | `#7E57C2` |
+| Asset | `.map` | `#5E35B1` |
+| Asset | `.proc` | `#3949AB` |
 | Image | `.pcx` | `#546E7A` |
 | Image | `.wal` | `#1565C0` |
 | Image | `.swl` | `#2E7D32` |
@@ -59,8 +62,29 @@ PakFu uses a per-extension icon set for managed archive, image, video, audio, mo
 | Model | `.tan` | `#6D4C41` |
 | Model | `.lwo` | `#7CB342` |
 | Model | `.obj` | `#F57C00` |
+| Asset | `.cfg` | `#455A64` |
+| Asset | `.shader` | `#6A1B9A` |
+| Asset | `.menu` | `#0277BD` |
+| Asset | `.def` | `#00838F` |
+| Asset | `.mtr` | `#7B1FA2` |
+| Asset | `.txt` | `#546E7A` |
+| Asset | `.json` | `#5C6BC0` |
+| Asset | `.ttf` | `#00897B` |
+| Asset | `.otf` | `#00ACC1` |
+| Asset | `.spr` | `#D81B60` |
+| Asset | `.sp2` | `#C2185B` |
+| Asset | `.spr2` | `#AD1457` |
 | Asset | `.bk` | `#AD1457` |
 | Asset | `.os` | `#455A64` |
+| Asset | `.dm2` | `#6D4C41` |
+| Asset | `.aas` | `#00838F` |
+| Asset | `.qvm` | `#3949AB` |
+| Asset | `.crc` | `#546E7A` |
+| Asset | `.tag` | `#795548` |
+| Asset | `.mdx` | `#4E342E` |
+| Asset | `.mds` | `#5D4037` |
+| Asset | `.skc` | `#6D4C41` |
+| Asset | `.ska` | `#8D6E63` |
 
 ## Notes
 
@@ -68,4 +92,7 @@ PakFu uses a per-extension icon set for managed archive, image, video, audio, mo
 - Windows registration writes per-extension `ProgID`/`DefaultIcon` entries plus `.ext\OpenWithProgids` and `Applications\pakfu.exe\SupportedTypes` under `HKCU\Software\Classes`.
 - PakFu does not set the `.ext` default handler key; this keeps defaults user-managed while still listing PakFu in **Open with**.
 - Icons are generated at registration time and cached in the app-local data directory (`file-association-icons`), with a fallback to the app icon if generation fails.
-- macOS and Linux associations are installer-managed in this repository; the dialog reports this state and keeps controls read-only. The extension list above is the canonical target set for installer integration.
+- Linux packages install `io.github.themuffinator.PakFu.desktop`, shared-mime-info globs, AppStream metadata, and a hicolor app icon so file managers can offer PakFu for supported formats.
+- macOS packages declare the same managed extensions in `PakFu.app/Contents/Info.plist` document types, and the app handles Qt file-open events from Finder.
+- `scripts/validate_shell_integration.py` keeps the Windows association list, Linux metadata, and macOS document type declarations in sync.
+- `progs.dat` remains intentionally excluded from OS-level file associations because registering every `.dat` file would be too broad; PakFu still recognizes it when opened inside archives or folder views.

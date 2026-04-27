@@ -57,13 +57,18 @@ portable_dir="${out_dir}/pakfu-${version}-linux-${arch}-portable"
 portable_archive="${out_dir}/pakfu-${version}-linux-${arch}-portable.tar.gz"
 installer_appimage="${out_dir}/pakfu-${version}-linux-${arch}-installer.AppImage"
 app_dir="${out_dir}/PakFu.AppDir"
-desktop_file="${app_dir}/usr/share/applications/pakfu.desktop"
-icon_file="${app_dir}/usr/share/icons/hicolor/256x256/apps/pakfu-app.png"
+desktop_src="${root_dir}/packaging/linux/io.github.themuffinator.PakFu.desktop"
+mime_src="${root_dir}/packaging/linux/io.github.themuffinator.PakFu.mime.xml"
+metainfo_src="${root_dir}/packaging/linux/io.github.themuffinator.PakFu.metainfo.xml"
+desktop_file="${app_dir}/usr/share/applications/io.github.themuffinator.PakFu.desktop"
+mime_file="${app_dir}/usr/share/mime/packages/io.github.themuffinator.PakFu.xml"
+metainfo_file="${app_dir}/usr/share/metainfo/io.github.themuffinator.PakFu.metainfo.xml"
+icon_file="${app_dir}/usr/share/icons/hicolor/256x256/apps/io.github.themuffinator.PakFu.png"
 guide_dir="${app_dir}/usr/share/doc/pakfu"
 linuxdeployqt_tool="${out_dir}/linuxdeployqt-${linuxdeploy_arch}.AppImage"
 
 rm -rf "${portable_dir}" "${portable_archive}" "${installer_appimage}" "${app_dir}"
-mkdir -p "$(dirname "${desktop_file}")" "$(dirname "${icon_file}")" "${app_dir}/usr/bin" "${app_dir}/usr/share/pakfu" "${guide_dir}"
+mkdir -p "$(dirname "${desktop_file}")" "$(dirname "${mime_file}")" "$(dirname "${metainfo_file}")" "$(dirname "${icon_file}")" "${app_dir}/usr/bin" "${app_dir}/usr/share/pakfu" "${guide_dir}"
 cp "${binary}" "${app_dir}/usr/bin/pakfu"
 chmod +x "${app_dir}/usr/bin/pakfu"
 if [[ -d "${root_dir}/assets" ]]; then
@@ -80,15 +85,13 @@ else
 fi
 "${python_cmd}" "${root_dir}/scripts/build_user_guide.py" --output "${guide_dir}" --version "${version}"
 
-cat > "${desktop_file}" <<DESKTOP
-[Desktop Entry]
-Type=Application
-Name=PakFu
-Exec=pakfu
-Icon=pakfu-app
-Categories=Utility;
-Terminal=false
-DESKTOP
+cp "${desktop_src}" "${desktop_file}"
+cp "${mime_src}" "${mime_file}"
+cp "${metainfo_src}" "${metainfo_file}"
+
+if command -v desktop-file-validate >/dev/null 2>&1; then
+  desktop-file-validate "${desktop_file}"
+fi
 
 if [[ ! -f "${linuxdeployqt_tool}" ]]; then
   linuxdeployqt_url="https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-${linuxdeploy_arch}.AppImage"
@@ -127,7 +130,7 @@ fi
   cd "${out_dir}"
   export VERSION="${version}"
   APPIMAGE_EXTRACT_AND_RUN=1 "./$(basename "${linuxdeployqt_tool}")" \
-    "PakFu.AppDir/usr/share/applications/pakfu.desktop" \
+    "PakFu.AppDir/usr/share/applications/io.github.themuffinator.PakFu.desktop" \
     -qmake="${qmake_bin}" \
     -unsupported-allow-new-glibc \
     -no-copy-copyright-files \

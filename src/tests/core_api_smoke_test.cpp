@@ -9,6 +9,27 @@ void fail_message(const QString& message) {
 }
 
 bool run_test(QString* error) {
+	if (PakFu::Core::api_version_string() != QStringLiteral("0.1.0")) {
+		if (error) {
+			*error = "PakFu core API version metadata changed unexpectedly.";
+		}
+		return false;
+	}
+	if (PakFu::Core::api_stability_label().trimmed().isEmpty()) {
+		if (error) {
+			*error = "PakFu core API stability metadata is empty.";
+		}
+		return false;
+	}
+	if (!PakFu::Core::has_public_capability(QStringLiteral("archive.load")) ||
+	    !PakFu::Core::has_public_capability(QStringLiteral("format.image.decode")) ||
+	    !PakFu::Core::has_public_capability(QStringLiteral("extension.import"))) {
+		if (error) {
+			*error = "PakFu core public capability metadata is incomplete.";
+		}
+		return false;
+	}
+
 	Archive archive;
 	if (archive.is_loaded()) {
 		if (error) {

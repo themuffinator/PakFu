@@ -24,6 +24,7 @@ qt_libs = qt6_dep.get_variable(configtool: 'QT_INSTALL_LIBS', default_value: '')
 qt_version = qt6_dep.get_variable(configtool: 'QT_VERSION', default_value: '')
 
 fs = import('fs')
+pkgconfig = import('pkgconfig')
 vulkan_preview_opt = get_option('vulkan_preview')
 qt_rhi_includes = []
 qt_rhi_candidates = []
@@ -112,6 +113,7 @@ core_sources = files(
   'formats/dds_image.cpp',
   'formats/ftx_image.cpp',
   'formats/bsp_preview.cpp',
+  'formats/idtech4_map.cpp',
   'formats/idtech_asset_loader.cpp',
   'formats/idwav_audio.cpp',
   'formats/sprite_loader.cpp',
@@ -134,6 +136,69 @@ core_sources = files(
   'zip/zip_archive.cpp',
   'pak/pak_archive.cpp',
   'wad/wad_archive.cpp',
+)
+
+pakfu_core_public_headers = files(
+  'pakfu_core.h',
+)
+
+pakfu_archive_public_headers = files(
+  'archive/archive.h',
+  'archive/archive_entry.h',
+  'archive/archive_search_index.h',
+  'archive/dir_archive.h',
+  'archive/path_safety.h',
+)
+
+pakfu_extensions_public_headers = files(
+  'extensions/extension_plugin.h',
+)
+
+pakfu_formats_public_headers = files(
+  'formats/bsp_preview.h',
+  'formats/cin_cinematic.h',
+  'formats/cinematic.h',
+  'formats/dds_image.h',
+  'formats/ftx_image.h',
+  'formats/idtech4_map.h',
+  'formats/idtech_asset_loader.h',
+  'formats/idwav_audio.h',
+  'formats/image_loader.h',
+  'formats/image_writer.h',
+  'formats/lmp_image.h',
+  'formats/m8_image.h',
+  'formats/miptex_image.h',
+  'formats/model.h',
+  'formats/pcx_image.h',
+  'formats/quake3_shader.h',
+  'formats/quake3_skin.h',
+  'formats/roq_cinematic.h',
+  'formats/sprite_loader.h',
+  'formats/swl_image.h',
+  'formats/tga_image.h',
+  'formats/wal_image.h',
+)
+
+pakfu_game_public_headers = files(
+  'game/game_auto_detect.h',
+  'game/game_set.h',
+)
+
+pakfu_pak_public_headers = files(
+  'pak/pak_archive.h',
+)
+
+pakfu_resources_public_headers = files(
+  'resources/resources_archive.h',
+)
+
+pakfu_wad_public_headers = files(
+  'wad/wad_archive.h',
+)
+
+pakfu_zip_public_headers = files(
+  'zip/quakelive_pk3_crypto.h',
+  'zip/zip_archive.h',
 )
 
 app_sources = files(
@@ -213,15 +278,35 @@ pakfu_core = static_library(
   'pakfu_core',
   core_sources,
   include_directories: pakfu_includes,
-  dependencies: [qt6_dep],
-  link_with: [miniz_lib],
-  install: false,
+  dependencies: [qt6_core_dep],
+  link_whole: [miniz_lib],
+  install: true,
 )
 
 pakfu_core_dep = declare_dependency(
   include_directories: pakfu_includes,
-  dependencies: [qt6_dep],
-  link_with: [pakfu_core, miniz_lib],
+  dependencies: [qt6_core_dep],
+  link_with: [pakfu_core],
+)
+
+install_headers(pakfu_core_public_headers, subdir: 'pakfu')
+install_headers(pakfu_archive_public_headers, subdir: 'pakfu/archive')
+install_headers(pakfu_extensions_public_headers, subdir: 'pakfu/extensions')
+install_headers(pakfu_formats_public_headers, subdir: 'pakfu/formats')
+install_headers(pakfu_game_public_headers, subdir: 'pakfu/game')
+install_headers(pakfu_pak_public_headers, subdir: 'pakfu/pak')
+install_headers(pakfu_resources_public_headers, subdir: 'pakfu/resources')
+install_headers(pakfu_wad_public_headers, subdir: 'pakfu/wad')
+install_headers(pakfu_zip_public_headers, subdir: 'pakfu/zip')
+
+pkgconfig.generate(
+  pakfu_core,
+  name: 'PakFu Core',
+  filebase: 'pakfu_core',
+  description: 'Non-UI archive, format, search, game-profile, and extension library for PakFu',
+  version: meson.project_version(),
+  subdirs: 'pakfu',
+  requires: ['Qt6Core', 'Qt6Gui'],
 )
 
 pakfu_link_args = []
@@ -254,6 +339,27 @@ pakfu = executable(
   win_subsystem: pakfu_win_subsystem,
   install: true,
 )
+
+if host_machine.system() == 'linux'
+  install_data(
+    files('../packaging/linux/io.github.themuffinator.PakFu.desktop'),
+    install_dir: join_paths(get_option('datadir'), 'applications'),
+  )
+  install_data(
+    files('../packaging/linux/io.github.themuffinator.PakFu.mime.xml'),
+    rename: 'io.github.themuffinator.PakFu.xml',
+    install_dir: join_paths(get_option('datadir'), 'mime/packages'),
+  )
+  install_data(
+    files('../packaging/linux/io.github.themuffinator.PakFu.metainfo.xml'),
+    install_dir: join_paths(get_option('datadir'), 'metainfo'),
+  )
+  install_data(
+    files('../assets/img/pakfu-icon-256.png'),
+    rename: 'io.github.themuffinator.PakFu.png',
+    install_dir: join_paths(get_option('datadir'), 'icons/hicolor/256x256/apps'),
+  )
+endif
 
 roq_probe = executable(
   'roq_probe',

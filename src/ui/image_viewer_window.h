@@ -56,8 +56,10 @@ private:
 
 	QString quake1_palette_lookup_base_;
 	QString quake1_palette_error_;
+	QString quake1_palette_source_;
 	QVector<QRgb> quake1_palette_;
 	QString quake2_palette_lookup_base_;
 	QString quake2_palette_error_;
+	QString quake2_palette_source_;
 	QVector<QRgb> quake2_palette_;
 };

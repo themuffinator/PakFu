@@ -16,6 +16,7 @@
 #include "archive/archive.h"
 #include "formats/bsp_preview.h"
 #include "formats/idtech_asset_loader.h"
+#include "formats/idtech4_map.h"
 #include "formats/image_loader.h"
 #include "formats/image_writer.h"
 #include "formats/model.h"
@@ -906,6 +907,66 @@ bool test_bsp_fixture(const QString& root, QString* error) {
 	}
 	return true;
 }
+
+bool test_idtech4_map_fixture(const QString& root, QString* error) {
+	const QByteArray map = QByteArrayLiteral(
+	  "Version 2\n"
+	  "{\n"
+	  "\"classname\" \"worldspawn\"\n"
+	  "{\n"
+	  "brushDef3\n"
+	  "{\n"
+	  "( 0 0 1 -64 ) ( ( 0.03125 0 0 ) ( 0 0.03125 0 ) ) \"textures/base_wall/stone\"\n"
+	  "}\n"
+	  "}\n"
+	  "}\n"
+	  "{\n"
+	  "\"classname\" \"light\"\n"
+	  "\"origin\" \"0 0 64\"\n"
+	  "}\n");
+	const QString map_path = QDir(root).filePath("test.map");
+	if (!write_file(map_path, map, error)) {
+		return false;
+	}
+	const IdTech4MapInspectResult map_summary = inspect_idtech4_map_bytes(map, "maps/test.map");
+	if (!map_summary.ok() || map_summary.artifact != IdTech4MapArtifact::SourceMap ||
+	    !map_summary.summary.contains("Detected idTech4 hints: yes") ||
+	    !map_summary.summary.contains("Top-level map blocks: 2") ||
+	    !map_summary.summary.contains("brushDef3 blocks: 1") ||
+	    !map_summary.summary.contains("worldspawn: 1")) {
+		set_error(error, map_summary.error.isEmpty() ? "idTech4 .map fixture summary was unexpected." : map_summary.error);
+		return false;
+	}
+
+	const QByteArray proc = QByteArrayLiteral(
+	  "PROC \"4\"\n"
+	  "model {\n"
+	  "\"maps/test/world\" 1\n"
+	  "{ \"textures/base_wall/stone\" 3 3 0\n"
+	  "( 0 0 0 0 0 0 0 1 1 0 0 )\n"
+	  "( 64 0 0 1 0 0 0 1 1 0 0 )\n"
+	  "( 0 64 0 0 1 0 0 1 1 0 0 )\n"
+	  "0 1 2\n"
+	  "}\n"
+	  "}\n"
+	  "interAreaPortals { 1 0 }\n"
+	  "nodes { 0 }\n");
+	const QString proc_path = QDir(root).filePath("test.proc");
+	if (!write_file(proc_path, proc, error)) {
+		return false;
+	}
+	const IdTech4MapInspectResult proc_summary = inspect_idtech4_map_bytes(proc, "maps/test.proc");
+	if (!proc_summary.ok() || proc_summary.artifact != IdTech4MapArtifact::ProcFile ||
+	    !proc_summary.summary.contains("PROC version: 4") ||
+	    !proc_summary.summary.contains("Model sections: 1") ||
+	    !proc_summary.summary.contains("Inter-area portal sections: 1") ||
+	    !proc_summary.summary.contains("Node sections: 1")) {
+		set_error(error, proc_summary.error.isEmpty() ? "idTech4 .proc fixture summary was unexpected." : proc_summary.error);
+		return false;
+	}
+
+	return true;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -932,7 +993,8 @@ int main(int argc, char** argv) {
 	    !test_image_fixture(QDir(root).filePath("images"), &error) ||
 	    !test_heretic2_asset_fixture(QDir(root).filePath("heretic2-assets"), &error) ||
 	    !test_model_fixture(QDir(root).filePath("models"), &error) ||
-	    !test_bsp_fixture(QDir(root).filePath("bsps"), &error)) {
+	    !test_bsp_fixture(QDir(root).filePath("bsps"), &error) ||
+	    !test_idtech4_map_fixture(QDir(root).filePath("idtech4-maps"), &error)) {
 		fail_message(error.isEmpty() ? "Support matrix fixture test failed." : error);
 		return 1;
 	}

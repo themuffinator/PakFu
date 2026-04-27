@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-idtech-pak"><comment>idTech PAK archive</comment><glob pattern="*.pak"/></mime-type>
+  <mime-type type="application/x-idtech-sin"><comment>SiN archive</comment><glob pattern="*.sin"/></mime-type>
+  <mime-type type="application/x-idtech-pk3"><comment>idTech PK3 archive</comment><glob pattern="*.pk3"/></mime-type>
+  <mime-type type="application/x-idtech-pk4"><comment>idTech PK4 archive</comment><glob pattern="*.pk4"/></mime-type>
+  <mime-type type="application/x-idtech-pkz"><comment>idTech PKZ archive</comment><glob pattern="*.pkz"/></mime-type>
+  <mime-type type="application/x-idtech-resources"><comment>Doom 3 BFG resources archive</comment><glob pattern="*.resources"/></mime-type>
+  <mime-type type="application/x-doom-wad"><comment>Doom WAD archive</comment><glob pattern="*.wad"/></mime-type>
+  <mime-type type="application/x-doom-wad2"><comment>Quake WAD2 archive</comment><glob pattern="*.wad2"/></mime-type>
+  <mime-type type="application/x-halflife-wad3"><comment>Half-Life WAD3 archive</comment><glob pattern="*.wad3"/></mime-type>
+  <mime-type type="application/x-quake-bsp"><comment>Quake-family BSP map</comment><glob pattern="*.bsp"/></mime-type>
+  <mime-type type="text/x-idtech-map"><comment>idTech source map</comment><glob pattern="*.map"/></mime-type>
+  <mime-type type="text/x-idtech-proc"><comment>idTech4 PROC map artifact</comment><glob pattern="*.proc"/></mime-type>
+  <mime-type type="image/x-pcx"><comment>PCX image</comment><glob pattern="*.pcx"/></mime-type>
+  <mime-type type="image/x-idtech-wal"><comment>idTech WAL texture</comment><glob pattern="*.wal"/></mime-type>
+  <mime-type type="image/x-idtech-swl"><comment>SiN SWL texture</comment><glob pattern="*.swl"/></mime-type>
+  <mime-type type="image/x-heretic2-m8"><comment>Heretic II M8 texture</comment><glob pattern="*.m8"/></mime-type>
+  <mime-type type="image/x-idtech-mip"><comment>idTech MIP texture</comment><glob pattern="*.mip"/></mime-type>
+  <mime-type type="image/x-idtech-lmp"><comment>idTech LMP lump image</comment><glob pattern="*.lmp"/></mime-type>
+  <mime-type type="image/x-kingpin-ftx"><comment>Kingpin FTX texture</comment><glob pattern="*.ftx"/></mime-type>
+  <mime-type type="video/x-cin"><comment>Quake II CIN cinematic</comment><glob pattern="*.cin"/></mime-type>
+  <mime-type type="video/x-roq"><comment>ROQ cinematic</comment><glob pattern="*.roq"/></mime-type>
+  <mime-type type="video/x-bink"><comment>BIK video</comment><glob pattern="*.bik"/></mime-type>
+  <mime-type type="audio/x-idwav"><comment>idTech WAV audio</comment><glob pattern="*.idwav"/></mime-type>
+  <mime-type type="model/x-quake-mdl"><comment>Quake MDL model</comment><glob pattern="*.mdl"/></mime-type>
+  <mime-type type="model/x-quake-md2"><comment>Quake II MD2 model</comment><glob pattern="*.md2"/></mime-type>
+  <mime-type type="model/x-heretic2-fm"><comment>Heretic II FM model</comment><glob pattern="*.fm"/></mime-type>
+  <mime-type type="model/x-idtech-md3"><comment>idTech MD3 model</comment><glob pattern="*.md3"/></mime-type>
+  <mime-type type="model/x-idtech-mdc"><comment>idTech MDC model</comment><glob pattern="*.mdc"/></mime-type>
+  <mime-type type="model/x-idtech-md4"><comment>idTech MD4 model</comment><glob pattern="*.md4"/></mime-type>
+  <mime-type type="model/x-raven-mdr"><comment>Raven MDR model</comment><glob pattern="*.mdr"/></mime-type>
+  <mime-type type="model/x-idtech-skb"><comment>idTech SKB model</comment><glob pattern="*.skb"/></mime-type>
+  <mime-type type="model/x-idtech-skd"><comment>idTech SKD model</comment><glob pattern="*.skd"/></mime-type>
+  <mime-type type="model/x-rtcw-mdm"><comment>RtCW MDM model</comment><glob pattern="*.mdm"/></mime-type>
+  <mime-type type="model/x-raven-glm"><comment>Raven GLM model</comment><glob pattern="*.glm"/></mime-type>
+  <mime-type type="model/x-iqm"><comment>Inter-Quake model</comment><glob pattern="*.iqm"/></mime-type>
+  <mime-type type="model/x-md5mesh"><comment>idTech4 MD5 mesh</comment><glob pattern="*.md5mesh"/></mime-type>
+  <mime-type type="model/x-ritual-tan"><comment>Ritual TAN model</comment><glob pattern="*.tan"/></mime-type>
+  <mime-type type="model/x-lightwave-object"><comment>LightWave object model</comment><glob pattern="*.lwo"/></mime-type>
+  <mime-type type="text/x-idtech-cfg"><comment>idTech config script</comment><glob pattern="*.cfg"/></mime-type>
+  <mime-type type="text/x-idtech-shader"><comment>idTech shader script</comment><glob pattern="*.shader"/></mime-type>
+  <mime-type type="text/x-idtech-menu"><comment>idTech menu script</comment><glob pattern="*.menu"/></mime-type>
+  <mime-type type="text/x-idtech-def"><comment>idTech definition script</comment><glob pattern="*.def"/></mime-type>
+  <mime-type type="text/x-idtech-mtr"><comment>idTech material script</comment><glob pattern="*.mtr"/></mime-type>
+  <mime-type type="image/x-quake-spr"><comment>Quake SPR sprite</comment><glob pattern="*.spr"/></mime-type>
+  <mime-type type="image/x-quake2-sp2"><comment>Quake II SP2 sprite</comment><glob pattern="*.sp2"/></mime-type>
+  <mime-type type="image/x-quake2-spr2"><comment>Quake II SPR2 sprite</comment><glob pattern="*.spr2"/></mime-type>
+  <mime-type type="image/x-heretic2-bk"><comment>Heretic II book sprite</comment><glob pattern="*.bk"/></mime-type>
+  <mime-type type="application/x-heretic2-os"><comment>Heretic II object script bytecode</comment><glob pattern="*.os"/></mime-type>
+  <mime-type type="application/x-quake2-dm2"><comment>Quake II demo</comment><glob pattern="*.dm2"/></mime-type>
+  <mime-type type="application/x-idtech-aas"><comment>idTech AAS navigation data</comment><glob pattern="*.aas"/></mime-type>
+  <mime-type type="application/x-qvm"><comment>Quake virtual machine bytecode</comment><glob pattern="*.qvm"/></mime-type>
+  <mime-type type="application/x-idtech-crc"><comment>idTech CRC manifest</comment><glob pattern="*.crc"/></mime-type>
+  <mime-type type="model/x-idtech-tag"><comment>idTech tag model data</comment><glob pattern="*.tag"/></mime-type>
+  <mime-type type="model/x-raven-mdx"><comment>Raven MDX model data</comment><glob pattern="*.mdx"/></mime-type>
+  <mime-type type="model/x-raven-mds"><comment>Raven MDS model data</comment><glob pattern="*.mds"/></mime-type>
+  <mime-type type="model/x-heretic2-skc"><comment>Heretic II SKC animation</comment><glob pattern="*.skc"/></mime-type>
+  <mime-type type="model/x-heretic2-ska"><comment>Heretic II SKA animation</comment><glob pattern="*.ska"/></mime-type>
+</mime-info>

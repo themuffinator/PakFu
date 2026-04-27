@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QDir>
 #include <QDirIterator>
@@ -16,7 +17,16 @@
 #include <QSet>
 #include <QStandardPaths>
 
+#include "archive/path_safety.h"
+
 namespace {
+constexpr auto kExtensionSchema = "pakfu-extension/v1";
+constexpr auto kExtensionImportSchema = "pakfu-extension-imports/v1";
+constexpr auto kCapabilityArchiveRead = "archive.read";
+constexpr auto kCapabilityEntriesRead = "entries.read";
+constexpr auto kCapabilityEntriesImport = "entries.import";
+constexpr qint64 kMaxImportManifestBytes = 1024 * 1024;
+
 QString normalize_extension(QString ext) {
 	ext = ext.trimmed().toLower();
 	while (ext.startsWith('.')) {
@@ -95,6 +105,22 @@ QStringList parse_command_argv(const QJsonValue& value) {
 	return argv;
 }
 
+QStringList known_extension_capabilities() {
+	return {
+	  QString::fromLatin1(kCapabilityArchiveRead),
+	  QString::fromLatin1(kCapabilityEntriesRead),
+	  QString::fromLatin1(kCapabilityEntriesImport),
+	};
+}
+
+QJsonArray string_list_to_json_array(const QStringList& values) {
+	QJsonArray array;
+	for (const QString& value : values) {
+		array.append(value);
+	}
+	return array;
+}
+
 QStringList parse_extensions(const QJsonValue& value) {
 	QStringList out;
 	if (value.isUndefined() || value.isNull()) {
@@ -117,6 +143,193 @@ QStringList parse_extensions(const QJsonValue& value) {
 	}
 	out.removeDuplicates();
 	return out;
+}
+
+QStringList parse_capabilities(const QJsonValue& value, bool* valid) {
+	if (valid) {
+		*valid = true;
+	}
+	if (value.isUndefined() || value.isNull()) {
+		return {
+		  QString::fromLatin1(kCapabilityArchiveRead),
+		  QString::fromLatin1(kCapabilityEntriesRead),
+		};
+	}
+	if (!value.isArray()) {
+		if (valid) {
+			*valid = false;
+		}
+		return {};
+	}
+
+	const QStringList known = known_extension_capabilities();
+	QStringList out;
+	const QJsonArray array = value.toArray();
+	out.reserve(array.size());
+	for (const QJsonValue& entry : array) {
+		if (!entry.isString()) {
+			if (valid) {
+				*valid = false;
+			}
+			return {};
+		}
+		const QString capability = entry.toString().trimmed().toLower();
+		if (capability.isEmpty() || !known.contains(capability)) {
+			if (valid) {
+				*valid = false;
+			}
+			return {};
+		}
+		out.push_back(capability);
+	}
+	out.removeDuplicates();
+	return out;
+}
+
+bool path_is_under_directory(const QString& root_path, const QString& child_path) {
+	QString root = QDir::cleanPath(QDir(root_path).absolutePath());
+	QString child = QDir::cleanPath(QFileInfo(child_path).absoluteFilePath());
+	root.replace('\\', '/');
+	child.replace('\\', '/');
+	if (root.isEmpty() || child.isEmpty()) {
+		return false;
+	}
+	QString prefix = root;
+	if (!prefix.endsWith('/')) {
+		prefix += '/';
+	}
+#if defined(Q_OS_WIN)
+	const Qt::CaseSensitivity cs = Qt::CaseInsensitive;
+#else
+	const Qt::CaseSensitivity cs = Qt::CaseSensitive;
+#endif
+	return child.compare(root, cs) == 0 || child.startsWith(prefix, cs);
+}
+
+QString resolve_import_local_path(const QString& import_root, const QString& local_path) {
+	const QString trimmed = local_path.trimmed();
+	if (trimmed.isEmpty() || import_root.trimmed().isEmpty()) {
+		return {};
+	}
+	const QFileInfo info(trimmed);
+	const QString resolved = info.isAbsolute()
+	                           ? QDir::cleanPath(info.absoluteFilePath())
+	                           : QDir(import_root).absoluteFilePath(trimmed);
+	const QString absolute = QFileInfo(resolved).absoluteFilePath();
+	if (!path_is_under_directory(import_root, absolute)) {
+		return {};
+	}
+	return absolute;
+}
+
+bool parse_import_manifest(const QString& import_manifest_path,
+                           const QString& import_root,
+                           QVector<ExtensionImportEntry>* imports,
+                           QString* error) {
+	if (imports) {
+		imports->clear();
+	}
+
+	QFileInfo manifest_info(import_manifest_path);
+	if (!manifest_info.exists()) {
+		return true;
+	}
+	if (!manifest_info.isFile()) {
+		if (error) {
+			*error = "Extension import manifest path is not a file.";
+		}
+		return false;
+	}
+	if (manifest_info.size() > kMaxImportManifestBytes) {
+		if (error) {
+			*error = "Extension import manifest is too large.";
+		}
+		return false;
+	}
+
+	QFile file(import_manifest_path);
+	if (!file.open(QIODevice::ReadOnly)) {
+		if (error) {
+			*error = "Unable to read extension import manifest.";
+		}
+		return false;
+	}
+
+	QJsonParseError parse_error{};
+	const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parse_error);
+	if (parse_error.error != QJsonParseError::NoError || !doc.isObject()) {
+		if (error) {
+			*error = QString("Invalid extension import manifest JSON: %1").arg(parse_error.errorString());
+		}
+		return false;
+	}
+
+	const QJsonObject root = doc.object();
+	if (root.value("schema").toString() != QString::fromLatin1(kExtensionImportSchema)) {
+		if (error) {
+			*error = "Extension import manifest has an unsupported schema.";
+		}
+		return false;
+	}
+	if (!root.value("imports").isArray()) {
+		if (error) {
+			*error = "Extension import manifest is missing an imports array.";
+		}
+		return false;
+	}
+
+	const QJsonArray array = root.value("imports").toArray();
+	QVector<ExtensionImportEntry> parsed;
+	parsed.reserve(array.size());
+	for (const QJsonValue& value : array) {
+		if (!value.isObject()) {
+			if (error) {
+				*error = "Extension import entry is not an object.";
+			}
+			return false;
+		}
+		const QJsonObject obj = value.toObject();
+		QString archive_name = normalize_archive_entry_name(obj.value("archive_name").toString());
+		if (!is_safe_archive_entry_name(archive_name) || archive_name.endsWith('/')) {
+			if (error) {
+				*error = QString("Extension requested an unsafe import archive path: %1").arg(archive_name);
+			}
+			return false;
+		}
+
+		const QString local_path = resolve_import_local_path(import_root, obj.value("local_path").toString());
+		if (local_path.isEmpty() || !QFileInfo(local_path).isFile()) {
+			if (error) {
+				*error = QString("Extension import source is missing or outside the import root: %1").arg(archive_name);
+			}
+			return false;
+		}
+
+		QString mode = obj.value("mode").toString("add_or_replace").trimmed().toLower();
+		if (mode.isEmpty()) {
+			mode = "add_or_replace";
+		}
+		if (mode != "add_or_replace") {
+			if (error) {
+				*error = QString("Unsupported extension import mode for %1: %2").arg(archive_name, mode);
+			}
+			return false;
+		}
+
+		ExtensionImportEntry import;
+		import.archive_name = archive_name;
+		import.local_path = local_path;
+		import.mode = mode;
+		if (obj.contains("mtime_utc_secs")) {
+			import.mtime_utc_secs = static_cast<qint64>(obj.value("mtime_utc_secs").toDouble(-1));
+		}
+		parsed.push_back(std::move(import));
+	}
+
+	if (imports) {
+		*imports = std::move(parsed);
+	}
+	return true;
 }
 
 bool load_manifest(const QString& manifest_path,
@@ -200,6 +413,22 @@ bool load_manifest(const QString& manifest_path,
 			continue;
 		}
 
+		bool capabilities_valid = true;
+		const QStringList capabilities = parse_capabilities(obj.value("capabilities"), &capabilities_valid);
+		if (!capabilities_valid) {
+			add_warning(warnings,
+			            QString("Extension command %1 in %2 has an invalid or unsupported capabilities list.")
+			              .arg(command_id, manifest_path));
+			continue;
+		}
+		if ((obj.value("requires_entries").toBool(false) || !extensions.isEmpty()) &&
+		    !capabilities.contains(QString::fromLatin1(kCapabilityEntriesRead))) {
+			add_warning(warnings,
+			            QString("Extension command %1 in %2 uses entry selection fields without the %3 capability.")
+			              .arg(command_id, manifest_path, QString::fromLatin1(kCapabilityEntriesRead)));
+			continue;
+		}
+
 		ExtensionCommand command;
 		command.plugin_id = plugin_id;
 		command.plugin_name = plugin_name;
@@ -210,6 +439,7 @@ bool load_manifest(const QString& manifest_path,
 		command.manifest_path = QFileInfo(manifest_path).absoluteFilePath();
 		command.working_directory = resolve_working_directory(command.manifest_path, obj.value("working_directory").toString());
 		command.argv = argv;
+		command.capabilities = capabilities;
 		command.allowed_extensions = extensions;
 		command.requires_entries = obj.value("requires_entries").toBool(false);
 		command.allow_multiple = obj.value("allow_multiple").toBool(true);
@@ -241,6 +471,14 @@ QString extension_command_display_name(const ExtensionCommand& command) {
 		return command.plugin_name;
 	}
 	return QString("%1: %2").arg(command.plugin_name, command.command_name);
+}
+
+QStringList extension_host_capabilities() {
+	return known_extension_capabilities();
+}
+
+bool extension_command_has_capability(const ExtensionCommand& command, const QString& capability) {
+	return command.capabilities.contains(capability.trimmed().toLower());
 }
 
 QStringList default_extension_search_dirs() {
@@ -380,6 +618,17 @@ bool extension_command_accepts_entries(const ExtensionCommand& command,
 		error->clear();
 	}
 
+	if (!extension_command_has_capability(command, QString::fromLatin1(kCapabilityEntriesRead))) {
+		if (command.requires_entries || !command.allowed_extensions.isEmpty()) {
+			if (error) {
+				*error = QString("%1 uses entry selection fields without the %2 capability.")
+				           .arg(extension_command_display_name(command), QString::fromLatin1(kCapabilityEntriesRead));
+			}
+			return false;
+		}
+		return true;
+	}
+
 	if (command.requires_entries && entries.isEmpty()) {
 		if (error) {
 			*error = QString("%1 requires at least one selected entry.").arg(extension_command_display_name(command));
@@ -435,8 +684,33 @@ bool run_extension_command(const ExtensionCommand& command,
 		*result = ExtensionRunResult{};
 	}
 
+	const bool can_read_entries = extension_command_has_capability(command, QString::fromLatin1(kCapabilityEntriesRead));
+	const bool can_import_entries = extension_command_has_capability(command, QString::fromLatin1(kCapabilityEntriesImport));
+	const QVector<ExtensionEntryContext> payload_entries = can_read_entries ? context.entries : QVector<ExtensionEntryContext>{};
+
+	QString import_root_path;
+	QString import_manifest_path;
+	if (can_import_entries) {
+		if (context.import_root.trimmed().isEmpty()) {
+			if (error) {
+				*error = QString("%1 requires an import root from the host.").arg(extension_command_display_name(command));
+			}
+			return false;
+		}
+		import_root_path = QFileInfo(context.import_root).absoluteFilePath();
+		QDir import_dir(import_root_path);
+		if (!import_dir.exists() && !import_dir.mkpath(".")) {
+			if (error) {
+				*error = QString("Unable to create extension import directory: %1").arg(import_root_path);
+			}
+			return false;
+		}
+		import_manifest_path = import_dir.filePath("pakfu-imports.json");
+		QFile::remove(import_manifest_path);
+	}
+
 	QString selection_error;
-	if (!extension_command_accepts_entries(command, context.entries, &selection_error)) {
+	if (!extension_command_accepts_entries(command, payload_entries, &selection_error)) {
 		if (error) {
 			*error = selection_error;
 		}
@@ -450,6 +724,7 @@ bool run_extension_command(const ExtensionCommand& command,
 	command_object.insert("command_name", command.command_name);
 	command_object.insert("description", command.command_description);
 	command_object.insert("manifest_path", command.manifest_path);
+	command_object.insert("capabilities", string_list_to_json_array(command.capabilities));
 
 	QJsonObject archive_object;
 	archive_object.insert("path", context.archive_path);
@@ -462,7 +737,7 @@ bool run_extension_command(const ExtensionCommand& command,
 	archive_object.insert("doom_wad", context.doom_wad);
 
 	QJsonArray entries_array;
-	for (const ExtensionEntryContext& entry : context.entries) {
+	for (const ExtensionEntryContext& entry : payload_entries) {
 		QJsonObject entry_object;
 		entry_object.insert("archive_name", entry.archive_name);
 		entry_object.insert("local_path", entry.local_path);
@@ -472,8 +747,17 @@ bool run_extension_command(const ExtensionCommand& command,
 		entries_array.append(entry_object);
 	}
 
+	QJsonObject host_object;
+	host_object.insert("schema", QString::fromLatin1(kExtensionSchema));
+	host_object.insert("capabilities", string_list_to_json_array(extension_host_capabilities()));
+	if (can_import_entries) {
+		host_object.insert("import_root", import_root_path);
+		host_object.insert("import_manifest_path", import_manifest_path);
+	}
+
 	QJsonObject payload;
-	payload.insert("schema", "pakfu-extension/v1");
+	payload.insert("schema", QString::fromLatin1(kExtensionSchema));
+	payload.insert("host", host_object);
 	payload.insert("command", command_object);
 	payload.insert("archive", archive_object);
 	payload.insert("entries", entries_array);
@@ -483,9 +767,15 @@ bool run_extension_command(const ExtensionCommand& command,
 	process.setWorkingDirectory(command.working_directory);
 
 	QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-	env.insert("PAKFU_EXTENSION_SCHEMA", "pakfu-extension/v1");
+	env.insert("PAKFU_EXTENSION_SCHEMA", QString::fromLatin1(kExtensionSchema));
+	env.insert("PAKFU_EXTENSION_HOST_CAPABILITIES", extension_host_capabilities().join(","));
+	env.insert("PAKFU_EXTENSION_COMMAND_CAPABILITIES", command.capabilities.join(","));
 	env.insert("PAKFU_EXTENSION_PLUGIN_ID", command.plugin_id);
 	env.insert("PAKFU_EXTENSION_COMMAND_ID", command.command_id);
+	if (can_import_entries) {
+		env.insert("PAKFU_EXTENSION_IMPORT_ROOT", import_root_path);
+		env.insert("PAKFU_EXTENSION_IMPORTS_PATH", import_manifest_path);
+	}
 	process.setProcessEnvironment(env);
 
 	const QString program = resolve_program_path(command.working_directory, command.argv.value(0));
@@ -535,6 +825,20 @@ bool run_extension_command(const ExtensionCommand& command,
 			           .arg(extension_command_display_name(command));
 		}
 		return false;
+	}
+
+	if (can_import_entries) {
+		QVector<ExtensionImportEntry> imports;
+		QString import_err;
+		if (!parse_import_manifest(import_manifest_path, import_root_path, &imports, &import_err)) {
+			if (error) {
+				*error = import_err.isEmpty() ? "Extension returned an invalid import manifest." : import_err;
+			}
+			return false;
+		}
+		if (result) {
+			result->imports = std::move(imports);
+		}
 	}
 
 	return true;

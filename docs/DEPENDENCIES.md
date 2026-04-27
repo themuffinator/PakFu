@@ -13,6 +13,8 @@
   - OpenGLWidgets (model preview: MDL/MD2/MD3/MDC/MD4/MDR/SKB/SKD/MDM/GLM/IQM/MD5/LWO/OBJ)
   - Multimedia (audio/video playback via available backend codecs; prefers FFmpeg when available)
   - MultimediaWidgets (video output: QVideoWidget)
+- `pakfu_core` SDK consumers need Qt 6 Core and Gui; the remaining Qt modules
+  above are application, viewer, updater, and playback dependencies.
 - Vulkan preview builds additionally need Qt's private RHI headers
   (`rhi/qrhi.h` and `rhi/qshader.h`, for example from `qt6-base-private-dev`
   on Debian-family distributions). When they are not available, Meson disables
@@ -73,6 +75,7 @@
 
 - BSP/map preview:
   - Heretic II: built-in Quake II-family BSP loader support for native `IBSP` maps and converted `QBSP` maps, including Heretic II texinfo flag detection, 64-byte converted texture names, and `.m8` texture lookup priority; format reference credited to [0lvin/heretic2](https://github.com/0lvin/heretic2)
+  - idTech4: `.map` source files and `.proc` compiled render descriptions are text/metadata-inspected with explicit scope notes; PakFu does not currently claim 3D idTech4 `.proc` or collision-map rendering
 
 - Cinematics (built-in decoders; used for thumbnails + playback widget):
   - CIN: id Quake II cinematic (PAL8 + optional PCM audio)
@@ -97,4 +100,4 @@
 - Text/script preview:
   - Includes Quake/idTech script/config assets such as `cfg`, `config`, `rc`, `arena`, `bot`, `skin`, `shaderlist`, `shader`, `menu`, `vdf`, `tik`,
     `anim`, `cam`, `camera`, `char`, `voice`, `gui`, `bgui`, `efx`, `guide`, `lipsync`, `viseme`, `def`, `mtr`, `sndshd`, `af`, `pd`, `decl`, `ent`,
-    `map`, `qc`, `sab`, `siege`, `veh`, `npc`, `jts`, `bset`, `weap`, `ammo`, and `campaign`
+    `map`, `proc`, `qc`, `sab`, `siege`, `veh`, `npc`, `jts`, `bset`, `weap`, `ammo`, and `campaign`

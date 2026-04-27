@@ -7,6 +7,7 @@
   <a href="#overview"><img alt="Platforms" src="https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-444444?style=for-the-badge"></a>
   <a href="#cli-quick-reference"><img alt="Interface" src="https://img.shields.io/badge/interface-GUI%20%2B%20CLI-1F6FEB?style=for-the-badge"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-GPLv3-2EA44F?style=for-the-badge"></a>
+  <a href="https://github.com/themuffinator/PakFu/actions/workflows/pr-ci.yml"><img alt="PR CI" src="https://img.shields.io/github/actions/workflow/status/themuffinator/PakFu/pr-ci.yml?label=PR%20CI&style=for-the-badge"></a>
   <a href="https://github.com/themuffinator/PakFu/actions/workflows/nightly.yml"><img alt="Nightly" src="https://img.shields.io/github/actions/workflow/status/themuffinator/PakFu/nightly.yml?label=nightly&style=for-the-badge"></a>
   <a href="CHANGELOG.md"><img alt="Changelog" src="https://img.shields.io/badge/status-active%20development-CF8E1D?style=for-the-badge"></a>
 </p>
@@ -75,16 +76,18 @@ aligned without carrying build instructions or repository maintenance notes.
 - Nested container mounting (open archives inside archives).
 - One-click `Extract Selected` and `Extract All` workflows for the active archive tab.
 - Batch conversion tool for selected assets with category tabs (images, video, archives, models, sound, maps, text, other).
-- Manifest-driven extension commands for archive-aware external tools in the GUI and CLI.
-- A reusable `pakfu_core` static library for non-UI archive, format, search, and extension code.
+- Manifest-driven extension commands with capability negotiation and GUI import/write-back outputs.
+- An installable `pakfu_core` static library with public headers and pkg-config metadata for non-UI archive, format, search, game-profile, and extension code.
 - Image batch conversion supports input from all supported image preview formats, including Heretic II `m8` textures, and output to all supported image-writer formats (`png`, `jpg`, `jpeg`, `bmp`, `gif`, `tga`, `tif`, `tiff`, `pcx`, `wal`, `swl`, `mip`, `lmp`, `ftx`, `dds`) with format-aware settings (quality, compression, palette source, dithering, alpha threshold, embedded palette where applicable).
+- Preview overviews surface asset context such as palette provenance, model companion files, shader texture dependency resolution, active 3D renderer state, and preview fallback notes.
+- Heavy previews report timing profiles, reuse cached temp exports for repeated media/model previews, and cap BSP texture resolution work for very large maps.
 - Modern platform-native open/save/folder dialogs with standard breadcrumbs/bookmarks and robust cross-platform behavior.
 - 3D preview renderer selection with Vulkan/OpenGL behavior and fallback.
 - Fly camera controls for 3D preview (`Right Mouse + WASD`, `Q/E`, mouse wheel speed, `Shift` faster, `Ctrl` slower, `F` frame, `R`/`Home` reset).
 - Auto-detection and management of per-game installation profiles.
 - Built-in update checks via GitHub Releases.
 - Integrated crash reporting with session logs and Windows minidumps.
-- File-association management UI with per-format icon sets.
+- Cross-platform shell integration: Windows Open With registration, Linux desktop/MIME metadata, macOS document types, and per-format icon sets.
 
 ## Supported Formats
 
@@ -120,7 +123,7 @@ quick reference.
   - `spr`, `sp2`/`spr2`, `bk`, `os`, `dm2`, `aas`, `qvm`, `progs.dat`, `tag`, `mdx`, `mds`, `skc`, `ska`, `ttf`, `otf`
 - Text and script assets:
   - Core: `cfg` and similar plain-text config/script files
-  - Includes many common idTech-family script formats (`shader`, `menu`, `def`, `mtr`, `map`, `ent`, `qc`, and others)
+  - Includes many common idTech-family script formats (`shader`, `menu`, `def`, `mtr`, `map`, `proc`, `ent`, `qc`, and others)
 
 Notes:
 - Multimedia playback support depends on the installed Qt Multimedia backend and codecs.
@@ -128,6 +131,7 @@ Notes:
 - Some indexed formats (`wal`, `mip`, selected `lmp` cases) use game palettes when required; Heretic II `m8` textures carry an embedded palette.
 - Heretic II `bk` book sprites composite referenced `.m8` tiles, while `os` dynamic scripts are binary bytecode and open as metadata/opcode previews.
 - BSP inspector/preview supports Heretic II `IBSP`/converted `QBSP` maps with `.m8` texture resolution, plus Quake 3-derived families including FAKK variants used by Heavy Metal: F.A.K.K.2 and American McGee's Alice (`FAKK` v42 checksum-header BSPs).
+- idTech4 `.map` source files and `.proc` compiled render descriptions open as text/metadata inspections. 3D map rendering is currently scoped to Quake-family `.bsp` files; idTech4 `.proc`/collision map rendering is not claimed.
 
 ## Build and Run
 
@@ -160,6 +164,10 @@ meson compile -C builddir
 meson compile -C builddir pakfu_core
 meson test -C builddir core-api-smoke
 ```
+
+Installed builds publish `pakfu_core`, the public header set under
+`include/pakfu`, and `pakfu_core.pc` metadata for helper tools that want to reuse
+PakFu's non-UI archive and asset-format surface.
 
 ### Parser Hardening Build
 For parser hardening smoke tests with libFuzzer + sanitizers:
@@ -261,10 +269,11 @@ Examples:
   - Locked/read-only archive states (Pure PAK protector, mounted container views, folder views) disallow import drops and disable cut/paste-style modification actions.
   - Name collisions during add/import/rename prompt for `Overwrite`, `Keep Both`, `Skip`, or `Cancel` (with apply-to-remaining support).
   - Multi-selection follows platform conventions: `Shift` range selection, `Ctrl`/`Cmd` toggle selection, marquee/rubber-band selection in icon/list views, and `Ctrl`/`Cmd`+`A` for Select All.
+  - Shell-open paths from Explorer/Finder/file managers route through the same open flow as drag/drop, including directories, archive tabs, and standalone viewers.
   - Double-click nested container files to mount and browse in-place.
   - Multiple nested layers are supported.
   - `File` menu and context menu actions support `Extract Selected`, `Extract All` (archive views), and `Convert Selected Assets...`.
-  - The `Extensions` menu discovers manifest-backed external tools and validates the current archive selection before launch.
+  - The `Extensions` menu discovers manifest-backed external tools, validates the current archive selection before launch, and can import extension-generated files as pending archive changes.
 - Safety:
   - Pure PAK Protector is enabled by default for official archives (read-only protection with Save As workflow).
 
@@ -325,7 +334,7 @@ For full policy details, see `docs/RELEASES.md`.
 | `QT_MEDIA_BACKEND` | Override Qt multimedia backend selection. |
 
 ## Documentation
-- `docs/CORE_LIBRARY.md` : `pakfu_core` scope, umbrella header, and intended build contract.
+- `docs/CORE_LIBRARY.md` : `pakfu_core` public headers, API metadata, install contract, and sample consumer code.
 - `docs/DEPENDENCIES.md` : dependency baseline and optional libraries.
 - `docs/EXTENSIONS.md` : manifest schema, JSON payload contract, and CLI/GUI extension workflow.
 - `docs/QA_ARCHIVE_FILE_OPS.md` : practical QA checklist for selection, drag/drop, cut/copy/paste, and modifiers.

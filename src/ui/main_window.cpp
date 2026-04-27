@@ -1485,7 +1485,7 @@ void MainWindow::open_file_dialog() {
   dialog.setWindowTitle("Open File");
   dialog.setFileMode(QFileDialog::ExistingFile);
   dialog.setNameFilters({
-    "Supported files (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3 *.pcx *.wal *.swl *.m8 *.mip *.lmp *.dds *.ftx *.png *.bmp *.gif *.tga *.jpg *.jpeg *.tif *.tiff *.wav *.ogg *.mp3 *.idwav *.bik *.cin *.roq *.ogv *.mp4 *.mkv *.avi *.webm *.bsp *.mdl *.md2 *.fm *.md3 *.mdc *.md4 *.mdr *.skb *.skd *.mdm *.glm *.iqm *.md5mesh *.tan *.lwo *.obj *.spr *.sp2 *.spr2 *.bk *.os *.cfg *.txt *.json *.shader *.ttf *.otf)",
+    "Supported files (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3 *.pcx *.wal *.swl *.m8 *.mip *.lmp *.dds *.ftx *.png *.bmp *.gif *.tga *.jpg *.jpeg *.tif *.tiff *.wav *.ogg *.mp3 *.idwav *.bik *.cin *.roq *.ogv *.mp4 *.mkv *.avi *.webm *.bsp *.map *.proc *.mdl *.md2 *.fm *.md3 *.mdc *.md4 *.mdr *.skb *.skd *.mdm *.glm *.iqm *.md5mesh *.tan *.lwo *.obj *.spr *.sp2 *.spr2 *.bk *.os *.cfg *.txt *.json *.shader *.ttf *.otf)",
     "Archives (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3)",
     "All files (*.*)",
   });
@@ -2280,6 +2280,9 @@ void MainWindow::rebuild_extensions_menu() {
         tooltip_lines.push_back(command.command_description);
       }
       tooltip_lines.push_back(QString("Ref: %1").arg(extension_command_ref(command)));
+      if (!command.capabilities.isEmpty()) {
+        tooltip_lines.push_back(QString("Capabilities: %1").arg(command.capabilities.join(", ")));
+      }
 
       QString availability_error;
       bool enabled = false;
@@ -2338,6 +2341,14 @@ void MainWindow::run_extension_command_action(const ExtensionCommand& command) {
   if (!result.std_err.trimmed().isEmpty()) {
     details.push_back(QString("stderr:\n%1").arg(result.std_err.trimmed()));
   }
+  if (!result.imports.isEmpty()) {
+    QStringList import_lines;
+    import_lines.reserve(result.imports.size());
+    for (const ExtensionImportEntry& import : result.imports) {
+      import_lines.push_back(QString("  %1 <- %2").arg(import.archive_name, import.local_path));
+    }
+    details.push_back(QString("imports:\n%1").arg(import_lines.join("\n")));
+  }
 
   if (!ok) {
     QMessageBox box(this);
@@ -2354,7 +2365,13 @@ void MainWindow::run_extension_command_action(const ExtensionCommand& command) {
   QMessageBox box(this);
   box.setIcon(QMessageBox::Information);
   box.setWindowTitle("Run Extension");
-  box.setText(QString("%1 completed.").arg(extension_command_display_name(command)));
+  if (result.imports.isEmpty()) {
+    box.setText(QString("%1 completed.").arg(extension_command_display_name(command)));
+  } else {
+    box.setText(QString("%1 completed and imported %2 file(s).")
+                  .arg(extension_command_display_name(command))
+                  .arg(result.imports.size()));
+  }
   if (!details.isEmpty()) {
     box.setDetailedText(details.join("\n\n"));
   }
