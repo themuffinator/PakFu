@@ -39,7 +39,9 @@ jobs:
 
       - name: Setup MSVC
         if: matrix.os == 'windows-latest'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
@@ -48,9 +50,17 @@ jobs:
           arch: ${{ matrix.os == 'windows-latest' && 'win64_msvc2022_64' || matrix.os == 'macos-latest' && 'clang_64' || 'linux_gcc_64' }}
           modules: qtmultimedia qtimageformats
 
+      - name: Configure macOS Runtime Paths
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          echo "DYLD_FRAMEWORK_PATH=${QT_ROOT_DIR}/lib" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=${QT_ROOT_DIR}/lib" >> "$GITHUB_ENV"
+          echo "DYLD_FALLBACK_FRAMEWORK_PATH=${QT_ROOT_DIR}/lib" >> "$GITHUB_ENV"
+
       - name: Configure (Windows)
         if: matrix.os == 'windows-latest'
-        shell: bash
+        shell: pwsh
         env:
           CC: cl
           CXX: cl
@@ -73,33 +83,48 @@ jobs:
           -Dgithub_repo=${{ github.repository }}
           -Dupdate_channel=dev
 
-      - name: Build
+      - name: Build (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: meson compile -C builddir
+
+      - name: Build (Unix)
+        if: matrix.os != 'windows-latest'
         shell: bash
         run: meson compile -C builddir
 
-      - name: Run Support Matrix Fixtures
+      - name: Run Support Matrix Fixtures (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: meson test -C builddir support-matrix-fixtures --print-errorlogs
+
+      - name: Run Support Matrix Fixtures (Unix)
+        if: matrix.os != 'windows-latest'
         shell: bash
         run: meson test -C builddir support-matrix-fixtures --print-errorlogs
 
-      - name: Run Meson Tests
+      - name: Run Meson Tests (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: meson test -C builddir --print-errorlogs
+
+      - name: Run Meson Tests (Unix)
+        if: matrix.os != 'windows-latest'
         shell: bash
         run: meson test -C builddir --print-errorlogs
 
-      - name: Configure macOS Runtime Paths
-        if: matrix.os == 'macos-latest'
-        shell: bash
+      - name: Validate CLI Binary (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
         run: |
-          echo "DYLD_FRAMEWORK_PATH=${QT_ROOT_DIR}/lib" >> "$GITHUB_ENV"
-          echo "DYLD_LIBRARY_PATH=${QT_ROOT_DIR}/lib" >> "$GITHUB_ENV"
-          echo "DYLD_FALLBACK_FRAMEWORK_PATH=${QT_ROOT_DIR}/lib" >> "$GITHUB_ENV"
+          python scripts/validate_build.py `
+            --binary "builddir/src/pakfu.exe" `
+            --expected-version "$((Get-Content VERSION -Raw).Trim())"
 
-      - name: Validate CLI Binary
+      - name: Validate CLI Binary (Unix)
+        if: matrix.os != 'windows-latest'
         shell: bash
         run: |
-          binary="builddir/src/pakfu"
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            binary="builddir/src/pakfu.exe"
-          fi
           python scripts/validate_build.py \
-            --binary "$binary" \
+            --binary "builddir/src/pakfu" \
             --expected-version "$(cat VERSION)"
