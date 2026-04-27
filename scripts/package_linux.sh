@@ -128,17 +128,28 @@ if [[ ! -e "${app_dir}/usr/lib/libQt6Core.so.6" ]]; then
   exit 1
 fi
 
-pakfu_ldd="$(ldd "${app_dir}/usr/bin/pakfu" 2>/dev/null || true)"
+app_dir_abs="$(cd "${app_dir}" && pwd)"
+app_lib_dir="${app_dir_abs}/usr/lib"
+
+# CI exposes the build-time Qt via LD_LIBRARY_PATH. Validate with the AppDir
+# library directory first, matching the runtime environment provided by AppRun.
+pakfu_ldd="$(LD_LIBRARY_PATH="${app_lib_dir}" ldd "${app_dir}/usr/bin/pakfu" 2>/dev/null || true)"
 if printf "%s\n" "${pakfu_ldd}" | grep -q "not found"; then
   echo "Packaged pakfu binary still has unresolved runtime dependencies:" >&2
   printf "%s\n" "${pakfu_ldd}" >&2
   exit 1
 fi
 
-app_dir_abs="$(cd "${app_dir}" && pwd)"
-if ! printf "%s\n" "${pakfu_ldd}" | grep -F "libQt6Core.so.6 => ${app_dir_abs}/" >/dev/null; then
+if ! printf "%s\n" "${pakfu_ldd}" | grep -F "libQt6Core.so.6 => ${app_lib_dir}/" >/dev/null; then
   echo "Packaged pakfu binary is not resolving Qt Core from the deployed AppDir." >&2
   printf "%s\n" "${pakfu_ldd}" >&2
+  exit 1
+fi
+
+external_qt_libs="$(printf "%s\n" "${pakfu_ldd}" | grep -E "libQt6[^[:space:]]*\\.so" | grep -Fv "=> ${app_lib_dir}/" || true)"
+if [[ -n "${external_qt_libs}" ]]; then
+  echo "Packaged pakfu binary is resolving Qt libraries outside the deployed AppDir." >&2
+  printf "%s\n" "${external_qt_libs}" >&2
   exit 1
 fi
 

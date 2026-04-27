@@ -31,12 +31,12 @@ jobs:
       head_sha: ${{ steps.version.outputs.head_sha }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.x"
 
@@ -77,13 +77,13 @@ jobs:
         os: [windows-latest, macos-latest, ubuntu-latest]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ needs.prepare.outputs.head_sha }}
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.x"
 
@@ -121,7 +121,7 @@ jobs:
         run: meson compile -C builddir
 
       - name: Upload Build Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pakfu-build-${{ matrix.os }}
           path: |
@@ -140,12 +140,12 @@ jobs:
         os: [windows-latest, macos-latest, ubuntu-latest]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ needs.prepare.outputs.head_sha }}
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.x"
 
@@ -157,7 +157,7 @@ jobs:
           modules: qtmultimedia qtimageformats
 
       - name: Download Build Artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: pakfu-build-${{ matrix.os }}
           path: .
@@ -224,12 +224,12 @@ jobs:
         os: [windows-latest, macos-latest, ubuntu-latest]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ needs.prepare.outputs.head_sha }}
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.x"
 
@@ -241,7 +241,7 @@ jobs:
           modules: qtmultimedia qtimageformats
 
       - name: Download Build Artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: pakfu-build-${{ matrix.os }}
           path: .
@@ -343,7 +343,7 @@ jobs:
             --arch "${PAKFU_ARCH}"
 
       - name: Upload Package Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pakfu-dist-${{ matrix.os }}
           path: dist/*
@@ -356,18 +356,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ needs.prepare.outputs.head_sha }}
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.x"
 
       - name: Download Package Artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
