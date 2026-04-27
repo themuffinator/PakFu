@@ -34,6 +34,10 @@
 # Clang
 .cache
 
+# Python
+__pycache__/
+*.py[cod]
+
 # Meson build outputs
 build/
 builddir/

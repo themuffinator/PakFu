@@ -30,9 +30,6 @@ Stable/beta/dev manual version generation:
   behavior, or CLI workflows.
 - Related commits should be grouped into one user benefit instead of listed as
   separate implementation steps.
-- If the `COPILOT_GITHUB_TOKEN` secret is configured, nightly releases can use
-  `github/copilot-release-notes` with `.github/release-notes-instructions.md` as
-  an editorial pass. The deterministic local scripts remain the fallback path.
 - Changelog/release-note rendering scripts:
 1. `scripts/update_changelog.py`
 2. `scripts/nightly_release_notes.py`

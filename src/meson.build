@@ -77,9 +77,21 @@ pakfu_includes = [include_directories('.')] + qt_rhi_includes
 fuzzing_opt = get_option('fuzzing')
 fuzz_compile_args = ['-fsanitize=fuzzer', '-fno-omit-frame-pointer']
 fuzz_link_args = ['-fsanitize=fuzzer']
+fuzz_link_probe = '''
+#include <cstddef>
+#include <cstdint>
+
+extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t*, std::size_t) {
+  return 0;
+}
+'''
 fuzzing_supported = (
   cpp_compiler.has_multi_arguments(fuzz_compile_args) and
-  cpp_compiler.has_multi_link_arguments(fuzz_link_args)
+  cpp_compiler.links(
+    fuzz_link_probe,
+    args: fuzz_compile_args + fuzz_link_args,
+    name: 'libFuzzer entrypoint',
+  )
 )
 if fuzzing_opt.enabled() and not fuzzing_supported
   error('Parser fuzz targets require compiler support for -fsanitize=fuzzer.')
