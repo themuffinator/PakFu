@@ -5,6 +5,7 @@ import argparse
 import datetime as dt
 import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 SECTION_ORDER = [
@@ -40,6 +41,7 @@ TECHNICAL_ONLY_PATTERNS = (
 USER_IMPACT_KEYWORDS = (
     "appimage",
     "archive",
+    "asset",
     "audio",
     "batch",
     "bsp",
@@ -51,15 +53,20 @@ USER_IMPACT_KEYWORDS = (
     "extension",
     "extract",
     "file",
+    "filetype",
     "format",
     "folder",
     "image",
+    "import",
     "install",
     "installer",
     "linux",
     "macos",
     "memory",
     "model",
+    "m8",
+    "bk",
+    "fm",
     "opengl",
     "package",
     "pak",
@@ -67,10 +74,12 @@ USER_IMPACT_KEYWORDS = (
     "performance",
     "plugin",
     "portable",
+    "proc",
     "preview",
     "roq",
     "runtime",
     "search",
+    "shell",
     "updater",
     "video",
     "viewer",
@@ -79,6 +88,93 @@ USER_IMPACT_KEYWORDS = (
     "windows",
     "zip",
 )
+
+FORMAT_SUPPORT_KEYWORDS = (
+    "asset support",
+    "filetype support",
+    "format support",
+    "heretic",
+    "heretic ii",
+    "m8",
+    "bk",
+    "fm",
+    " os ",
+    "src/formats/m8_image",
+    "src/formats/idtech_asset_loader",
+    "src/formats/model.cpp",
+    "src/formats/sprite_loader.cpp",
+)
+
+IDTECH4_MAP_KEYWORDS = (
+    "idtech4",
+    "idtech4_map",
+    ".proc",
+    " proc ",
+    ".map",
+    "compiled render",
+)
+
+EXTENSION_WRITEBACK_KEYWORDS = (
+    "entries.import",
+    "write-back",
+    "write back",
+    "capability",
+    "capabilities",
+    "capability negotiation",
+    "extension_plugin",
+    "docs/extensions.md",
+)
+
+CORE_LIBRARY_KEYWORDS = (
+    "pakfu_core",
+    "core_library",
+    "pkg-config",
+    "public header",
+    "public headers",
+)
+
+SHELL_INTEGRATION_KEYWORDS = (
+    "file association",
+    "file associations",
+    "shell integration",
+    "shell-open",
+    "mime",
+    "metainfo",
+    "desktop",
+    "info.plist",
+    "open with",
+)
+
+PREVIEW_CONTEXT_KEYWORDS = (
+    "asset context",
+    "palette provenance",
+    "companion",
+    "dependency resolution",
+    "preview fallback",
+    "fallback notes",
+    "preview_pane",
+    "image_viewer_window",
+    "model_viewer_window",
+)
+
+PREVIEW_PERFORMANCE_KEYWORDS = (
+    "heavy preview",
+    "timing profile",
+    "timing profiles",
+    "cached temp",
+    "temp exports",
+    "cap bsp",
+    "texture resolution",
+    "performance",
+    "memory",
+)
+
+
+@dataclass(frozen=True)
+class CommitChange:
+    subject: str
+    body: str
+    files: tuple[str, ...] = ()
 
 
 def contains_any(text: str, needles: tuple[str, ...]) -> bool:
@@ -96,19 +192,25 @@ def last_tag(repo: Path) -> str | None:
         return None
 
 
-def commit_log(repo: Path, base_tag: str | None) -> list[tuple[str, str]]:
+def commit_log(repo: Path, base_tag: str | None) -> list[CommitChange]:
     if base_tag:
         range_spec = f"{base_tag}..HEAD"
     else:
         range_spec = "HEAD"
-    log = run_git(["log", range_spec, "--pretty=format:%s%n%b%n==END=="], repo)
+    log = run_git(["log", range_spec, "--pretty=format:%H%n%s%n%b%n==END=="], repo)
     entries = [entry.strip() for entry in log.split("==END==") if entry.strip()]
     commits = []
     for entry in entries:
         lines = entry.splitlines()
-        subject = lines[0].strip() if lines else ""
-        body = "\n".join(lines[1:]) if len(lines) > 1 else ""
-        commits.append((subject, body))
+        commit_hash = lines[0].strip() if lines else ""
+        subject = lines[1].strip() if len(lines) > 1 else ""
+        body = "\n".join(lines[2:]) if len(lines) > 2 else ""
+        files = tuple(
+            line.strip()
+            for line in run_git(["show", "--format=", "--name-only", commit_hash], repo).splitlines()
+            if line.strip()
+        )
+        commits.append(CommitChange(subject=subject, body=body, files=files))
     return commits
 
 
@@ -145,40 +247,118 @@ def add_once(sections: dict[str, list[str]], title: str, item: str) -> None:
         items.append(item)
 
 
-def classify_user_change(change_type: str | None, desc: str) -> tuple[str, str] | None:
+def normalize_change(commit: CommitChange | tuple[str, str] | tuple[str, str, tuple[str, ...]]) -> CommitChange:
+    if isinstance(commit, CommitChange):
+        return commit
+    if len(commit) >= 3:
+        return CommitChange(subject=commit[0], body=commit[1], files=tuple(commit[2]))
+    return CommitChange(subject=commit[0], body=commit[1])
+
+
+def classify_user_change(
+    change_type: str | None,
+    desc: str,
+    body: str = "",
+    files: tuple[str, ...] = (),
+) -> list[tuple[str, str]]:
     lowered = desc.lower()
-    if should_skip_change(change_type, desc):
-        return None
+    context = " ".join([desc, body, *files]).lower()
+    if should_skip_change(change_type, desc) and not contains_any(context, USER_IMPACT_KEYWORDS):
+        return []
+
+    items: list[tuple[str, str]] = []
+
+    if contains_any(context, FORMAT_SUPPORT_KEYWORDS):
+        items.append(
+            (
+                "Compatibility",
+                "Heretic II filetype support has been added, including M8 textures, FM models, BK book sprites, OS script bytecode previews, and related file associations.",
+            )
+        )
+    if contains_any(context, IDTECH4_MAP_KEYWORDS):
+        items.append(
+            (
+                "Preview and Format Support",
+                "idTech4 map-era files are clearer to inspect: `.map` source files and `.proc` render descriptions open as text or metadata, while 3D rendering remains scoped to Quake-family BSP files.",
+            )
+        )
+    if contains_any(context, EXTENSION_WRITEBACK_KEYWORDS):
+        items.append(
+            (
+                "Highlights",
+                "Extension commands now support capability negotiation and can import generated files back into editable archives through host-validated write-back.",
+            )
+        )
+    if contains_any(context, CORE_LIBRARY_KEYWORDS):
+        items.append(
+            (
+                "Highlights",
+                "`pakfu_core` is easier to reuse from helper tools, with public headers and package metadata for non-UI archive and asset workflows.",
+            )
+        )
+    if contains_any(context, SHELL_INTEGRATION_KEYWORDS):
+        items.append(
+            (
+                "Installers and Updates",
+                "Desktop integration is broader across platforms, with improved file associations, Linux MIME metadata, macOS document types, and shell-open handling.",
+            )
+        )
+    if contains_any(context, PREVIEW_CONTEXT_KEYWORDS):
+        items.append(
+            (
+                "Reliability and Polish",
+                "Preview panes now surface more asset context, including palette sources, companion-file resolution, renderer state, and fallback notes.",
+            )
+        )
+    if contains_any(context, PREVIEW_PERFORMANCE_KEYWORDS):
+        items.append(
+            (
+                "Reliability and Polish",
+                "Heavy previews are more controlled, with clearer timing information, reusable temporary exports, and safer limits for large map texture work.",
+            )
+        )
 
     if contains_any(lowered, ("extension", "plugin", "manifest")):
-        return (
-            "Highlights",
-            "Extension commands are easier to discover and run from both the app and the CLI.",
+        items.append(
+            (
+                "Highlights",
+                "Extension commands are easier to discover and run from both the app and the CLI.",
+            )
         )
     if contains_any(lowered, ("search", "index")) and "archive" in lowered:
-        return (
-            "Highlights",
-            "Archive search and CLI workflows are more capable, making large archives easier to inspect and filter.",
+        items.append(
+            (
+                "Highlights",
+                "Archive search and CLI workflows are more capable, making large archives easier to inspect and filter.",
+            )
         )
     if contains_any(lowered, ("batch", "convert", "conversion", "image writer")):
-        return (
-            "Highlights",
-            "Batch conversion supports more useful output formats with clearer format-specific options.",
+        items.append(
+            (
+                "Highlights",
+                "Batch conversion supports more useful output formats with clearer format-specific options.",
+            )
         )
     if contains_any(lowered, ("vulkan", "opengl", "3d preview", "renderer")):
-        return (
-            "Preview and Format Support",
-            "3D previews are more portable, with Vulkan treated as optional and OpenGL kept available as the fallback renderer.",
+        items.append(
+            (
+                "Preview and Format Support",
+                "3D previews are more portable, with Vulkan treated as optional and OpenGL kept available as the fallback renderer.",
+            )
         )
     if contains_any(lowered, ("model", "bsp", "cinematic", "roq", "video", "audio", "image", "palette")):
-        return (
-            "Preview and Format Support",
-            "Preview and format handling has been broadened for more idTech-era assets.",
+        items.append(
+            (
+                "Preview and Format Support",
+                "Preview and format handling has been broadened for more idTech-era assets.",
+            )
         )
     if contains_any(lowered, ("dialog", "hang", "stale", "folder", "path", "crash", "memory", "performance", "responsive")):
-        return (
-            "Reliability and Polish",
-            "Everyday browsing and file handling are smoother, with fixes aimed at responsiveness and stale navigation state.",
+        items.append(
+            (
+                "Reliability and Polish",
+                "Everyday browsing and file handling are smoother, with fixes aimed at responsiveness and stale navigation state.",
+            )
         )
     if contains_any(
         lowered,
@@ -196,25 +376,32 @@ def classify_user_change(change_type: str | None, desc: str) -> tuple[str, str] 
             "updater",
         ),
     ):
-        return (
-            "Installers and Updates",
-            "Release packages are more reliable and self-contained, so downloads are easier to install and verify.",
+        items.append(
+            (
+                "Installers and Updates",
+                "Release packages are more reliable and self-contained, so downloads are easier to install and verify.",
+            )
         )
     if contains_any(lowered, ("format", "archive", "pak", "wad", "zip", "pk3", "resources")):
-        return (
-            "Compatibility",
-            "Archive compatibility has been expanded and tightened across supported game formats.",
+        items.append(
+            (
+                "Compatibility",
+                "Archive compatibility has been expanded and tightened across supported game formats.",
+            )
         )
 
-    if change_type in {"feat", "fix", "perf"}:
+    if not items and change_type in {"feat", "fix", "perf"}:
         cleaned = desc[0].upper() + desc[1:] if desc else desc
-        return ("Highlights", cleaned.rstrip(".") + ".")
-    return None
+        items.append(("Highlights", cleaned.rstrip(".") + "."))
+    return items
 
 
-def build_sections(commits: list[tuple[str, str]]) -> dict[str, list[str]]:
+def build_sections(commits: list[CommitChange | tuple[str, str] | tuple[str, str, tuple[str, ...]]]) -> dict[str, list[str]]:
     sections: dict[str, list[str]] = {}
-    for subject, body in commits:
+    for raw_commit in commits:
+        commit = normalize_change(raw_commit)
+        subject = commit.subject
+        body = commit.body
         change_type, desc, breaking = normalize_subject(subject)
         if not desc:
             continue
@@ -223,9 +410,7 @@ def build_sections(commits: list[tuple[str, str]]) -> dict[str, list[str]]:
         if breaking:
             add_once(sections, "Breaking Changes", desc)
             continue
-        classified = classify_user_change(change_type, desc)
-        if classified:
-            title, item = classified
+        for title, item in classify_user_change(change_type, desc, body, commit.files):
             add_once(sections, title, item)
     return sections
 

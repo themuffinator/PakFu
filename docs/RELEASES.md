@@ -32,6 +32,13 @@ Stable/beta/dev manual version generation:
   behavior, or CLI workflows.
 - Related commits should be grouped into one user benefit instead of listed as
   separate implementation steps.
+- New game support and filetype support must be kept in the summary even when
+  the implementation spans loaders, viewers, file associations, fixtures, and
+  documentation. Collapse the work into a format-focused user benefit instead of
+  dropping it as internal plumbing.
+- Vague roll-up commits are summarized from their touched product areas as well
+  as their subject line, so broad implementation commits can still produce a few
+  useful collapsed bullets.
 - Changelog/release-note rendering scripts:
 1. `scripts/update_changelog.py`
 2. `scripts/nightly_release_notes.py`
