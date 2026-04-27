@@ -84,7 +84,7 @@ aligned without carrying build instructions or repository maintenance notes.
 - Modern platform-native open/save/folder dialogs with standard breadcrumbs/bookmarks and robust cross-platform behavior.
 - 3D preview renderer selection with Vulkan/OpenGL behavior and fallback.
 - Fly camera controls for 3D preview (`Right Mouse + WASD`, `Q/E`, mouse wheel speed, `Shift` faster, `Ctrl` slower, `F` frame, `R`/`Home` reset).
-- Auto-detection and management of per-game installation profiles.
+- Auto-detection and management of per-game installation profiles, including Heretic II `base/htic2-*.pak` gamepacks.
 - Built-in update checks via GitHub Releases.
 - Integrated crash reporting with session logs and Windows minidumps.
 - Cross-platform shell integration: Windows Open With registration, Linux desktop/MIME metadata, macOS document types, and per-format icon sets.
@@ -287,7 +287,7 @@ Behavior:
 - If profiles exist, PakFu opens directly into Archive View.
 - If none exist, the Installations dialog opens on startup.
 - Auto-detection order: Steam -> GOG.com -> EOS.
-- Auto-detection coverage includes Quake-family, Doom-family, Half-Life, SiN, RtCW/ET, Jedi Outcast/Academy, Elite Force titles, Heavy Metal: F.A.K.K.2, American McGee's Alice, Quake 4, Doom 3, Doom 3 BFG Edition, Prey, and Enemy Territory: Quake Wars.
+- Auto-detection coverage includes Quake-family, Doom-family, Half-Life, SiN, Heretic II, RtCW/ET, Jedi Outcast/Academy, Elite Force titles, Heavy Metal: F.A.K.K.2, American McGee's Alice, Quake 4, Doom 3, Doom 3 BFG Edition, Prey, and Enemy Territory: Quake Wars.
 
 Selector support:
 - `--select-game-install` accepts UID, game key, or display name.

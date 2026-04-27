@@ -201,7 +201,9 @@ GameId game_id_from_key(const QString& key, bool* ok) {
   if (key == "anachronox") {
     return GameId::Anachronox;
   }
-  if (key == "heretic2" || key == "heretic_2") {
+  if (key == "heretic2" || key == "heretic_2" || key == "heretic-2" || key == "heretic ii" ||
+      key == "hereticii" || key == "heretic_ii" || key == "heretic-ii" || key == "h2" ||
+      key == "htic2") {
     return GameId::Heretic2;
   }
   if (key == "gravity_bone") {

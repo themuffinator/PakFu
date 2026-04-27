@@ -53,6 +53,12 @@ repository does not need copyrighted game assets to verify the core contract.
 | idTech inspectors | `dm2`, `aas`, `qvm`, `progs.dat`, `tag`, `mdx`, `mds`, `skc`, `ska`, `ttf`, `otf` | Supported | Implementation-backed metadata/insight views |
 | Text and script assets | `cfg`, `config`, `rc`, `arena`, `bot`, `skin`, `shader`, `menu`, `def`, `mtr`, `map`, `proc`, `ent`, `qc`, and similar plain text | Supported | Implementation-backed text preview with syntax highlighting for common script/config families; `.map`/`.proc` add map-scope summaries |
 
+## Game Installation Profiles
+
+| Area | Current status | Evidence |
+|---|---|---|
+| Heretic II gamepack auto-detection | Supported | Fixture-backed by `game-auto-detect`; recognizes full-install `base/htic2-*.pak`, root-level `htic2-*.pak`, `base/book`, `base/ds`, and common executable/folder aliases |
+
 ## Maintenance Rules
 
 When a row changes, update this document, the README summary, and the

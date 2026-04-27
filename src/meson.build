@@ -407,6 +407,16 @@ core_api_smoke_test = executable(
 
 test('core-api-smoke', core_api_smoke_test)
 
+game_auto_detect_test = executable(
+  'game_auto_detect_test',
+  ['tests/game_auto_detect_test.cpp'],
+  include_directories: pakfu_includes,
+  dependencies: [pakfu_core_dep],
+  install: false,
+)
+
+test('game-auto-detect', game_auto_detect_test)
+
 extension_plugin_test = executable(
   'extension_plugin_test',
   ['tests/extension_plugin_test.cpp'],

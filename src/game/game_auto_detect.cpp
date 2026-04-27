@@ -305,12 +305,36 @@ bool any_marker_exists(const QString& root, const QStringList& relative_markers)
   }
   const QDir base(root);
   for (const QString& rel : relative_markers) {
-    const QString candidate = clean_path(base.filePath(rel));
-    if (candidate.isEmpty()) {
-      continue;
-    }
-    if (QFileInfo::exists(candidate)) {
-      return true;
+    if (rel.contains('*') || rel.contains('?')) {
+      const int slash = rel.lastIndexOf('/');
+      const QString dir_part = slash >= 0 ? rel.left(slash) : QString();
+      const QString name_filter = slash >= 0 ? rel.mid(slash + 1) : rel;
+      const QString dir_path = clean_path(dir_part.isEmpty() ? root : base.filePath(dir_part));
+      if (dir_path.isEmpty()) {
+        continue;
+      }
+
+      const QDir marker_dir(dir_path);
+      if (!marker_dir.exists()) {
+        continue;
+      }
+      const QRegularExpression re(
+        QRegularExpression::wildcardToRegularExpression(name_filter),
+        QRegularExpression::CaseInsensitiveOption);
+      const QStringList names = marker_dir.entryList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot);
+      for (const QString& name : names) {
+        if (re.match(name).hasMatch()) {
+          return true;
+        }
+      }
+    } else {
+      const QString candidate = clean_path(base.filePath(rel));
+      if (candidate.isEmpty()) {
+        continue;
+      }
+      if (QFileInfo::exists(candidate)) {
+        return true;
+      }
     }
   }
   return false;
@@ -562,11 +586,16 @@ QVector<GameSupportInfo> supported_game_support() {
 
   out.push_back(GameSupportInfo{
     .game = GameId::Heretic2,
-    .folder_names = {"Heretic II", "Heretic 2", "Heretic2"},
-    .marker_any = {"base/htic2-0.pak", "base/HTIC2-0.PAK", "base/pak0.pak", "base/PAK0.PAK",
-                   "heretic2.exe", "Heretic2.exe"},
+    .folder_names = {"Heretic II", "Heretic 2", "Heretic2", "HereticII", "HERETIC2", "HERETICII",
+                     "Heretic II Demo", "Heretic 2 Demo", "Heretic II Gold", "Heretic 2 Gold"},
+    .marker_any = {"base/htic2-*.pak", "htic2-*.pak", "base/pak0.pak", "base/PAK0.PAK",
+                   "base/book", "base/ds", "base/default.cfg",
+                   "heretic2.exe", "Heretic2.exe", "HERETIC2.EXE", "Heretic II.exe", "h2.exe",
+                   "bin/heretic2.exe", "bin/Heretic2.exe", "bin/heretic2"},
     .default_dir_candidates = {"base"},
-    .executable_candidates = {"heretic2.exe", "Heretic2.exe", "heretic2"},
+    .executable_candidates = {"heretic2.exe", "Heretic2.exe", "HERETIC2.EXE", "Heretic II.exe",
+                              "h2.exe", "bin/heretic2.exe", "bin/Heretic2.exe", "heretic2",
+                              "bin/heretic2"},
   });
 
   out.push_back(GameSupportInfo{
