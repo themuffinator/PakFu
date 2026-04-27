@@ -180,7 +180,7 @@ quint32 aligned_uniform_stride(QRhi* rhi, quint32 size) {
 
 float default_animation_fps_for_format(const QString& format) {
 	const QString lower = format.toLower();
-	if (lower == "mdl" || lower == "md2" || lower == "md3" || lower == "mdc" || lower == "tan") {
+	if (lower == "mdl" || lower == "md2" || lower == "fm" || lower == "md3" || lower == "mdc" || lower == "tan") {
 		return 10.0f;
 	}
 	if (lower == "md4" || lower == "mdr") {
@@ -678,6 +678,8 @@ bool ModelViewerVulkanWidget::load_file(const QString& file_path, const QString&
 			score += 16;
 		} else if (ext == "ftx") {
 			score += 21;
+		} else if (ext == "m8") {
+			score += (model_format == "fm") ? 30 : 13;
 		} else if (ext == "pcx") {
 			score += 14;
 		} else if (ext == "wal") {
@@ -711,6 +713,7 @@ bool ModelViewerVulkanWidget::load_file(const QString& file_path, const QString&
 													<< "*.pcx"
 													<< "*.wal"
 													<< "*.swl"
+													<< "*.m8"
 													<< "*.dds"
 													<< "*.lmp"
 													<< "*.mip"
@@ -814,7 +817,7 @@ bool ModelViewerVulkanWidget::load_file(const QString& file_path, const QString&
 	apply_embedded_surface_textures();
 
 	if (!model_dir.isEmpty()) {
-		const QStringList exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "swl", "dds", "lmp", "mip", "ftx"};
+		const QStringList exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "swl", "m8", "dds", "lmp", "mip", "ftx"};
 
 		const auto try_find_in_dir = [&](const QString& base_or_file) -> QString {
 			if (base_or_file.isEmpty()) {
@@ -843,6 +846,7 @@ bool ModelViewerVulkanWidget::load_file(const QString& file_path, const QString&
 																<< "*.pcx"
 																<< "*.wal"
 																<< "*.swl"
+																<< "*.m8"
 																<< "*.dds"
 																<< "*.lmp"
 																<< "*.mip"

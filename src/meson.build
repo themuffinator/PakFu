@@ -118,6 +118,7 @@ core_sources = files(
   'formats/image_loader.cpp',
   'formats/image_writer.cpp',
   'formats/lmp_image.cpp',
+  'formats/m8_image.cpp',
   'formats/miptex_image.cpp',
   'formats/cinematic.cpp',
   'formats/cin_cinematic.cpp',

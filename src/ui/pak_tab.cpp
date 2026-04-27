@@ -950,13 +950,13 @@ bool is_image_file_name(const QString& name) {
   }
   const QString ext = lower.mid(dot + 1);
   static const QSet<QString> kImageExts = {
-    "png", "jpg", "jpeg", "bmp", "gif", "tga", "pcx", "wal", "swl", "dds", "lmp", "mip", "ftx", "tif", "tiff"
+    "png", "jpg", "jpeg", "bmp", "gif", "tga", "pcx", "wal", "swl", "m8", "dds", "lmp", "mip", "ftx", "tif", "tiff"
   };
   return kImageExts.contains(ext);
 }
 
 bool is_sprite_file_ext(const QString& ext) {
-  return ext == "spr" || ext == "sp2" || ext == "spr2";
+  return ext == "spr" || ext == "sp2" || ext == "spr2" || ext == "bk";
 }
 
 bool is_sprite_file_name(const QString& name) {
@@ -1382,6 +1382,7 @@ bool is_video_file_name(const QString& name) {
 bool is_model_file_name(const QString& name) {
   const QString ext = file_ext_lower(name);
   return (ext == "mdl" || ext == "md2" || ext == "md3" || ext == "mdc" || ext == "md4" || ext == "mdr" || ext == "skb" || ext == "skd" || ext == "mdm" || ext == "glm" || ext == "iqm" || ext == "md5mesh" ||
+          ext == "fm" ||
           ext == "tan" ||
           ext == "obj" ||
           ext == "lwo");
@@ -2823,6 +2824,9 @@ QString bsp_summary_text(const QByteArray& bytes, const QString& file_name) {
       break;
     case BspFamily::Quake2:
       s << "Family: Quake 2\n";
+      break;
+    case BspFamily::Heretic2:
+      s << "Family: Heretic II\n";
       break;
     case BspFamily::Quake3:
       s << "Family: Quake 3\n";
@@ -5211,10 +5215,12 @@ void PakTab::queue_thumbnail(const QString& pak_path,
               }
             }
 
-            return ImageDecodeResult{QImage(), "Unable to resolve SP2 frame image."};
+            return ImageDecodeResult{QImage(), "Unable to resolve sprite frame image."};
           };
 
-          const SpriteDecodeResult decoded = decode_sp2_sprite(sprite_bytes, load_frame);
+          const SpriteDecodeResult decoded = (ext == "bk")
+                                               ? decode_bk_sprite(sprite_bytes, load_frame)
+                                               : decode_sp2_sprite(sprite_bytes, load_frame);
           if (decoded.ok()) {
             sprite_frames.reserve(decoded.frames.size());
             sprite_frame_durations_ms.reserve(decoded.frames.size());
@@ -9531,9 +9537,9 @@ void PakTab::update_preview() {
 
   if (is_image_file_name(leaf)) {
     ImageDecodeOptions decode_options;
-    const bool supports_mips = (ext == "wal" || ext == "swl" || ext == "mip");
+    const bool supports_mips = (ext == "wal" || ext == "swl" || ext == "m8" || ext == "mip");
     if (preview_) {
-      preview_->set_image_mip_controls(supports_mips, preview_->image_mip_level());
+      preview_->set_image_mip_controls(supports_mips, preview_->image_mip_level(), ext == "m8" ? 16 : 4);
     }
     decode_options.mip_level = supports_mips && preview_ ? preview_->image_mip_level() : 0;
     if (ext == "wal") {
@@ -9755,6 +9761,8 @@ void PakTab::update_preview() {
         score += (model_ext == "mdl") ? 24 : 11;
       } else if (skin_ext == "pcx") {
         score += 14;
+      } else if (skin_ext == "m8") {
+        score += (model_ext == "fm") ? 30 : 13;
       } else if (skin_ext == "wal") {
         score += 12;
       } else if (skin_ext == "swl") {
@@ -9773,7 +9781,7 @@ void PakTab::update_preview() {
         return {};
       }
 
-      QStringList filters = {"*.png", "*.tga", "*.jpg", "*.jpeg", "*.pcx", "*.wal", "*.swl", "*.dds", "*.lmp", "*.mip", "*.ftx"};
+      QStringList filters = {"*.png", "*.tga", "*.jpg", "*.jpeg", "*.pcx", "*.wal", "*.swl", "*.m8", "*.dds", "*.lmp", "*.mip", "*.ftx"};
       if (model_ext == "md3" || model_ext == "mdc" || model_ext == "mdr") {
         filters.push_back("*.skin");
       }
@@ -9929,12 +9937,12 @@ void PakTab::update_preview() {
 
       // For multi-surface formats, try to extract per-surface textures referenced by the model so the model viewer can
       // auto-load them from the exported temp directory.
-      if (ext == "md3" || ext == "mdc" || ext == "md4" || ext == "mdr" || ext == "skb" || ext == "skd" || ext == "mdm" || ext == "glm" || ext == "md5mesh" || ext == "iqm" || ext == "tan" || ext == "obj" || ext == "lwo") {
+      if (ext == "md3" || ext == "mdc" || ext == "md4" || ext == "mdr" || ext == "skb" || ext == "skd" || ext == "mdm" || ext == "glm" || ext == "md5mesh" || ext == "iqm" || ext == "fm" || ext == "tan" || ext == "obj" || ext == "lwo") {
         const QString normalized_model = normalize_pak_path(pak_path);
         const int slash = normalized_model.lastIndexOf('/');
         const QString model_dir_prefix = (slash >= 0) ? normalized_model.left(slash + 1) : QString();
 
-        const QStringList img_exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "swl", "dds", "lmp", "mip", "ftx"};
+        const QStringList img_exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "swl", "m8", "dds", "lmp", "mip", "ftx"};
 
         // Build a quick case-insensitive lookup across the currently-viewed archive + added files.
         QHash<QString, QString> by_lower;
@@ -10322,7 +10330,8 @@ void PakTab::update_preview() {
       if (!wanted.isEmpty()) {
         const BspFamily bsp_family = bsp_family_bytes(bsp_bytes);
         const QStringList exts_q3 = {"ftx", "tga", "jpg", "jpeg", "png", "dds"};
-        const QStringList exts_q2 = {"wal", "swl", "png", "tga", "jpg", "jpeg", "dds"};
+        const QStringList exts_q2 = {"wal", "swl", "m8", "png", "tga", "jpg", "jpeg", "dds"};
+        const QStringList exts_h2 = {"m8", "wal", "swl", "png", "tga", "jpg", "jpeg", "dds"};
         const QStringList exts_q1 = {"mip", "lmp", "pcx", "png", "tga", "jpg", "jpeg"};
 
         QHash<QString, QString> by_lower;
@@ -10404,7 +10413,9 @@ void PakTab::update_preview() {
           }();
           const QStringList img_exts = is_q3
                                        ? exts_q3
-                                       : ((bsp_family == BspFamily::Quake2) ? exts_q2 : exts_q1);
+                                       : ((bsp_family == BspFamily::Heretic2)
+                                            ? exts_h2
+                                            : ((bsp_family == BspFamily::Quake2) ? exts_q2 : exts_q1));
           const bool has_ext = img_exts.contains(ext);
           const bool has_textures_prefix = lower.startsWith("textures/");
 
@@ -10638,12 +10649,14 @@ void PakTab::update_preview() {
             }
           }
 
-          return ImageDecodeResult{QImage(), "Unable to resolve SP2 frame image."};
+          return ImageDecodeResult{QImage(), "Unable to resolve sprite frame image."};
         };
 
-        const SpriteDecodeResult sprite = decode_sp2_sprite(bytes, frame_loader);
+        const SpriteDecodeResult sprite = (ext == "bk")
+                                            ? decode_bk_sprite(bytes, frame_loader)
+                                            : decode_sp2_sprite(bytes, frame_loader);
         if (!sprite.ok()) {
-          preview_->show_message(leaf, sprite.error.isEmpty() ? "Unable to decode SP2 sprite." : sprite.error);
+          preview_->show_message(leaf, sprite.error.isEmpty() ? "Unable to decode sprite." : sprite.error);
           return;
         }
         sprite_frames.reserve(sprite.frames.size());
@@ -10883,7 +10896,7 @@ void PakTab::update_preview() {
           return key.isEmpty() ? QString() : by_lower.value(key);
         };
 
-        const QStringList tex_exts = {"tga", "jpg", "jpeg", "png", "dds", "wal", "swl", "pcx", "lmp", "mip"};
+        const QStringList tex_exts = {"tga", "jpg", "jpeg", "png", "dds", "wal", "swl", "m8", "pcx", "lmp", "mip"};
         const QString shader_dir = source_path.isEmpty() ? QString() : QFileInfo(source_path).absolutePath();
         QStringList local_roots;
         if (!shader_dir.isEmpty()) {

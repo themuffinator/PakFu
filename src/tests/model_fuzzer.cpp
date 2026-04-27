@@ -13,6 +13,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
 	for (const QString& suffix : QStringList{
 	       "mdl",
 	       "md2",
+	       "fm",
 	       "md3",
 	       "mdc",
 	       "md4",

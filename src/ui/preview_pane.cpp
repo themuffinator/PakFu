@@ -780,10 +780,9 @@ void PreviewPane::build_ui() {
 	img_controls_layout->addWidget(image_mip_label_);
 
 	image_mip_combo_ = new QComboBox(img_controls);
-	image_mip_combo_->addItem("Mip 0 (Base)", 0);
-	image_mip_combo_->addItem("Mip 1", 1);
-	image_mip_combo_->addItem("Mip 2", 2);
-	image_mip_combo_->addItem("Mip 3", 3);
+	for (int level = 0; level < image_mip_count_; ++level) {
+		image_mip_combo_->addItem(level == 0 ? "Mip 0 (Base)" : QString("Mip %1").arg(level), level);
+	}
 	image_mip_combo_->setToolTip("Choose the mip level to display (0 = largest).");
 	img_controls_layout->addWidget(image_mip_combo_);
 	image_mip_label_->setVisible(false);
@@ -1550,7 +1549,7 @@ void PreviewPane::build_ui() {
 			if (!ok) {
 				return;
 			}
-			const int clamped = qBound(0, level, 3);
+			const int clamped = qBound(0, level, qMax(1, image_mip_count_) - 1);
 			if (image_mip_level_ == clamped) {
 				return;
 			}
@@ -3322,7 +3321,7 @@ void PreviewPane::set_image_texture_smoothing(bool enabled) {
 	}
 }
 
-void PreviewPane::set_image_mip_controls(bool visible, int mip_level) {
+void PreviewPane::set_image_mip_controls(bool visible, int mip_level, int mip_count) {
 	if (!image_mip_label_ || !image_mip_combo_) {
 		return;
 	}
@@ -3330,11 +3329,20 @@ void PreviewPane::set_image_mip_controls(bool visible, int mip_level) {
 	image_mip_combo_->setVisible(visible);
 	if (!visible) {
 		image_mip_level_ = 0;
+		image_mip_count_ = 4;
 		return;
 	}
-	const int clamped = qBound(0, mip_level, 3);
-	image_mip_level_ = clamped;
+	const int count = qBound(1, mip_count, 16);
 	const bool was_blocked = image_mip_combo_->blockSignals(true);
+	if (image_mip_count_ != count || image_mip_combo_->count() != count) {
+		image_mip_combo_->clear();
+		for (int level = 0; level < count; ++level) {
+			image_mip_combo_->addItem(level == 0 ? "Mip 0 (Base)" : QString("Mip %1").arg(level), level);
+		}
+	}
+	image_mip_count_ = count;
+	const int clamped = qBound(0, mip_level, image_mip_count_ - 1);
+	image_mip_level_ = clamped;
 	const int idx = image_mip_combo_->findData(clamped);
 	if (idx >= 0) {
 		image_mip_combo_->setCurrentIndex(idx);

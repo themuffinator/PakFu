@@ -10,6 +10,7 @@
 #include "formats/dds_image.h"
 #include "formats/ftx_image.h"
 #include "formats/lmp_image.h"
+#include "formats/m8_image.h"
 #include "formats/miptex_image.h"
 #include "formats/pcx_image.h"
 #include "formats/swl_image.h"
@@ -88,6 +89,14 @@ ImageDecodeResult decode_image_bytes(const QByteArray& bytes, const QString& fil
 		QImage image = decode_swl_image(bytes, options.mip_level, file_name, &err);
 		if (image.isNull()) {
 			return ImageDecodeResult{QImage(), err.isEmpty() ? "Unable to decode SWL texture." : err};
+		}
+		return ImageDecodeResult{std::move(image), QString()};
+	}
+	if (ext == "m8") {
+		QString err;
+		QImage image = decode_m8_image(bytes, options.mip_level, file_name, &err);
+		if (image.isNull()) {
+			return ImageDecodeResult{QImage(), err.isEmpty() ? "Unable to decode M8 texture." : err};
 		}
 		return ImageDecodeResult{std::move(image), QString()};
 	}
@@ -170,6 +179,14 @@ ImageDecodeResult decode_image_file(const QString& file_path, const ImageDecodeO
 		return decode_image_bytes(bytes, info.fileName(), options);
 	}
 	if (ext == "swl") {
+		QFile f(file_path);
+		if (!f.open(QIODevice::ReadOnly)) {
+			return ImageDecodeResult{QImage(), "Unable to open image file."};
+		}
+		const QByteArray bytes = f.readAll();
+		return decode_image_bytes(bytes, info.fileName(), options);
+	}
+	if (ext == "m8") {
 		QFile f(file_path);
 		if (!f.open(QIODevice::ReadOnly)) {
 			return ImageDecodeResult{QImage(), "Unable to open image file."};

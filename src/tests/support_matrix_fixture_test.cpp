@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cstring>
+#include <optional>
 
 #include <QByteArray>
 #include <QColor>
@@ -13,8 +14,12 @@
 #include <QTextStream>
 
 #include "archive/archive.h"
+#include "formats/bsp_preview.h"
+#include "formats/idtech_asset_loader.h"
 #include "formats/image_loader.h"
 #include "formats/image_writer.h"
+#include "formats/model.h"
+#include "formats/sprite_loader.h"
 #include "pak/pak_archive.h"
 #include "wad/wad_archive.h"
 #include "zip/zip_archive.h"
@@ -24,6 +29,7 @@ constexpr int kPakHeaderSize = 12;
 constexpr int kWadHeaderSize = 12;
 constexpr int kQ12WadDirEntrySize = 32;
 constexpr int kDoomWadDirEntrySize = 16;
+constexpr quint32 kHeretic2BspFlags = (1u << 24u) | (1u << 25u);
 
 void fail_message(const QString& message) {
 	QTextStream(stderr) << message << '\n';
@@ -40,6 +46,22 @@ void append_u32_le(QByteArray* bytes, quint32 value) {
 	bytes->append(static_cast<char>((value >> 8u) & 0xFFu));
 	bytes->append(static_cast<char>((value >> 16u) & 0xFFu));
 	bytes->append(static_cast<char>((value >> 24u) & 0xFFu));
+}
+
+void append_i32_le(QByteArray* bytes, qint32 value) {
+	append_u32_le(bytes, static_cast<quint32>(value));
+}
+
+void append_i16_le(QByteArray* bytes, qint16 value) {
+	const auto v = static_cast<quint16>(value);
+	bytes->append(static_cast<char>(v & 0xFFu));
+	bytes->append(static_cast<char>((v >> 8u) & 0xFFu));
+}
+
+void append_f32_le(QByteArray* bytes, float value) {
+	quint32 bits = 0;
+	std::memcpy(&bits, &value, sizeof(bits));
+	append_u32_le(bytes, bits);
 }
 
 void append_u32_be(QByteArray* bytes, quint32 value) {
@@ -330,6 +352,276 @@ QByteArray one_pixel_tga() {
 	return bytes;
 }
 
+QByteArray one_pixel_m8() {
+	constexpr int kM8MipLevels = 16;
+	constexpr int kM8HeaderSize = 1040;
+	constexpr int kNameOffset = 4;
+	constexpr int kWidthOffset = 36;
+	constexpr int kHeightOffset = 100;
+	constexpr int kMipOffset = 164;
+	constexpr int kPaletteOffset = 260;
+
+	QByteArray bytes(kM8HeaderSize, '\0');
+	write_u32_le(&bytes, 0, 2);
+	const QByteArray name = "fixture";
+	std::memcpy(bytes.data() + kNameOffset, name.constData(), static_cast<size_t>(name.size()));
+	for (int i = 0; i < kM8MipLevels; ++i) {
+		write_u32_le(&bytes, kWidthOffset + i * 4, 1);
+		write_u32_le(&bytes, kHeightOffset + i * 4, 1);
+		write_u32_le(&bytes, kMipOffset + i * 4, static_cast<quint32>(kM8HeaderSize + i));
+	}
+	for (int i = 0; i < 256; ++i) {
+		bytes[kPaletteOffset + i * 3 + 0] = static_cast<char>(i);
+		bytes[kPaletteOffset + i * 3 + 1] = static_cast<char>(i);
+		bytes[kPaletteOffset + i * 3 + 2] = static_cast<char>(i);
+	}
+	bytes[kPaletteOffset + 42 * 3 + 0] = 12;
+	bytes[kPaletteOffset + 42 * 3 + 1] = 34;
+	bytes[kPaletteOffset + 42 * 3 + 2] = 56;
+	for (int i = 0; i < kM8MipLevels; ++i) {
+		bytes.append(static_cast<char>(42));
+	}
+	return bytes;
+}
+
+QByteArray one_tile_bk(QString* error) {
+	QByteArray bytes;
+	append_u32_le(&bytes, 0x4B4F4F42u);  // BOOK
+	append_i32_le(&bytes, 2);
+	append_i32_le(&bytes, 1);
+	append_i32_le(&bytes, 2);
+	append_i32_le(&bytes, 2);
+	append_i32_le(&bytes, 1);
+	append_i32_le(&bytes, 0);
+	append_i32_le(&bytes, 1);
+	append_i32_le(&bytes, 1);
+	if (!append_fixed_name(&bytes, "tile.m8", 64, error)) {
+		return {};
+	}
+	return bytes;
+}
+
+QByteArray minimal_os_script() {
+	QByteArray bytes;
+	append_i32_le(&bytes, 3);
+	bytes.append(static_cast<char>(20));  // CODE_EXIT
+	return bytes;
+}
+
+bool append_fm_block(QByteArray* bytes, const QString& name, qint32 version, const QByteArray& payload, QString* error) {
+	if (!append_fixed_name(bytes, name, 32, error)) {
+		return false;
+	}
+	append_i32_le(bytes, version);
+	append_i32_le(bytes, static_cast<qint32>(payload.size()));
+	bytes->append(payload);
+	return true;
+}
+
+QByteArray one_triangle_fm(QString* error) {
+	constexpr qint32 skin_width = 64;
+	constexpr qint32 skin_height = 64;
+	constexpr qint32 vertex_count = 3;
+	constexpr qint32 st_count = 3;
+	constexpr qint32 triangle_count = 1;
+	constexpr qint32 frame_count = 1;
+	constexpr qint32 mesh_node_count = 1;
+	constexpr qint32 frame_size = 40 + vertex_count * 4;
+
+	QByteArray header;
+	append_i32_le(&header, skin_width);
+	append_i32_le(&header, skin_height);
+	append_i32_le(&header, frame_size);
+	append_i32_le(&header, 1);
+	append_i32_le(&header, vertex_count);
+	append_i32_le(&header, st_count);
+	append_i32_le(&header, triangle_count);
+	append_i32_le(&header, 0);
+	append_i32_le(&header, frame_count);
+	append_i32_le(&header, mesh_node_count);
+
+	QByteArray skins;
+	if (!append_fixed_name(&skins, "triangle.m8", 64, error)) {
+		return {};
+	}
+
+	QByteArray st;
+	append_i16_le(&st, 0);
+	append_i16_le(&st, 0);
+	append_i16_le(&st, skin_width);
+	append_i16_le(&st, 0);
+	append_i16_le(&st, 0);
+	append_i16_le(&st, skin_height);
+
+	QByteArray tris;
+	append_i16_le(&tris, 0);
+	append_i16_le(&tris, 1);
+	append_i16_le(&tris, 2);
+	append_i16_le(&tris, 0);
+	append_i16_le(&tris, 1);
+	append_i16_le(&tris, 2);
+
+	QByteArray frames;
+	append_f32_le(&frames, 1.0f);
+	append_f32_le(&frames, 1.0f);
+	append_f32_le(&frames, 1.0f);
+	append_f32_le(&frames, 0.0f);
+	append_f32_le(&frames, 0.0f);
+	append_f32_le(&frames, 0.0f);
+	if (!append_fixed_name(&frames, "frame0", 16, error)) {
+		return {};
+	}
+	frames.append('\0');
+	frames.append('\0');
+	frames.append('\0');
+	frames.append('\0');
+	frames.append(static_cast<char>(16));
+	frames.append('\0');
+	frames.append('\0');
+	frames.append('\0');
+	frames.append('\0');
+	frames.append(static_cast<char>(16));
+	frames.append('\0');
+	frames.append('\0');
+
+	QByteArray mesh_node(516, '\0');
+	mesh_node[0] = 0x01;
+
+	QByteArray fm;
+	if (!append_fm_block(&fm, "header", 2, header, error) ||
+	    !append_fm_block(&fm, "skin", 1, skins, error) ||
+	    !append_fm_block(&fm, "st coord", 1, st, error) ||
+	    !append_fm_block(&fm, "tris", 1, tris, error) ||
+	    !append_fm_block(&fm, "frames", 1, frames, error) ||
+	    !append_fm_block(&fm, "mesh nodes", 3, mesh_node, error)) {
+		return {};
+	}
+	return fm;
+}
+
+QByteArray one_triangle_heretic2_bsp(bool converted_qbsp, const QString& texture_name, QString* error) {
+	constexpr int kQ2LumpCount = 19;
+	constexpr int kQ2HeaderSize = 8 + kQ2LumpCount * 8;
+	constexpr int kQ2Vertices = 2;
+	constexpr int kQ2TexInfo = 5;
+	constexpr int kQ2Faces = 6;
+	constexpr int kQ2Edges = 11;
+	constexpr int kQ2Surfedges = 12;
+
+	const QByteArray tex_latin1 = texture_name.toLatin1();
+	if (QString::fromLatin1(tex_latin1) != texture_name) {
+		set_error(error, "Heretic II BSP fixture texture name must be Latin-1.");
+		return {};
+	}
+	const int texture_bytes = converted_qbsp ? 64 : 32;
+	if (tex_latin1.size() > texture_bytes) {
+		set_error(error, QString("Heretic II BSP fixture texture name is too long: %1").arg(texture_name));
+		return {};
+	}
+
+	QByteArray bytes(kQ2HeaderSize, '\0');
+	std::memcpy(bytes.data(), converted_qbsp ? "QBSP" : "IBSP", 4);
+	write_u32_le(&bytes, 4, 38);
+
+	auto add_lump = [&](int lump_index, const QByteArray& payload) {
+		while ((bytes.size() % 4) != 0) {
+			bytes.append('\0');
+		}
+		const int offset = bytes.size();
+		bytes.append(payload);
+		write_u32_le(&bytes, 8 + lump_index * 8 + 0, static_cast<quint32>(offset));
+		write_u32_le(&bytes, 8 + lump_index * 8 + 4, static_cast<quint32>(payload.size()));
+	};
+
+	QByteArray vertices;
+	append_f32_le(&vertices, 0.0f);
+	append_f32_le(&vertices, 0.0f);
+	append_f32_le(&vertices, 0.0f);
+	append_f32_le(&vertices, 64.0f);
+	append_f32_le(&vertices, 0.0f);
+	append_f32_le(&vertices, 0.0f);
+	append_f32_le(&vertices, 0.0f);
+	append_f32_le(&vertices, 64.0f);
+	append_f32_le(&vertices, 0.0f);
+	add_lump(kQ2Vertices, vertices);
+
+	QByteArray texinfo;
+	append_f32_le(&texinfo, 1.0f);
+	append_f32_le(&texinfo, 0.0f);
+	append_f32_le(&texinfo, 0.0f);
+	append_f32_le(&texinfo, 0.0f);
+	append_f32_le(&texinfo, 0.0f);
+	append_f32_le(&texinfo, 1.0f);
+	append_f32_le(&texinfo, 0.0f);
+	append_f32_le(&texinfo, 0.0f);
+	append_u32_le(&texinfo, kHeretic2BspFlags);
+	append_i32_le(&texinfo, 0);
+	if (converted_qbsp) {
+		if (!append_fixed_name(&texinfo, "stone", 16, error)) {
+			return {};
+		}
+		if (!append_fixed_name(&texinfo, texture_name, 64, error)) {
+			return {};
+		}
+	} else if (!append_fixed_name(&texinfo, texture_name, 32, error)) {
+		return {};
+	}
+	append_i32_le(&texinfo, -1);
+	add_lump(kQ2TexInfo, texinfo);
+
+	QByteArray edges;
+	if (converted_qbsp) {
+		append_u32_le(&edges, 0);
+		append_u32_le(&edges, 1);
+		append_u32_le(&edges, 1);
+		append_u32_le(&edges, 2);
+		append_u32_le(&edges, 2);
+		append_u32_le(&edges, 0);
+	} else {
+		append_i16_le(&edges, 0);
+		append_i16_le(&edges, 1);
+		append_i16_le(&edges, 1);
+		append_i16_le(&edges, 2);
+		append_i16_le(&edges, 2);
+		append_i16_le(&edges, 0);
+	}
+	add_lump(kQ2Edges, edges);
+
+	QByteArray surfedges;
+	append_i32_le(&surfedges, 0);
+	append_i32_le(&surfedges, 1);
+	append_i32_le(&surfedges, 2);
+	add_lump(kQ2Surfedges, surfedges);
+
+	QByteArray faces;
+	if (converted_qbsp) {
+		append_u32_le(&faces, 0);
+		append_u32_le(&faces, 0);
+		append_u32_le(&faces, 0);
+		append_u32_le(&faces, 3);
+		append_i32_le(&faces, 0);
+		faces.append('\0');
+		faces.append(static_cast<char>(0xFF));
+		faces.append(static_cast<char>(0xFF));
+		faces.append(static_cast<char>(0xFF));
+		append_i32_le(&faces, -1);
+	} else {
+		append_i16_le(&faces, 0);
+		append_i16_le(&faces, 0);
+		append_i32_le(&faces, 0);
+		append_i16_le(&faces, 3);
+		append_i16_le(&faces, 0);
+		faces.append('\0');
+		faces.append(static_cast<char>(0xFF));
+		faces.append(static_cast<char>(0xFF));
+		faces.append(static_cast<char>(0xFF));
+		append_i32_le(&faces, -1);
+	}
+	add_lump(kQ2Faces, faces);
+
+	return bytes;
+}
+
 bool test_directory_fixture(const QString& root, QString* error) {
 	const QString folder = QDir(root).filePath("folder");
 	const QString entry = "scripts/test.cfg";
@@ -492,6 +784,126 @@ bool test_image_fixture(const QString& root, QString* error) {
 		set_error(error, "PCX fixture decoded with unexpected dimensions.");
 		return false;
 	}
+
+	ImageDecodeOptions m8_options;
+	m8_options.mip_level = 15;
+	const ImageDecodeResult m8 = decode_image_bytes(one_pixel_m8(), "fixture.m8", m8_options);
+	if (!m8.ok()) {
+		set_error(error, m8.error.isEmpty() ? "M8 fixture decode failed." : m8.error);
+		return false;
+	}
+	if (m8.image.size() != QSize(1, 1) || m8.image.pixelColor(0, 0) != QColor(12, 34, 56, 255)) {
+		set_error(error, "M8 fixture decoded with unexpected dimensions or pixel color.");
+		return false;
+	}
+	return true;
+}
+
+bool test_heretic2_asset_fixture(const QString& root, QString* error) {
+	Q_UNUSED(root);
+
+	if (!is_supported_idtech_asset_file("book/page.bk") || !is_supported_idtech_asset_file("ds/intro.os")) {
+		set_error(error, "Heretic II BK/OS asset extensions are missing from the idTech asset registry.");
+		return false;
+	}
+
+	const QByteArray bk = one_tile_bk(error);
+	if (bk.isEmpty()) {
+		return false;
+	}
+
+	const BkTileLoader tile_loader = [](const QString& tile_name) -> ImageDecodeResult {
+		QString normalized = tile_name.toLower();
+		normalized.replace('\\', '/');
+		if (normalized == "book/tile.m8" || normalized == "tile.m8") {
+			return decode_image_bytes(one_pixel_m8(), "tile.m8");
+		}
+		return ImageDecodeResult{QImage(), QString("Unexpected BK tile request: %1").arg(tile_name)};
+	};
+
+	const SpriteDecodeResult sprite = decode_bk_sprite(bk, tile_loader);
+	if (!sprite.ok() || sprite.frames.size() != 1 || sprite.frames[0].image.size() != QSize(2, 2)) {
+		set_error(error, sprite.error.isEmpty() ? "BK fixture decode failed." : sprite.error);
+		return false;
+	}
+	if (sprite.frames[0].image.pixelColor(1, 0) != QColor(12, 34, 56, 255) ||
+	    sprite.frames[0].image.pixelColor(0, 0).alpha() != 0) {
+		set_error(error, "BK fixture composited with unexpected pixels.");
+		return false;
+	}
+
+	const IdTechAssetDecodeResult bk_meta = decode_idtech_asset_bytes(bk, "fixture.bk");
+	if (!bk_meta.ok() || !bk_meta.summary.contains("Heretic II BOOK sprite") || !bk_meta.summary.contains("0lvin/heretic2")) {
+		set_error(error, bk_meta.error.isEmpty() ? "BK metadata decode failed." : bk_meta.error);
+		return false;
+	}
+
+	const QByteArray os = minimal_os_script();
+	const IdTechAssetDecodeResult os_meta = decode_idtech_asset_bytes(os, "intro.os");
+	if (!os_meta.ok() || !os_meta.summary.contains("Version: 3") || !os_meta.summary.contains("CODE_EXIT") ||
+	    !os_meta.summary.contains("ds/<script>.os")) {
+		set_error(error, os_meta.error.isEmpty() ? "OS metadata decode failed." : os_meta.error);
+		return false;
+	}
+
+	return true;
+}
+
+bool test_model_fixture(const QString& root, QString* error) {
+	const QString fm_path = QDir(root).filePath("triangle.fm");
+	const QByteArray fm = one_triangle_fm(error);
+	if (fm.isEmpty()) {
+		return false;
+	}
+	if (!write_file(fm_path, fm, error)) {
+		return false;
+	}
+
+	const std::optional<LoadedModel> loaded = load_model_file(fm_path, error);
+	if (!loaded) {
+		return false;
+	}
+	if (loaded->format != "fm" || loaded->mesh.vertices.size() != 3 || loaded->mesh.indices.size() != 3 ||
+	    loaded->surfaces.size() != 1 || loaded->surfaces[0].shader != "triangle.m8") {
+		set_error(error, "FM fixture loaded with unexpected geometry or skin metadata.");
+		return false;
+	}
+	return true;
+}
+
+bool test_bsp_fixture(const QString& root, QString* error) {
+	struct Case {
+		bool converted_qbsp = false;
+		QString name;
+		QString texture;
+	};
+	const QVector<Case> cases = {
+		{false, "heretic2-native.bsp", "textures/h2/floor"},
+		{true, "heretic2-converted.bsp", "textures/heretic2/long_material_floor_0123456789"},
+	};
+
+	for (const Case& c : cases) {
+		const QByteArray bsp = one_triangle_heretic2_bsp(c.converted_qbsp, c.texture, error);
+		if (bsp.isEmpty()) {
+			return false;
+		}
+		const QString path = QDir(root).filePath(c.name);
+		if (!write_file(path, bsp, error)) {
+			return false;
+		}
+		if (bsp_family_bytes(bsp, error) != BspFamily::Heretic2) {
+			set_error(error, QString("Heretic II BSP fixture was not classified correctly: %1").arg(c.name));
+			return false;
+		}
+		BspMesh mesh;
+		if (!load_bsp_mesh_bytes(bsp, c.name, &mesh, error, false)) {
+			return false;
+		}
+		if (mesh.indices.size() != 3 || mesh.surfaces.size() != 1 || mesh.surfaces[0].texture != c.texture) {
+			set_error(error, QString("Heretic II BSP fixture loaded with unexpected geometry or texture: %1").arg(c.name));
+			return false;
+		}
+	}
 	return true;
 }
 }  // namespace
@@ -517,7 +929,10 @@ int main(int argc, char** argv) {
 	    !test_wad2_fixture(QDir(root).filePath("wad2"), &error) ||
 	    !test_wad3_fixture(QDir(root).filePath("wad3"), &error) ||
 	    !test_doom_wad_fixture(QDir(root).filePath("doom-wad"), &error) ||
-	    !test_image_fixture(QDir(root).filePath("images"), &error)) {
+	    !test_image_fixture(QDir(root).filePath("images"), &error) ||
+	    !test_heretic2_asset_fixture(QDir(root).filePath("heretic2-assets"), &error) ||
+	    !test_model_fixture(QDir(root).filePath("models"), &error) ||
+	    !test_bsp_fixture(QDir(root).filePath("bsps"), &error)) {
 		fail_message(error.isEmpty() ? "Support matrix fixture test failed." : error);
 		return 1;
 	}

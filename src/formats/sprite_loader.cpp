@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstring>
 
+#include <QPainter>
+
 namespace {
 [[nodiscard]] bool read_u32_le(const QByteArray& bytes, int offset, quint32* out) {
 	if (!out || offset < 0 || offset + 4 > bytes.size()) {
@@ -487,5 +489,129 @@ SpriteDecodeResult decode_sp2_sprite(const QByteArray& bytes, const Sp2FrameLoad
 		              ? QString("Unable to resolve SP2 frame images (%1 frames missing).").arg(missing)
 		              : "SP2 has no decodable frames.";
 	}
+	return out;
+}
+
+SpriteDecodeResult decode_bk_sprite(const QByteArray& bytes, const BkTileLoader& tile_loader) {
+	constexpr quint32 kBkIdent = 0x4B4F4F42u;  // "BOOK"
+	constexpr qint32 kBkVersion = 2;
+	constexpr int kBkHeaderSize = 20;
+	constexpr int kBkFrameSize = 80;
+	constexpr int kBkMaxFrames = 8192;
+	constexpr int kBkMaxDimension = 16384;
+
+	SpriteDecodeResult out;
+	out.format = "BK";
+
+	if (bytes.size() < kBkHeaderSize) {
+		out.error = "BK file is too small.";
+		return out;
+	}
+	if (!tile_loader) {
+		out.error = "No BK tile loader is available.";
+		return out;
+	}
+
+	quint32 ident = 0;
+	qint32 version = 0;
+	qint32 num_frames = 0;
+	qint32 width = 0;
+	qint32 height = 0;
+	if (!read_u32_le(bytes, 0, &ident) || !read_i32_le(bytes, 4, &version) || !read_i32_le(bytes, 8, &num_frames) ||
+	    !read_i32_le(bytes, 12, &width) || !read_i32_le(bytes, 16, &height)) {
+		out.error = "Unable to parse BK header.";
+		return out;
+	}
+	if (ident != kBkIdent) {
+		out.error = "Invalid BK header magic.";
+		return out;
+	}
+	if (version != kBkVersion) {
+		out.error = QString("Unsupported BK version: %1.").arg(version);
+		return out;
+	}
+	if (num_frames <= 0 || num_frames > kBkMaxFrames) {
+		out.error = QString("Invalid BK tile count: %1.").arg(num_frames);
+		return out;
+	}
+	if (width <= 0 || height <= 0 || width > kBkMaxDimension || height > kBkMaxDimension) {
+		out.error = QString("Invalid BK canvas dimensions: %1x%2.").arg(width).arg(height);
+		return out;
+	}
+
+	const qint64 required = static_cast<qint64>(kBkHeaderSize) + static_cast<qint64>(num_frames) * kBkFrameSize;
+	if (required > bytes.size()) {
+		out.error = QString("BK tile table is truncated (%1 bytes required, %2 available).").arg(required).arg(bytes.size());
+		return out;
+	}
+
+	QImage canvas(width, height, QImage::Format_RGBA8888);
+	if (canvas.isNull()) {
+		out.error = "Unable to allocate BK canvas.";
+		return out;
+	}
+	canvas.fill(Qt::transparent);
+
+	QPainter painter(&canvas);
+	painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+	painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+
+	int drawn = 0;
+	int missing = 0;
+	for (int i = 0; i < num_frames; ++i) {
+		const int off = kBkHeaderSize + i * kBkFrameSize;
+		qint32 x = 0;
+		qint32 y = 0;
+		qint32 w = 0;
+		qint32 h = 0;
+		if (!read_i32_le(bytes, off + 0, &x) || !read_i32_le(bytes, off + 4, &y) || !read_i32_le(bytes, off + 8, &w) ||
+		    !read_i32_le(bytes, off + 12, &h)) {
+			out.error = "Unable to parse BK tile table.";
+			out.frames.clear();
+			return out;
+		}
+		if (w <= 0 || h <= 0 || w > kBkMaxDimension || h > kBkMaxDimension) {
+			++missing;
+			continue;
+		}
+
+		const QString tile_name = fixed_c_string(bytes.constData() + off + 16, 64);
+		if (tile_name.isEmpty()) {
+			++missing;
+			continue;
+		}
+
+		// Heretic II composes BOOK sprites by loading each tile from "book/<name>".
+		// Format behavior cross-checked against https://github.com/0lvin/heretic2.
+		ImageDecodeResult decoded = tile_loader(QString("book/%1").arg(tile_name));
+		if (!decoded.ok() || decoded.image.isNull()) {
+			decoded = tile_loader(tile_name);
+		}
+		if (!decoded.ok() || decoded.image.isNull()) {
+			++missing;
+			continue;
+		}
+
+		painter.drawImage(QRect(x, y, w, h), decoded.image);
+		++drawn;
+	}
+	painter.end();
+
+	if (drawn <= 0) {
+		out.error = missing > 0 ? QString("Unable to resolve BK tile images (%1 tiles missing).").arg(missing)
+		                        : "BK has no decodable tiles.";
+		return out;
+	}
+
+	out.nominal_width = width;
+	out.nominal_height = height;
+
+	SpriteFrame frame;
+	frame.image = std::move(canvas);
+	frame.duration_ms = 100;
+	frame.name = "composite";
+	frame.origin_x = width / 2;
+	frame.origin_y = height / 2;
+	out.frames.push_back(std::move(frame));
 	return out;
 }

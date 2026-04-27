@@ -195,7 +195,7 @@ bool looks_like_text(const QByteArray& bytes) {
 
 bool is_decodable_image_ext(const QString& ext) {
   static const QSet<QString> kImageExts = {
-    "dds", "ftx", "jpg", "jpeg", "lmp", "mip", "pcx", "png", "swl", "tga", "wal",
+    "dds", "ftx", "jpg", "jpeg", "lmp", "m8", "mip", "pcx", "png", "swl", "tga", "wal",
   };
   return kImageExts.contains(ext.toLower());
 }

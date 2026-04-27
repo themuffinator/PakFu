@@ -27,6 +27,11 @@ struct BspHeader {
   QVector<BspLump> lumps;
   BspFamily family = BspFamily::Unknown;
   bool q1_bsp2 = false;
+  int q2_texinfo_stride = 76;
+  int q2_texture_name_offset = 40;
+  int q2_texture_name_length = 32;
+  int q2_face_stride = 20;
+  int q2_edge_stride = 4;
   int q3_textures_lump = -1;
   int q3_models_lump = -1;
   int q3_vertices_lump = -1;
@@ -93,6 +98,20 @@ constexpr int kQ3LumpCount = 17;
 constexpr int kQ3ExtendedLumpCount = 18;
 constexpr int kFakk2LumpCount = 20;
 constexpr int kEf2LumpCount = 30;
+constexpr int kQ2TexInfoStride = 76;
+constexpr int kQ2ExtendedTexInfoStride = 124;
+constexpr int kQ2TextureNameOffset = 40;
+constexpr int kQ2TextureNameLength = 32;
+constexpr int kQ2ExtendedTextureNameOffset = 56;
+constexpr int kQ2ExtendedTextureNameLength = 64;
+constexpr int kQ2FaceStride = 20;
+constexpr int kQ2ExtendedFaceStride = 28;
+constexpr int kQ2EdgeStride = 4;
+constexpr int kQ2ExtendedEdgeStride = 8;
+// Heretic II BSP flag/texture-name behavior is credited to
+// https://github.com/0lvin/heretic2.
+constexpr quint32 kHeretic2Flags = (1u << 24u) | (1u << 25u);
+constexpr quint32 kHeretic2AllFlags = 0x030037FFu;
 
 constexpr bool fakk_uses_checksum_header(int version) {
   return version == kAliceBspVersion;
@@ -166,6 +185,11 @@ bool classify_format(const QString& magic, int version, int file_size, BspHeader
   out->family = BspFamily::Unknown;
   out->lump_count = 0;
   out->q1_bsp2 = false;
+  out->q2_texinfo_stride = kQ2TexInfoStride;
+  out->q2_texture_name_offset = kQ2TextureNameOffset;
+  out->q2_texture_name_length = kQ2TextureNameLength;
+  out->q2_face_stride = kQ2FaceStride;
+  out->q2_edge_stride = kQ2EdgeStride;
   out->q3_textures_lump = -1;
   out->q3_models_lump = -1;
   out->q3_vertices_lump = -1;
@@ -235,6 +259,8 @@ bool classify_format(const QString& magic, int version, int file_size, BspHeader
   if (magic == "QBSP" && version == kQ2Version) {
     out->family = BspFamily::Quake2;
     out->lump_count = kQ2LumpCount;
+    out->q2_face_stride = kQ2ExtendedFaceStride;
+    out->q2_edge_stride = kQ2ExtendedEdgeStride;
     return true;
   }
 
@@ -350,6 +376,55 @@ bool lump_in_bounds(const QByteArray& data, const BspLump& lump) {
   }
   const qint64 end = static_cast<qint64>(lump.offset) + static_cast<qint64>(lump.length);
   return end <= data.size();
+}
+
+void apply_q2_layout_detection(const QByteArray& data, BspHeader* header) {
+  if (!header || header->family != BspFamily::Quake2 || header->lumps.size() <= Q2_TEXINFO) {
+    return;
+  }
+
+  header->q2_texinfo_stride = kQ2TexInfoStride;
+  header->q2_texture_name_offset = kQ2TextureNameOffset;
+  header->q2_texture_name_length = kQ2TextureNameLength;
+  header->q2_face_stride = kQ2FaceStride;
+  header->q2_edge_stride = kQ2EdgeStride;
+
+  if (header->magic == "QBSP") {
+    header->q2_face_stride = kQ2ExtendedFaceStride;
+    header->q2_edge_stride = kQ2ExtendedEdgeStride;
+  }
+
+  const BspLump& texinfo = header->lumps[Q2_TEXINFO];
+  if (!lump_in_bounds(data, texinfo) || texinfo.length <= 0) {
+    return;
+  }
+
+  if ((texinfo.length % kQ2TexInfoStride) != 0 &&
+      (texinfo.length % kQ2ExtendedTexInfoStride) == 0) {
+    header->q2_texinfo_stride = kQ2ExtendedTexInfoStride;
+    header->q2_texture_name_offset = kQ2ExtendedTextureNameOffset;
+    header->q2_texture_name_length = kQ2ExtendedTextureNameLength;
+  }
+
+  if (texinfo.length < header->q2_texinfo_stride || (texinfo.length % header->q2_texinfo_stride) != 0) {
+    return;
+  }
+
+  quint32 seen_flags = 0;
+  const int count = texinfo.length / header->q2_texinfo_stride;
+  for (int i = 0; i < count; ++i) {
+    bool ok = false;
+    const quint32 flags = read_u32_le(data, texinfo.offset + i * header->q2_texinfo_stride + 32, &ok);
+    if (!ok) {
+      return;
+    }
+    seen_flags |= flags;
+  }
+
+  if ((seen_flags & kHeretic2Flags) == kHeretic2Flags &&
+      (seen_flags & ~kHeretic2AllFlags) == 0) {
+    header->family = BspFamily::Heretic2;
+  }
 }
 
 QHash<QByteArray, BspLump> parse_bspx_lumps(const QByteArray& data, const BspHeader& header) {
@@ -514,6 +589,7 @@ bool parse_header(const QByteArray& data, BspHeader* out, QString* error) {
     if (classify_format(modern.magic, modern.version, data.size(), &modern, &modern_err)) {
       const int lumps_offset = (modern.magic == "FAKK" && fakk_uses_checksum_header(modern.version)) ? 12 : 8;
       if (parse_lumps(&modern, lumps_offset, &modern_err)) {
+        apply_q2_layout_detection(data, &modern);
         *out = std::move(modern);
         return true;
       }
@@ -558,7 +634,7 @@ struct Q2TexInfo {
   float vecs[2][4];
   int flags = 0;
   int value = 0;
-  char texture[32];
+  char texture[65];
   int nexttexinfo = -1;
 };
 
@@ -922,9 +998,54 @@ QVector<Q1TexInfo> parse_q1_texinfo(const QByteArray& data, const BspLump& lump)
   return out;
 }
 
-QVector<Q2TexInfo> parse_q2_texinfo(const QByteArray& data, const BspLump& lump) {
+QVector<Edge32> parse_q2_edges(const QByteArray& data, const BspLump& lump, int stride) {
+  QVector<Edge32> out;
+  if (stride != kQ2EdgeStride && stride != kQ2ExtendedEdgeStride) {
+    return out;
+  }
+  if (lump.length < stride) {
+    return out;
+  }
+  const int count = lump.length / stride;
+  out.reserve(count);
+  for (int i = 0; i < count; ++i) {
+    const int o = lump.offset + i * stride;
+    bool ok = false;
+    Edge32 e;
+    if (stride == kQ2ExtendedEdgeStride) {
+      const quint32 v0_u = read_u32_le(data, o + 0, &ok);
+      if (!ok) {
+        break;
+      }
+      const quint32 v1_u = read_u32_le(data, o + 4, &ok);
+      if (!ok) {
+        break;
+      }
+      e.v0 = static_cast<int>(v0_u);
+      e.v1 = static_cast<int>(v1_u);
+    } else {
+      const quint32 v01 = read_u32_le(data, o, &ok);
+      if (!ok) {
+        break;
+      }
+      e.v0 = static_cast<int>(v01 & 0xFFFFu);
+      e.v1 = static_cast<int>((v01 >> 16u) & 0xFFFFu);
+    }
+    out.push_back(e);
+  }
+  return out;
+}
+
+QVector<Q2TexInfo> parse_q2_texinfo(const QByteArray& data,
+                                    const BspLump& lump,
+                                    int stride,
+                                    int texture_offset,
+                                    int texture_length) {
   QVector<Q2TexInfo> out;
-  const int stride = 76;
+  if (stride <= 0 || texture_offset < 0 || texture_length <= 0 ||
+      texture_offset + texture_length + 4 > stride) {
+    return out;
+  }
   if (lump.length < stride) {
     return out;
   }
@@ -950,10 +1071,11 @@ QVector<Q2TexInfo> parse_q2_texinfo(const QByteArray& data, const BspLump& lump)
     if (!ok) {
       return out;
     }
-    if (!read_bytes(data, o + 40, tx.texture, 32)) {
+    const int texture_bytes = std::min(texture_length, static_cast<int>(sizeof(tx.texture)) - 1);
+    if (!read_bytes(data, o + texture_offset, tx.texture, texture_bytes)) {
       return out;
     }
-    tx.nexttexinfo = read_i32_le(data, o + 72, &ok);
+    tx.nexttexinfo = read_i32_le(data, o + texture_offset + texture_length, &ok);
     if (!ok) {
       return out;
     }
@@ -1050,9 +1172,11 @@ QVector<Q1Face> parse_q1_faces_bsp2(const QByteArray& data, const BspLump& lump)
   return out;
 }
 
-QVector<Q2Face> parse_q2_faces(const QByteArray& data, const BspLump& lump) {
+QVector<Q2Face> parse_q2_faces(const QByteArray& data, const BspLump& lump, int stride) {
   QVector<Q2Face> out;
-  const int stride = 20;
+  if (stride != kQ2FaceStride && stride != kQ2ExtendedFaceStride) {
+    return out;
+  }
   if (lump.length < stride) {
     return out;
   }
@@ -1061,33 +1185,63 @@ QVector<Q2Face> parse_q2_faces(const QByteArray& data, const BspLump& lump) {
   for (int i = 0; i < count; ++i) {
     const int o = lump.offset + i * stride;
     bool ok = false;
-Q2Face f{};
-    f.plane = read_i16_le(data, o + 0, &ok);
-    if (!ok) {
-      return out;
-    }
-    f.side = read_i16_le(data, o + 2, &ok);
-    if (!ok) {
-      return out;
-    }
-    f.firstedge = read_i32_le(data, o + 4, &ok);
-    if (!ok) {
-      return out;
-    }
-    f.numedges = read_i16_le(data, o + 8, &ok);
-    if (!ok) {
-      return out;
-    }
-    f.texinfo = read_i16_le(data, o + 10, &ok);
-    if (!ok) {
-      return out;
-    }
-    if (!read_bytes(data, o + 12, f.styles, 4)) {
-      return out;
-    }
-    f.lightofs = read_i32_le(data, o + 16, &ok);
-    if (!ok) {
-      return out;
+    Q2Face f{};
+    if (stride == kQ2ExtendedFaceStride) {
+      f.plane = static_cast<int>(read_u32_le(data, o + 0, &ok));
+      if (!ok) {
+        return out;
+      }
+      f.side = static_cast<int>(read_u32_le(data, o + 4, &ok));
+      if (!ok) {
+        return out;
+      }
+      f.firstedge = static_cast<int>(read_u32_le(data, o + 8, &ok));
+      if (!ok) {
+        return out;
+      }
+      f.numedges = static_cast<int>(read_u32_le(data, o + 12, &ok));
+      if (!ok) {
+        return out;
+      }
+      f.texinfo = read_i32_le(data, o + 16, &ok);
+      if (!ok) {
+        return out;
+      }
+      if (!read_bytes(data, o + 20, f.styles, 4)) {
+        return out;
+      }
+      f.lightofs = read_i32_le(data, o + 24, &ok);
+      if (!ok) {
+        return out;
+      }
+    } else {
+      f.plane = read_i16_le(data, o + 0, &ok);
+      if (!ok) {
+        return out;
+      }
+      f.side = read_i16_le(data, o + 2, &ok);
+      if (!ok) {
+        return out;
+      }
+      f.firstedge = read_i32_le(data, o + 4, &ok);
+      if (!ok) {
+        return out;
+      }
+      f.numedges = read_i16_le(data, o + 8, &ok);
+      if (!ok) {
+        return out;
+      }
+      f.texinfo = read_i16_le(data, o + 10, &ok);
+      if (!ok) {
+        return out;
+      }
+      if (!read_bytes(data, o + 12, f.styles, 4)) {
+        return out;
+      }
+      f.lightofs = read_i32_le(data, o + 16, &ok);
+      if (!ok) {
+        return out;
+      }
     }
     out.push_back(f);
   }
@@ -2282,10 +2436,14 @@ QVector<Tri> build_q2_mesh(const QByteArray& data,
   }
 
   const QVector<Vec3> verts = parse_q1_vertices(data, header.lumps[Q2_VERTICES]);
-  const QVector<Edge16> edges = parse_q1_edges(data, header.lumps[Q2_EDGES]);
+  const QVector<Edge32> edges = parse_q2_edges(data, header.lumps[Q2_EDGES], header.q2_edge_stride);
   const QVector<int> surfedges = parse_surfedges(data, header.lumps[Q2_SURFEDGES]);
-  const QVector<Q2TexInfo> texinfo = parse_q2_texinfo(data, header.lumps[Q2_TEXINFO]);
-  const QVector<Q2Face> faces = parse_q2_faces(data, header.lumps[Q2_FACES]);
+  const QVector<Q2TexInfo> texinfo = parse_q2_texinfo(data,
+                                                      header.lumps[Q2_TEXINFO],
+                                                      header.q2_texinfo_stride,
+                                                      header.q2_texture_name_offset,
+                                                      header.q2_texture_name_length);
+  const QVector<Q2Face> faces = parse_q2_faces(data, header.lumps[Q2_FACES], header.q2_face_stride);
   const QVector<ModelFaceRange> models = parse_q2_model_face_ranges(data, header.lumps[Q2_MODELS]);
   const QVector<bool> inline_face_mask = build_inline_face_mask(faces.size(), models);
   const BspLump base_light_lump = lump_in_bounds(data, header.lumps[Q2_LIGHTING])
@@ -2348,7 +2506,7 @@ QVector<Tri> build_q2_mesh(const QByteArray& data,
       if (edge_index < 0 || edge_index >= edges.size()) {
         continue;
       }
-      const Edge16& e = edges[edge_index];
+      const Edge32& e = edges[edge_index];
       const int v_index = (se >= 0) ? e.v0 : e.v1;
       if (v_index < 0 || v_index >= verts.size()) {
         continue;
@@ -2766,7 +2924,7 @@ BspPreviewResult render_bsp_preview_bytes(const QByteArray& bytes,
   const bool lightmapped = (style == BspPreviewStyle::Lightmapped);
   if (header.family == BspFamily::Quake1) {
     tris = build_q1_mesh(bytes, header, lightmapped, &out.error);
-  } else if (header.family == BspFamily::Quake2) {
+  } else if (header.family == BspFamily::Quake2 || header.family == BspFamily::Heretic2) {
     tris = build_q2_mesh(bytes, header, lightmapped, &out.error);
   } else if (header.family == BspFamily::Quake3) {
     tris = build_q3_mesh(bytes, header, lightmapped, &out.error);
@@ -2848,7 +3006,7 @@ bool load_bsp_mesh_bytes(const QByteArray& bytes,
   QVector<Tri> tris;
   if (header.family == BspFamily::Quake1) {
     tris = build_q1_mesh(bytes, header, use_lightmap, error);
-  } else if (header.family == BspFamily::Quake2) {
+  } else if (header.family == BspFamily::Quake2 || header.family == BspFamily::Heretic2) {
     tris = build_q2_mesh(bytes, header, use_lightmap, error, &out->lightmaps);
   } else if (header.family == BspFamily::Quake3) {
     tris = build_q3_mesh(bytes, header, use_lightmap, error, &out->lightmaps);

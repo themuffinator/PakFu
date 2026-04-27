@@ -77,7 +77,7 @@ aligned without carrying build instructions or repository maintenance notes.
 - Batch conversion tool for selected assets with category tabs (images, video, archives, models, sound, maps, text, other).
 - Manifest-driven extension commands for archive-aware external tools in the GUI and CLI.
 - A reusable `pakfu_core` static library for non-UI archive, format, search, and extension code.
-- Image batch conversion supports output to all supported image formats (`png`, `jpg`, `jpeg`, `bmp`, `gif`, `tga`, `tif`, `tiff`, `pcx`, `wal`, `swl`, `mip`, `lmp`, `ftx`, `dds`) with format-aware settings (quality, compression, palette source, dithering, alpha threshold, embedded palette where applicable).
+- Image batch conversion supports input from all supported image preview formats, including Heretic II `m8` textures, and output to all supported image-writer formats (`png`, `jpg`, `jpeg`, `bmp`, `gif`, `tga`, `tif`, `tiff`, `pcx`, `wal`, `swl`, `mip`, `lmp`, `ftx`, `dds`) with format-aware settings (quality, compression, palette source, dithering, alpha threshold, embedded palette where applicable).
 - Modern platform-native open/save/folder dialogs with standard breadcrumbs/bookmarks and robust cross-platform behavior.
 - 3D preview renderer selection with Vulkan/OpenGL behavior and fallback.
 - Fly camera controls for 3D preview (`Right Mouse + WASD`, `Q/E`, mouse wheel speed, `Shift` faster, `Ctrl` slower, `F` frame, `R`/`Home` reset).
@@ -107,7 +107,7 @@ quick reference.
 ### Preview And Inspector Support
 - Images:
   - Core: `pcx`, `wal`, `png`, `tga`, `jpg`
-  - Also supported: `jpeg`, `bmp`, `gif`, `tif`, `tiff`, `swl`, `mip`, `lmp`, `dds`, `ftx`
+  - Also supported: `jpeg`, `bmp`, `gif`, `tif`, `tiff`, `swl`, `m8`, `mip`, `lmp`, `dds`, `ftx`
 - Audio:
   - Core: `wav`, `ogg`
   - Also supported: `mp3`, `idwav` (Doom 3 BFG; converted to WAV for playback when payload codec is supported)
@@ -115,9 +115,9 @@ quick reference.
   - Core: `cin`, `roq`
   - Also supported: `bik`, `ogv`, `mp4`, `mkv`, `avi`, `webm`
 - Models:
-  - `mdl`, `md2`, `md3`, `mdc`, `md4`, `mdr`, `skb`, `skd`, `mdm`, `glm`, `iqm`, `md5mesh`, `tan`, `obj`, `lwo`
+  - `mdl`, `md2`, `fm`, `md3`, `mdc`, `md4`, `mdr`, `skb`, `skd`, `mdm`, `glm`, `iqm`, `md5mesh`, `tan`, `obj`, `lwo`
 - idTech inspectors and metadata views:
-  - `spr`, `sp2`/`spr2`, `dm2`, `aas`, `qvm`, `progs.dat`, `tag`, `mdx`, `mds`, `skc`, `ska`, `ttf`, `otf`
+  - `spr`, `sp2`/`spr2`, `bk`, `os`, `dm2`, `aas`, `qvm`, `progs.dat`, `tag`, `mdx`, `mds`, `skc`, `ska`, `ttf`, `otf`
 - Text and script assets:
   - Core: `cfg` and similar plain-text config/script files
   - Includes many common idTech-family script formats (`shader`, `menu`, `def`, `mtr`, `map`, `ent`, `qc`, and others)
@@ -125,8 +125,9 @@ quick reference.
 Notes:
 - Multimedia playback support depends on the installed Qt Multimedia backend and codecs.
 - `cin` and `roq` are also handled by built-in cinematic decoders.
-- Some indexed formats (`wal`, `mip`, selected `lmp` cases) use game palettes when required.
-- BSP inspector/preview supports Quake 3-derived families including FAKK variants used by Heavy Metal: F.A.K.K.2 and American McGee's Alice (`FAKK` v42 checksum-header BSPs).
+- Some indexed formats (`wal`, `mip`, selected `lmp` cases) use game palettes when required; Heretic II `m8` textures carry an embedded palette.
+- Heretic II `bk` book sprites composite referenced `.m8` tiles, while `os` dynamic scripts are binary bytecode and open as metadata/opcode previews.
+- BSP inspector/preview supports Heretic II `IBSP`/converted `QBSP` maps with `.m8` texture resolution, plus Quake 3-derived families including FAKK variants used by Heavy Metal: F.A.K.K.2 and American McGee's Alice (`FAKK` v42 checksum-header BSPs).
 
 ## Build and Run
 

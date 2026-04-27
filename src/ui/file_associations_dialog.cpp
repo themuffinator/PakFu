@@ -32,7 +32,7 @@ FileAssociationsDialog::FileAssociationsDialog(QWidget* parent) : QDialog(parent
 	layout->setContentsMargins(18, 16, 18, 16);
 	layout->setSpacing(10);
 
-	auto* title = new QLabel("Manage archive, image, video, audio, and model Open With registrations by format.", this);
+	auto* title = new QLabel("Manage archive, image, video, audio, model, and asset Open With registrations by format.", this);
 	QFont title_font = title->font();
 	title_font.setBold(true);
 	title_font.setPointSize(title_font.pointSize() + 1);
@@ -40,7 +40,7 @@ FileAssociationsDialog::FileAssociationsDialog(QWidget* parent) : QDialog(parent
 	layout->addWidget(title);
 
 	auto* help = new QLabel(
-		"Use tabs to configure archives, images, videos, audio, and models independently. On Windows, this registers PakFu as an Open With option; defaults remain user-selected in Settings -> Default apps.",
+		"Use tabs to configure archives, images, videos, audio, models, and game assets independently. On Windows, this registers PakFu as an Open With option; defaults remain user-selected in Settings -> Default apps.",
 		this);
 	help->setWordWrap(true);
 	layout->addWidget(help);
@@ -114,6 +114,10 @@ FileAssociationsDialog::FileAssociationsDialog(QWidget* parent) : QDialog(parent
 	const int models_tab_index = tabs_->addTab(models_tab, "Models");
 	populate_tab(models_tab, models_tab_index, FileAssociations::managed_model_extensions());
 
+	auto* assets_tab = new QWidget(tabs_);
+	const int assets_tab_index = tabs_->addTab(assets_tab, "Assets");
+	populate_tab(assets_tab, assets_tab_index, FileAssociations::managed_asset_extensions());
+
 	summary_label_ = new QLabel(this);
 	summary_label_->setWordWrap(true);
 	layout->addWidget(summary_label_);
@@ -183,11 +187,13 @@ void FileAssociationsDialog::refresh_status() {
 	int video_registered = 0;
 	int audio_registered = 0;
 	int model_registered = 0;
+	int asset_registered = 0;
 	const int archive_total = FileAssociations::managed_archive_extensions().size();
 	const int image_total = FileAssociations::managed_image_extensions().size();
 	const int video_total = FileAssociations::managed_video_extensions().size();
 	const int audio_total = FileAssociations::managed_audio_extensions().size();
 	const int model_total = FileAssociations::managed_model_extensions().size();
+	const int asset_total = FileAssociations::managed_asset_extensions().size();
 
 	for (const Row& row : rows_) {
 		QString details;
@@ -204,6 +210,8 @@ void FileAssociationsDialog::refresh_status() {
 				++audio_registered;
 			} else if (FileAssociations::is_model_extension(row.extension)) {
 				++model_registered;
+			} else if (FileAssociations::is_asset_extension(row.extension)) {
+				++asset_registered;
 			}
 		}
 		if (row.enabled) {
@@ -219,7 +227,7 @@ void FileAssociationsDialog::refresh_status() {
 
 	if (summary_label_) {
 #if defined(Q_OS_WIN)
-		summary_label_->setText(QString("Open-with ready for %1 of %2 managed formats. Archives: %3/%4. Images: %5/%6. Videos: %7/%8. Audio: %9/%10. Models: %11/%12.")
+		summary_label_->setText(QString("Open-with ready for %1 of %2 managed formats. Archives: %3/%4. Images: %5/%6. Videos: %7/%8. Audio: %9/%10. Models: %11/%12. Assets: %13/%14.")
 		                        .arg(registered_count)
 		                        .arg(rows_.size())
 		                        .arg(archive_registered)
@@ -231,7 +239,9 @@ void FileAssociationsDialog::refresh_status() {
 		                        .arg(audio_registered)
 		                        .arg(audio_total)
 		                        .arg(model_registered)
-		                        .arg(model_total));
+		                        .arg(model_total)
+		                        .arg(asset_registered)
+		                        .arg(asset_total));
 #else
 		summary_label_->setText("Associations are installer-managed on this platform.");
 #endif

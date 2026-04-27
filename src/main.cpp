@@ -37,6 +37,7 @@
 #endif
 
 #include "cli/cli.h"
+#include "formats/idtech_asset_loader.h"
 #include "game/game_set.h"
 #include "pakfu_config.h"
 #include "platform/crash_handler.h"
@@ -156,7 +157,7 @@ bool is_archive_path(const QString& path) {
 bool is_openable_path(const QString& path) {
   return is_archive_path(path) || ImageViewerWindow::is_supported_image_path(path) ||
          VideoViewerWindow::is_supported_video_path(path) || AudioViewerWindow::is_supported_audio_path(path) ||
-         ModelViewerWindow::is_supported_model_path(path);
+         ModelViewerWindow::is_supported_model_path(path) || is_supported_idtech_asset_file(QFileInfo(path).fileName());
 }
 
 QStringList find_initial_open_paths(int argc, char** argv) {

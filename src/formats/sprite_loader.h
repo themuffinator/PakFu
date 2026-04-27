@@ -28,6 +28,8 @@ struct SpriteDecodeResult {
 };
 
 using Sp2FrameLoader = std::function<ImageDecodeResult(const QString& frame_name)>;
+using BkTileLoader = std::function<ImageDecodeResult(const QString& tile_name)>;
 
 [[nodiscard]] SpriteDecodeResult decode_spr_sprite(const QByteArray& bytes, const QVector<QRgb>* palette);
 [[nodiscard]] SpriteDecodeResult decode_sp2_sprite(const QByteArray& bytes, const Sp2FrameLoader& frame_loader);
+[[nodiscard]] SpriteDecodeResult decode_bk_sprite(const QByteArray& bytes, const BkTileLoader& tile_loader);

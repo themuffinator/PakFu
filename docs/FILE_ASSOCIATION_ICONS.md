@@ -1,6 +1,6 @@
 # File Association Icons
 
-PakFu uses a per-extension icon set for managed archive, image, video, audio, and model associations so each file type is visually distinct and readable in file managers.
+PakFu uses a per-extension icon set for managed archive, image, video, audio, model, and asset associations so each file type is visually distinct and readable in file managers.
 
 ## Managed extensions
 
@@ -19,6 +19,7 @@ PakFu uses a per-extension icon set for managed archive, image, video, audio, an
 | Image | `.pcx` | `#546E7A` |
 | Image | `.wal` | `#1565C0` |
 | Image | `.swl` | `#2E7D32` |
+| Image | `.m8` | `#7B1FA2` |
 | Image | `.mip` | `#6A1B9A` |
 | Image | `.lmp` | `#5D4037` |
 | Image | `.dds` | `#0277BD` |
@@ -44,6 +45,7 @@ PakFu uses a per-extension icon set for managed archive, image, video, audio, an
 | Audio | `.mp3` | `#F9A825` |
 | Model | `.mdl` | `#8D6E63` |
 | Model | `.md2` | `#5C6BC0` |
+| Model | `.fm` | `#512DA8` |
 | Model | `.md3` | `#3949AB` |
 | Model | `.mdc` | `#283593` |
 | Model | `.md4` | `#1A237E` |
@@ -54,12 +56,15 @@ PakFu uses a per-extension icon set for managed archive, image, video, audio, an
 | Model | `.glm` | `#546E7A` |
 | Model | `.iqm` | `#0277BD` |
 | Model | `.md5mesh` | `#00838F` |
+| Model | `.tan` | `#6D4C41` |
 | Model | `.lwo` | `#7CB342` |
 | Model | `.obj` | `#F57C00` |
+| Asset | `.bk` | `#AD1457` |
+| Asset | `.os` | `#455A64` |
 
 ## Notes
 
-- In-app management is split into a dedicated **File -> File Associations...** dialog with tabbed **Archives**, **Images**, **Videos**, **Audio**, and **Models** lists.
+- In-app management is split into a dedicated **File -> File Associations...** dialog with tabbed **Archives**, **Images**, **Videos**, **Audio**, **Models**, and **Assets** lists.
 - Windows registration writes per-extension `ProgID`/`DefaultIcon` entries plus `.ext\OpenWithProgids` and `Applications\pakfu.exe\SupportedTypes` under `HKCU\Software\Classes`.
 - PakFu does not set the `.ext` default handler key; this keeps defaults user-managed while still listing PakFu in **Open with**.
 - Icons are generated at registration time and cached in the app-local data directory (`file-association-icons`), with a fallback to the app icon if generation fails.

@@ -2104,6 +2104,502 @@ std::optional<LoadedModel> load_md2(const QString& file_path, QString* error) {
   return out;
 }
 
+std::optional<LoadedModel> load_fm(const QString& file_path, QString* error) {
+  if (error) {
+    error->clear();
+  }
+
+  // Heretic II FM layout is credited to the source release mirrored at
+  // https://github.com/0lvin/heretic2.
+  QFile f(file_path);
+  if (!f.open(QIODevice::ReadOnly)) {
+    if (error) {
+      *error = "Unable to open FM.";
+    }
+    return std::nullopt;
+  }
+  const QByteArray bytes = f.readAll();
+  Cursor cur;
+  cur.bytes = &bytes;
+
+  constexpr quint32 kIdent = 0x64616568u;  // First four bytes of the "header" block ("head").
+  constexpr int kBlockHeaderSize = 40;
+  constexpr int kSkinNameSize = 64;
+  constexpr int kFmHeaderSize = 40;
+  constexpr int kMeshNodeSize = 516;
+  constexpr int kMeshTriBitsSize = 256;
+  constexpr int kFramePrefixSize = 40;
+
+  quint32 ident = 0;
+  if (!cur.read_u32(&ident) || ident != kIdent) {
+    if (error) {
+      *error = "Not a supported Heretic II FM model (expected header block).";
+    }
+    return std::nullopt;
+  }
+  cur.seek(0);
+
+  qint32 skinwidth = 0;
+  qint32 skinheight = 0;
+  qint32 framesize = 0;
+  qint32 num_skins = 0;
+  qint32 num_xyz = 0;
+  qint32 num_st = 0;
+  qint32 num_tris = 0;
+  qint32 num_glcmds = 0;
+  qint32 num_frames = 0;
+  qint32 num_mesh_nodes = 0;
+
+  struct FmSt {
+    qint16 s = 0;
+    qint16 t = 0;
+  };
+  struct FmTri {
+    qint16 vi[3]{};
+    qint16 ti[3]{};
+  };
+
+  QVector<QString> skin_names;
+  QVector<FmSt> st;
+  QVector<FmTri> tris;
+  QVector<QVector<ModelVertex>> frame_base_vertices;
+  QVector<QVector<int>> mesh_node_tris;
+
+  bool header_seen = false;
+  bool st_seen = false;
+  bool tris_seen = false;
+  bool frames_seen = false;
+
+  auto block_name_from = [](const QByteArray& raw) -> QString {
+    int end = raw.indexOf('\0');
+    if (end < 0) {
+      end = raw.size();
+    }
+    return QString::fromLatin1(raw.constData(), end).trimmed();
+  };
+
+  auto read_fixed_string_at = [&](int offset, int n) -> QString {
+    if (offset < 0 || n <= 0 || offset + n > bytes.size()) {
+      return {};
+    }
+    const QByteArray raw = bytes.mid(offset, n);
+    int end = raw.indexOf('\0');
+    if (end < 0) {
+      end = raw.size();
+    }
+    QString out = QString::fromLatin1(raw.constData(), end).trimmed();
+    out.replace('\\', '/');
+    return out;
+  };
+
+  while (cur.can_read(kBlockHeaderSize)) {
+    QByteArray raw_name;
+    qint32 block_version = 0;
+    qint32 block_size = 0;
+    if (!cur.read_bytes(32, &raw_name) || !cur.read_i32(&block_version) || !cur.read_i32(&block_size)) {
+      break;
+    }
+    const int data_start = cur.pos;
+    if (block_size < 0 || static_cast<qint64>(data_start) + block_size > bytes.size()) {
+      if (error) {
+        *error = "FM block extends past end of file.";
+      }
+      return std::nullopt;
+    }
+
+    const QString block_name = block_name_from(raw_name);
+    const auto finish_block = [&]() {
+      cur.seek(data_start + block_size);
+    };
+
+    if (block_name.compare("header", Qt::CaseInsensitive) == 0) {
+      if (block_version != 2 || block_size < kFmHeaderSize) {
+        if (error) {
+          *error = "FM header block is invalid.";
+        }
+        return std::nullopt;
+      }
+
+      Cursor h;
+      h.bytes = &bytes;
+      h.seek(data_start);
+      if (!h.read_i32(&skinwidth) || !h.read_i32(&skinheight) || !h.read_i32(&framesize) ||
+          !h.read_i32(&num_skins) || !h.read_i32(&num_xyz) || !h.read_i32(&num_st) ||
+          !h.read_i32(&num_tris) || !h.read_i32(&num_glcmds) || !h.read_i32(&num_frames) ||
+          !h.read_i32(&num_mesh_nodes)) {
+        if (error) {
+          *error = "FM header is incomplete.";
+        }
+        return std::nullopt;
+      }
+
+      const qint64 min_frame_size = static_cast<qint64>(kFramePrefixSize) + static_cast<qint64>(num_xyz) * 4;
+      if (skinwidth <= 0 || skinheight <= 0 || skinwidth > 8192 || skinheight > 8192 ||
+          framesize < min_frame_size || framesize > 16 * 1024 * 1024 ||
+          num_skins < 0 || num_skins > 1024 ||
+          num_xyz <= 0 || num_xyz > 200000 ||
+          num_st <= 0 || num_st > 200000 ||
+          num_tris <= 0 || num_tris > 200000 ||
+          num_glcmds < 0 || num_glcmds > 10000000 ||
+          num_frames <= 0 || num_frames > 10000 ||
+          num_mesh_nodes < 0 || num_mesh_nodes > 4096) {
+        if (error) {
+          *error = "FM header values are invalid.";
+        }
+        return std::nullopt;
+      }
+
+      header_seen = true;
+      finish_block();
+      continue;
+    }
+
+    if (!header_seen) {
+      if (error) {
+        *error = "FM file does not start with a valid header block.";
+      }
+      return std::nullopt;
+    }
+
+    if (block_name.compare("skin", Qt::CaseInsensitive) == 0) {
+      const qint64 required = static_cast<qint64>(num_skins) * kSkinNameSize;
+      if (block_version != 1 || block_size < required) {
+        if (error) {
+          *error = "FM skin block is invalid.";
+        }
+        return std::nullopt;
+      }
+      skin_names.clear();
+      skin_names.reserve(num_skins);
+      for (int i = 0; i < num_skins; ++i) {
+        skin_names.push_back(read_fixed_string_at(data_start + i * kSkinNameSize, kSkinNameSize));
+      }
+      finish_block();
+      continue;
+    }
+
+    if (block_name.compare("st coord", Qt::CaseInsensitive) == 0) {
+      const qint64 required = static_cast<qint64>(num_st) * 4;
+      if (block_version != 1 || block_size != required) {
+        if (error) {
+          *error = "FM texture coordinate block is invalid.";
+        }
+        return std::nullopt;
+      }
+      Cursor sc;
+      sc.bytes = &bytes;
+      sc.seek(data_start);
+      st.resize(num_st);
+      for (int i = 0; i < num_st; ++i) {
+        if (!sc.read_i16(&st[i].s) || !sc.read_i16(&st[i].t)) {
+          if (error) {
+            *error = "FM texture coordinates are incomplete.";
+          }
+          return std::nullopt;
+        }
+      }
+      st_seen = true;
+      finish_block();
+      continue;
+    }
+
+    if (block_name.compare("tris", Qt::CaseInsensitive) == 0) {
+      const qint64 required = static_cast<qint64>(num_tris) * 12;
+      if (block_version != 1 || block_size != required) {
+        if (error) {
+          *error = "FM triangle block is invalid.";
+        }
+        return std::nullopt;
+      }
+      Cursor tc;
+      tc.bytes = &bytes;
+      tc.seek(data_start);
+      tris.clear();
+      tris.reserve(num_tris);
+      for (int t = 0; t < num_tris; ++t) {
+        FmTri tri;
+        for (int i = 0; i < 3; ++i) {
+          if (!tc.read_i16(&tri.vi[i])) {
+            if (error) {
+              *error = "FM triangles are incomplete.";
+            }
+            return std::nullopt;
+          }
+        }
+        for (int i = 0; i < 3; ++i) {
+          if (!tc.read_i16(&tri.ti[i])) {
+            if (error) {
+              *error = "FM triangles are incomplete.";
+            }
+            return std::nullopt;
+          }
+        }
+        bool ok = true;
+        for (int i = 0; i < 3; ++i) {
+          if (tri.vi[i] < 0 || tri.vi[i] >= num_xyz || tri.ti[i] < 0 || tri.ti[i] >= num_st) {
+            ok = false;
+            break;
+          }
+        }
+        if (ok) {
+          tris.push_back(tri);
+        }
+      }
+      tris_seen = true;
+      finish_block();
+      continue;
+    }
+
+    if (block_name.compare("frames", Qt::CaseInsensitive) == 0) {
+      const qint64 required = static_cast<qint64>(num_frames) * framesize;
+      if (block_version != 1 || block_size < required) {
+        if (error) {
+          *error = "FM frame block is invalid.";
+        }
+        return std::nullopt;
+      }
+
+      frame_base_vertices.clear();
+      frame_base_vertices.reserve(num_frames);
+      for (int fi = 0; fi < num_frames; ++fi) {
+        const qint64 frame_off64 = static_cast<qint64>(data_start) + static_cast<qint64>(fi) * framesize;
+        if (frame_off64 < 0 || frame_off64 > std::numeric_limits<int>::max()) {
+          if (error) {
+            *error = "FM frame offset is invalid.";
+          }
+          return std::nullopt;
+        }
+
+        Cursor fc;
+        fc.bytes = &bytes;
+        fc.seek(static_cast<int>(frame_off64));
+
+        float scale[3]{};
+        float translate[3]{};
+        for (int i = 0; i < 3; ++i) {
+          if (!fc.read_f32(&scale[i])) {
+            if (error) {
+              *error = "FM frame data is incomplete.";
+            }
+            return std::nullopt;
+          }
+        }
+        for (int i = 0; i < 3; ++i) {
+          if (!fc.read_f32(&translate[i])) {
+            if (error) {
+              *error = "FM frame data is incomplete.";
+            }
+            return std::nullopt;
+          }
+        }
+        if (!fc.skip(16)) {
+          if (error) {
+            *error = "FM frame name is incomplete.";
+          }
+          return std::nullopt;
+        }
+
+        QVector<ModelVertex> frame;
+        frame.resize(num_xyz);
+        for (int i = 0; i < num_xyz; ++i) {
+          quint8 vx = 0, vy = 0, vz = 0, ni = 0;
+          if (!fc.read_u8(&vx) || !fc.read_u8(&vy) || !fc.read_u8(&vz) || !fc.read_u8(&ni)) {
+            if (error) {
+              *error = "FM frame vertices are incomplete.";
+            }
+            return std::nullopt;
+          }
+          (void)ni;
+          frame[i].px = static_cast<float>(vx) * scale[0] + translate[0];
+          frame[i].py = static_cast<float>(vy) * scale[1] + translate[1];
+          frame[i].pz = static_cast<float>(vz) * scale[2] + translate[2];
+        }
+        frame_base_vertices.push_back(std::move(frame));
+      }
+      frames_seen = true;
+      finish_block();
+      continue;
+    }
+
+    if (block_name.compare("mesh nodes", Qt::CaseInsensitive) == 0) {
+      const qint64 required = static_cast<qint64>(num_mesh_nodes) * kMeshNodeSize;
+      if (block_version != 3 || block_size < required) {
+        if (error) {
+          *error = "FM mesh node block is invalid.";
+        }
+        return std::nullopt;
+      }
+
+      mesh_node_tris.clear();
+      mesh_node_tris.reserve(num_mesh_nodes);
+      QVector<char> used(tris.size(), 0);
+      for (int node = 0; node < num_mesh_nodes; ++node) {
+        const int node_off = data_start + node * kMeshNodeSize;
+        QVector<int> node_tris;
+        for (int byte_index = 0; byte_index < kMeshTriBitsSize; ++byte_index) {
+          const uchar bits = static_cast<uchar>(bytes[node_off + byte_index]);
+          if (bits == 0) {
+            continue;
+          }
+          for (int bit = 0; bit < 8; ++bit) {
+            if ((bits & (1u << bit)) == 0) {
+              continue;
+            }
+            const int tri_index = byte_index * 8 + bit;
+            if (tri_index >= 0 && tri_index < tris.size() && !used[tri_index]) {
+              used[tri_index] = 1;
+              node_tris.push_back(tri_index);
+            }
+          }
+        }
+        if (!node_tris.isEmpty()) {
+          mesh_node_tris.push_back(std::move(node_tris));
+        }
+      }
+
+      QVector<int> leftovers;
+      for (int i = 0; i < tris.size(); ++i) {
+        if (!used[i]) {
+          leftovers.push_back(i);
+        }
+      }
+      if (!leftovers.isEmpty()) {
+        mesh_node_tris.push_back(std::move(leftovers));
+      }
+
+      finish_block();
+      continue;
+    }
+
+    // GL commands, normals, skeleton, and other FM sidecar blocks are not needed for static preview.
+    finish_block();
+  }
+
+  if (!header_seen || !st_seen || !tris_seen || !frames_seen) {
+    if (error) {
+      *error = "FM is missing required geometry blocks.";
+    }
+    return std::nullopt;
+  }
+  if (tris.isEmpty()) {
+    if (error) {
+      *error = "FM contains no drawable geometry.";
+    }
+    return std::nullopt;
+  }
+
+  if (mesh_node_tris.isEmpty()) {
+    QVector<int> all;
+    all.reserve(tris.size());
+    for (int i = 0; i < tris.size(); ++i) {
+      all.push_back(i);
+    }
+    mesh_node_tris.push_back(std::move(all));
+  }
+
+  QString shader_hint;
+  for (const QString& skin : skin_names) {
+    if (!skin.trimmed().isEmpty()) {
+      shader_hint = skin.trimmed();
+      break;
+    }
+  }
+
+  QVector<ModelVertex> verts;
+  QVector<std::uint32_t> indices;
+  QVector<int> out_vertex_source_indices;
+  QHash<quint64, std::uint32_t> remap;
+  verts.reserve(tris.size() * 3);
+  indices.reserve(tris.size() * 3);
+  out_vertex_source_indices.reserve(tris.size() * 3);
+  remap.reserve(tris.size() * 3);
+
+  const QVector<ModelVertex>& base_verts = frame_base_vertices[0];
+  const float inv_skinw = 1.0f / static_cast<float>(skinwidth);
+  const float inv_skinh = 1.0f / static_cast<float>(skinheight);
+  const auto make_key = [](quint32 vi, quint32 ti) -> quint64 {
+    return (static_cast<quint64>(vi) << 32) | static_cast<quint64>(ti);
+  };
+
+  QVector<ModelSurface> surfaces;
+  surfaces.reserve(mesh_node_tris.size());
+  for (int surface_index = 0; surface_index < mesh_node_tris.size(); ++surface_index) {
+    const int first = indices.size();
+    for (const int tri_index : mesh_node_tris[surface_index]) {
+      if (tri_index < 0 || tri_index >= tris.size()) {
+        continue;
+      }
+      const FmTri& tri = tris[tri_index];
+      for (int i = 0; i < 3; ++i) {
+        const quint32 vi = static_cast<quint32>(tri.vi[i]);
+        const quint32 ti = static_cast<quint32>(tri.ti[i]);
+        const quint64 key = make_key(vi, ti);
+        auto it = remap.constFind(key);
+        if (it == remap.constEnd()) {
+          const std::uint32_t new_index = static_cast<std::uint32_t>(verts.size());
+          remap.insert(key, new_index);
+
+          ModelVertex v = base_verts[static_cast<int>(vi)];
+          v.u = static_cast<float>(st[static_cast<int>(ti)].s) * inv_skinw;
+          v.v = 1.0f - (static_cast<float>(st[static_cast<int>(ti)].t) * inv_skinh);
+          verts.push_back(v);
+          out_vertex_source_indices.push_back(static_cast<int>(vi));
+          indices.push_back(new_index);
+        } else {
+          indices.push_back(*it);
+        }
+      }
+    }
+
+    const int count = indices.size() - first;
+    if (count > 0) {
+      ModelSurface surface;
+      surface.name = (mesh_node_tris.size() == 1) ? QString("model") : QString("mesh%1").arg(surface_index);
+      surface.shader = shader_hint;
+      surface.first_index = first;
+      surface.index_count = count;
+      surfaces.push_back(std::move(surface));
+    }
+  }
+
+  if (verts.isEmpty() || indices.isEmpty()) {
+    if (error) {
+      *error = "FM contains no drawable geometry.";
+    }
+    return std::nullopt;
+  }
+  if (surfaces.isEmpty()) {
+    surfaces = {ModelSurface{QString("model"), shader_hint, 0, static_cast<int>(indices.size())}};
+  }
+
+  LoadedModel out;
+  out.format = "fm";
+  out.frame_count = num_frames;
+  out.surface_count = std::max(1, static_cast<int>(surfaces.size()));
+  out.surfaces = std::move(surfaces);
+  out.animation_frames.reserve(frame_base_vertices.size());
+  for (const QVector<ModelVertex>& frame_base : frame_base_vertices) {
+    ModelMesh frame_mesh;
+    frame_mesh.vertices = verts;
+    frame_mesh.indices = indices;
+    for (int i = 0; i < frame_mesh.vertices.size(); ++i) {
+      const int source = out_vertex_source_indices[i];
+      if (source < 0 || source >= frame_base.size()) {
+        continue;
+      }
+      frame_mesh.vertices[i].px = frame_base[source].px;
+      frame_mesh.vertices[i].py = frame_base[source].py;
+      frame_mesh.vertices[i].pz = frame_base[source].pz;
+    }
+    compute_smooth_normals(&frame_mesh);
+    compute_bounds(&frame_mesh);
+    out.animation_frames.push_back(std::move(frame_mesh));
+  }
+  out.mesh = out.animation_frames[0];
+  out.has_native_animation = (out.animation_frames.size() > 1);
+  return out;
+}
+
 std::optional<LoadedModel> load_md3(const QString& file_path, QString* error) {
   if (error) {
     error->clear();
@@ -7431,6 +7927,9 @@ std::optional<LoadedModel> load_model_file(const QString& file_path, QString* er
   }
   if (ext == "md2") {
     return finalize_loaded(load_md2(info.absoluteFilePath(), error));
+  }
+  if (ext == "fm") {
+    return finalize_loaded(load_fm(info.absoluteFilePath(), error));
   }
   if (ext == "md3") {
     return finalize_loaded(load_md3(info.absoluteFilePath(), error));

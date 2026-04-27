@@ -26,6 +26,7 @@ enum class AssociationCategory {
 	Video,
 	Audio,
 	Model,
+	Asset,
 };
 
 struct AssociationSpec {
@@ -64,6 +65,7 @@ const QVector<AssociationSpec>& association_specs() {
 	  {"pcx", "PCX Image", QColor("#546E7A"), AssociationCategory::Image},
 	  {"wal", "WAL Image", QColor("#1565C0"), AssociationCategory::Image},
 	  {"swl", "SWL Image", QColor("#2E7D32"), AssociationCategory::Image},
+	  {"m8", "M8 Image", QColor("#7B1FA2"), AssociationCategory::Image},
 	  {"mip", "MIP Image", QColor("#6A1B9A"), AssociationCategory::Image},
 	  {"lmp", "LMP Image", QColor("#5D4037"), AssociationCategory::Image},
 	  {"dds", "DDS Image", QColor("#0277BD"), AssociationCategory::Image},
@@ -90,6 +92,7 @@ const QVector<AssociationSpec>& association_specs() {
 	  {"mp3", "MP3 Audio", QColor("#F9A825"), AssociationCategory::Audio},
 	  {"mdl", "MDL Model", QColor("#8D6E63"), AssociationCategory::Model},
 	  {"md2", "MD2 Model", QColor("#5C6BC0"), AssociationCategory::Model},
+	  {"fm", "FM Model", QColor("#512DA8"), AssociationCategory::Model},
 	  {"md3", "MD3 Model", QColor("#3949AB"), AssociationCategory::Model},
 	  {"mdc", "MDC Model", QColor("#283593"), AssociationCategory::Model},
 	  {"md4", "MD4 Model", QColor("#1A237E"), AssociationCategory::Model},
@@ -103,6 +106,8 @@ const QVector<AssociationSpec>& association_specs() {
 	  {"tan", "TAN Model", QColor("#6D4C41"), AssociationCategory::Model},
 	  {"lwo", "LWO Model", QColor("#7CB342"), AssociationCategory::Model},
 	  {"obj", "OBJ Model", QColor("#F57C00"), AssociationCategory::Model},
+	  {"bk", "BK Book Sprite", QColor("#AD1457"), AssociationCategory::Asset},
+	  {"os", "OS Script Bytecode", QColor("#455A64"), AssociationCategory::Asset},
 	};
 	return specs;
 }
@@ -387,6 +392,10 @@ QStringList FileAssociations::managed_model_extensions() {
 	return managed_extensions_for_category(AssociationCategory::Model);
 }
 
+QStringList FileAssociations::managed_asset_extensions() {
+	return managed_extensions_for_category(AssociationCategory::Asset);
+}
+
 QString FileAssociations::managed_extension_list() {
 	QStringList out;
 	out.reserve(association_specs().size());
@@ -446,6 +455,16 @@ QString FileAssociations::managed_model_extension_list() {
 	return out.join(", ");
 }
 
+QString FileAssociations::managed_asset_extension_list() {
+	QStringList out;
+	const QStringList exts = managed_asset_extensions();
+	out.reserve(exts.size());
+	for (const QString& ext : exts) {
+		out.push_back(dotted_extension(ext));
+	}
+	return out.join(", ");
+}
+
 bool FileAssociations::is_archive_extension(const QString& extension) {
 	const AssociationSpec* spec = spec_for_extension(extension);
 	return spec && spec->category == AssociationCategory::Archive;
@@ -469,6 +488,11 @@ bool FileAssociations::is_audio_extension(const QString& extension) {
 bool FileAssociations::is_model_extension(const QString& extension) {
 	const AssociationSpec* spec = spec_for_extension(extension);
 	return spec && spec->category == AssociationCategory::Model;
+}
+
+bool FileAssociations::is_asset_extension(const QString& extension) {
+	const AssociationSpec* spec = spec_for_extension(extension);
+	return spec && spec->category == AssociationCategory::Asset;
 }
 
 QIcon FileAssociations::icon_for_extension(const QString& extension, const QSize& icon_size) {

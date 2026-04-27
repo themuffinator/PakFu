@@ -46,7 +46,7 @@ namespace {
 [[nodiscard]] bool is_model_ext(const QString& ext) {
 	return ext == "mdl" || ext == "md2" || ext == "md3" || ext == "mdc" || ext == "md4" ||
 	       ext == "mdr" || ext == "skb" || ext == "skd" || ext == "mdm" || ext == "glm" ||
-	       ext == "iqm" || ext == "md5mesh" || ext == "tan" || ext == "lwo" || ext == "obj";
+	       ext == "iqm" || ext == "md5mesh" || ext == "tan" || ext == "fm" || ext == "lwo" || ext == "obj";
 }
 
 [[nodiscard]] QStringList dependency_hints_for_path(const QString& path) {
@@ -69,6 +69,7 @@ namespace {
 		hints << dir + base + ".tga";
 		hints << dir + base + ".jpg";
 		hints << dir + base + ".jpeg";
+		hints << dir + base + ".m8";
 	}
 	if (ext == "shader") {
 		hints << "textures/";

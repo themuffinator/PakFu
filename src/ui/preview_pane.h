@@ -59,7 +59,7 @@ public:
 	void set_image_texture_smoothing(bool enabled);
 	void set_model_palettes(const QVector<QRgb>& quake1_palette, const QVector<QRgb>& quake2_palette);
 	void set_glow_enabled(bool enabled);
-	void set_image_mip_controls(bool visible, int mip_level);
+	void set_image_mip_controls(bool visible, int mip_level, int mip_count = 4);
 	[[nodiscard]] int image_mip_level() const { return image_mip_level_; }
 
 	void set_current_file_info(const QString& pak_path, qint64 size, qint64 mtime_utc_secs);
@@ -215,6 +215,7 @@ private:
 	ImageBackgroundMode image_bg_mode_ = ImageBackgroundMode::Checkerboard;
 	ImageLayoutMode image_layout_mode_ = ImageLayoutMode::Fit;
 	int image_mip_level_ = 0;
+	int image_mip_count_ = 4;
 	bool image_reveal_transparency_ = false;
 	bool image_texture_smoothing_ = false;
 	QImage image_original_;

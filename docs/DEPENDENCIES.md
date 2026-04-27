@@ -52,6 +52,7 @@
   - MIP: built-in decoder (Quake/GoldSrc MIPTEX plus raw conchars-style indexed payloads; requires a 256-color Quake palette via `gfx/palette.lmp` or a WAD `palette` lump)
   - WAL: built-in decoder (Quake II; requires `pics/colormap.pcx` palette; previews all mip levels)
   - SWL: built-in decoder (SiN texture; embedded palette; previews mip levels)
+  - M8: built-in decoder (Heretic II texture; embedded palette; previews up to 16 mip levels; format reference credited to [0lvin/heretic2](https://github.com/0lvin/heretic2))
   - DDS: built-in decoder (uncompressed masks + BC1/BC2/BC3/BC4/BC5, including DX10 headers)
 
 - Archive support:
@@ -62,12 +63,16 @@
   - Quake Live Beta encrypted PK3: built-in decrypt/encrypt (XOR) loader/writer
 
 - Model loaders:
+  - FM: built-in loader (Heretic II mesh frames with MD2-style vertices, mesh-node surfaces, and `.m8` skin hints; format reference credited to [0lvin/heretic2](https://github.com/0lvin/heretic2))
   - MDC: built-in loader (RtCW/Enemy Territory compressed mesh)
   - MD4: built-in loader (RtCW/Enemy Territory skeletal mesh; frame-0 weighted reconstruction)
   - MDR: built-in loader (Raven skeletal mesh used by Elite Force/JK2-family games; frame-0 weighted reconstruction)
   - SKB/SKD: built-in loader (FAKK2/MOHAA/Elite Force skeletal meshes; weighted static reconstruction)
   - MDM: built-in loader (Enemy Territory skeletal mesh; companion `.mdx` skeletal data)
   - GLM: built-in loader (Ghoul2 mesh; companion `.gla` base pose when available)
+
+- BSP/map preview:
+  - Heretic II: built-in Quake II-family BSP loader support for native `IBSP` maps and converted `QBSP` maps, including Heretic II texinfo flag detection, 64-byte converted texture names, and `.m8` texture lookup priority; format reference credited to [0lvin/heretic2](https://github.com/0lvin/heretic2)
 
 - Cinematics (built-in decoders; used for thumbnails + playback widget):
   - CIN: id Quake II cinematic (PAL8 + optional PCM audio)
@@ -76,6 +81,8 @@
 - idTech asset inspectors (built-in metadata parsers):
   - SPR: Quake/idTech2 sprite decode + animated preview + metadata/frame table summary
   - SP2 / SPR2: Quake II sprite frame references resolve to animated preview + metadata/frame table summary
+  - BK: Heretic II BOOK sprite decoder that composites referenced `.m8` tiles from the `book/` path convention; format behavior cross-checked against [0lvin/heretic2](https://github.com/0lvin/heretic2)
+  - OS: Heretic II dynamic script bytecode metadata/opcode preview for `ds/<script>.os`; opcode layout cross-checked against [0lvin/heretic2](https://github.com/0lvin/heretic2)
   - DM2: Quake II demo packet stream summary
   - AAS: Quake III bot navigation header + lump summary
   - QVM: Quake III VM bytecode header + segment summary

@@ -126,7 +126,7 @@ ImageViewerWindow::ImageViewerWindow(QWidget* parent) : QMainWindow(parent) {
 
 bool ImageViewerWindow::is_supported_image_ext(const QString& ext) {
 	static const QSet<QString> kImageExts = {
-		"png", "jpg", "jpeg", "bmp", "gif", "tga", "pcx", "wal", "swl", "dds", "lmp", "mip", "ftx", "tif", "tiff",
+		"png", "jpg", "jpeg", "bmp", "gif", "tga", "pcx", "wal", "swl", "m8", "dds", "lmp", "mip", "ftx", "tif", "tiff",
 	};
 	return kImageExts.contains(ext.toLower());
 }
@@ -302,8 +302,8 @@ void ImageViewerWindow::show_current_image() {
 	}
 
 	const QString ext = file_ext_lower(info.fileName());
-	const bool supports_mips = (ext == "wal" || ext == "swl" || ext == "mip");
-	preview_->set_image_mip_controls(supports_mips, preview_->image_mip_level());
+	const bool supports_mips = (ext == "wal" || ext == "swl" || ext == "m8" || ext == "mip");
+	preview_->set_image_mip_controls(supports_mips, preview_->image_mip_level(), ext == "m8" ? 16 : 4);
 
 	ImageDecodeOptions options;
 	options.mip_level = supports_mips ? preview_->image_mip_level() : 0;

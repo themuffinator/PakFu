@@ -21,6 +21,7 @@ enum class BspFamily {
   Unknown = 0,
   Quake1,
   Quake2,
+  Heretic2,
   Quake3,
 };
 

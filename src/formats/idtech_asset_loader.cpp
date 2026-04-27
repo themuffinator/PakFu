@@ -771,6 +771,136 @@ IdTechAssetDecodeResult decode_sp2(const QByteArray& bytes) {
 	return IdTechAssetDecodeResult{"Quake II Sprite (SP2)", summary, {}};
 }
 
+IdTechAssetDecodeResult decode_bk(const QByteArray& bytes) {
+	constexpr quint32 kBkIdent = 0x4B4F4F42u;  // "BOOK"
+	constexpr qint32 kBkVersion = 2;
+	constexpr int kBkHeaderSize = 20;
+	constexpr int kBkFrameSize = 80;
+	constexpr int kBkMaxFrames = 8192;
+	constexpr int kBkMaxDimension = 16384;
+
+	if (bytes.size() < kBkHeaderSize) {
+		return IdTechAssetDecodeResult{"Heretic II Book Sprite (BK)", {}, "BK file is too small."};
+	}
+
+	quint32 ident = 0;
+	qint32 version = 0;
+	qint32 num_frames = 0;
+	qint32 width = 0;
+	qint32 height = 0;
+	if (!read_u32_le(bytes, 0, &ident) || !read_i32_le(bytes, 4, &version) || !read_i32_le(bytes, 8, &num_frames) ||
+	    !read_i32_le(bytes, 12, &width) || !read_i32_le(bytes, 16, &height)) {
+		return IdTechAssetDecodeResult{"Heretic II Book Sprite (BK)", {}, "Unable to parse BK header."};
+	}
+
+	if (ident != kBkIdent) {
+		return IdTechAssetDecodeResult{
+			"Heretic II Book Sprite (BK)",
+			{},
+			QString("Invalid BK magic: expected BOOK, got %1.").arg(fourcc_text(ident))
+		};
+	}
+	if (version != kBkVersion) {
+		return IdTechAssetDecodeResult{
+			"Heretic II Book Sprite (BK)",
+			{},
+			QString("Unsupported BK version: %1 (expected %2).").arg(version).arg(kBkVersion)
+		};
+	}
+	if (num_frames <= 0 || num_frames > kBkMaxFrames) {
+		return IdTechAssetDecodeResult{
+			"Heretic II Book Sprite (BK)",
+			{},
+			QString("Invalid BK tile count: %1.").arg(num_frames)
+		};
+	}
+	if (width <= 0 || height <= 0 || width > kBkMaxDimension || height > kBkMaxDimension) {
+		return IdTechAssetDecodeResult{
+			"Heretic II Book Sprite (BK)",
+			{},
+			QString("Invalid BK canvas dimensions: %1x%2.").arg(width).arg(height)
+		};
+	}
+
+	const qint64 required = static_cast<qint64>(kBkHeaderSize) + static_cast<qint64>(num_frames) * kBkFrameSize;
+	if (required > bytes.size()) {
+		return IdTechAssetDecodeResult{
+			"Heretic II Book Sprite (BK)",
+			{},
+			QString("BK tile table is truncated (%1 bytes required, %2 bytes available).").arg(required).arg(bytes.size())
+		};
+	}
+
+	int suspicious = 0;
+	int non_m8 = 0;
+	int out_of_canvas = 0;
+	const int preview_count = std::min<int>(num_frames, 12);
+	QStringList frame_lines;
+	frame_lines.reserve(preview_count);
+
+	for (int i = 0; i < num_frames; ++i) {
+		const int off = kBkHeaderSize + i * kBkFrameSize;
+		qint32 x = 0;
+		qint32 y = 0;
+		qint32 w = 0;
+		qint32 h = 0;
+		if (!read_i32_le(bytes, off + 0, &x) || !read_i32_le(bytes, off + 4, &y) || !read_i32_le(bytes, off + 8, &w) ||
+		    !read_i32_le(bytes, off + 12, &h)) {
+			return IdTechAssetDecodeResult{"Heretic II Book Sprite (BK)", {}, "Unable to parse BK tile table."};
+		}
+
+		const QString tile_name = fixed_c_string(bytes.constData() + off + 16, 64);
+		if (w <= 0 || h <= 0 || w > kBkMaxDimension || h > kBkMaxDimension || tile_name.isEmpty()) {
+			++suspicious;
+		}
+		if (!tile_name.endsWith(".m8", Qt::CaseInsensitive)) {
+			++non_m8;
+		}
+		if (x < 0 || y < 0 || static_cast<qint64>(x) + w > width || static_cast<qint64>(y) + h > height) {
+			++out_of_canvas;
+		}
+
+		if (i < preview_count) {
+			const QString safe_name = tile_name.isEmpty() ? QString("<unnamed>") : tile_name;
+			frame_lines.push_back(QString("[%1] %2  (%3,%4 %5x%6)").arg(i).arg(safe_name).arg(x).arg(y).arg(w).arg(h));
+		}
+	}
+
+	const qint64 trailing = bytes.size() - required;
+
+	QString summary;
+	QTextStream s(&summary);
+	s << "Type: Heretic II BOOK sprite\n";
+	s << "Format: BK\n";
+	s << "Version: " << version << "\n";
+	s << "Canvas: " << width << " x " << height << "\n";
+	s << "Tiles: " << num_frames << "\n";
+	s << "Tile table size: " << (static_cast<qint64>(num_frames) * kBkFrameSize) << " bytes\n";
+	s << "Tile lookup: book/<tile name>, with `.m8` images composited onto the canvas\n";
+	s << "Reference: https://github.com/0lvin/heretic2\n";
+	if (suspicious > 0) {
+		s << "Suspicious tile entries: " << suspicious << "\n";
+	}
+	if (non_m8 > 0) {
+		s << "Tile names without .m8 extension: " << non_m8 << "\n";
+	}
+	if (out_of_canvas > 0) {
+		s << "Tiles extending outside canvas: " << out_of_canvas << "\n";
+	}
+	if (trailing > 0) {
+		s << "Trailing bytes: " << trailing << "\n";
+	}
+	s << "Tile table preview:\n";
+	for (const QString& line : frame_lines) {
+		s << "  " << line << "\n";
+	}
+	if (num_frames > preview_count) {
+		s << "  ... (" << (num_frames - preview_count) << " more tile entries)\n";
+	}
+
+	return IdTechAssetDecodeResult{"Heretic II Book Sprite (BK)", summary, {}};
+}
+
 IdTechAssetDecodeResult decode_dm2(const QByteArray& bytes) {
 	if (bytes.size() < 4) {
 		return IdTechAssetDecodeResult{"Quake II Demo (DM2)", {}, "DM2 file is too small."};
@@ -2106,13 +2236,619 @@ IdTechAssetDecodeResult decode_skan(const QByteArray& bytes) {
 
 	return IdTechAssetDecodeResult{title, summary, {}};
 }
+
+QString os_opcode_name(int opcode) {
+	static const char* kNames[] = {
+		"CODE_NEW_GLOBAL",
+		"CODE_NEW_GLOBAL_PLUS_ASSIGNMENT",
+		"CODE_NEW_LOCAL",
+		"CODE_NEW_LOCAL_PLUS_ASSIGNMENT",
+		"CODE_NEW_PARAMETER",
+		"CODE_NEW_PARAMETER_PLUS_DEFAULT",
+		"CODE_FIELD",
+		"CODE_ASSIGNMENT",
+		"CODE_ADD",
+		"CODE_SUBTRACT",
+		"CODE_MULTIPLY",
+		"CODE_DIVIDE",
+		"CODE_ADD_ASSIGNMENT",
+		"CODE_SUBTRACT_ASSIGNMENT",
+		"CODE_MULTIPLY_ASSIGNMENT",
+		"CODE_DIVIDE_ASSIGNMENT",
+		"CODE_GOTO",
+		"CODE_PUSH",
+		"CODE_POP",
+		"CODE_IF",
+		"CODE_EXIT",
+		"CODE_SUSPEND",
+		"CODE_WAIT_SECONDS",
+		"CODE_WAIT_ALL",
+		"CODE_WAIT_ANY",
+		"CODE_MOVE",
+		"CODE_DEBUG",
+		"CODE_USE",
+		"CODE_ROTATE",
+		"CODE_PRINT",
+		"CODE_PLAY_SOUND",
+		"CODE_ENABLE",
+		"CODE_DISABLE",
+		"CODE_ANIMATE",
+		"CODE_DEBUG_STATEMENT",
+		"CODE_CACHE_SOUND",
+		"CODE_COPY_PLAYER_ATTRIBUTES",
+		"CODE_SET_VIEW_ANGLES",
+		"CODE_SET_CACHE_SIZE",
+		"CODE_REMOVE",
+		"CODE_HELICOPTER",
+		"CODE_MOVEROTATE",
+		"CODE_PLAYSONG",
+	};
+	constexpr int kCount = static_cast<int>(sizeof(kNames) / sizeof(kNames[0]));
+	if (opcode >= 0 && opcode < kCount) {
+		return QString::fromLatin1(kNames[opcode]);
+	}
+	return QString("UNKNOWN_%1").arg(opcode);
+}
+
+QString os_push_type_name(int type) {
+	static const char* kNames[] = {
+		"PUSH_CONST_INT",
+		"PUSH_CONST_FLOAT",
+		"PUSH_CONST_VECTOR",
+		"PUSH_CONST_ENTITY",
+		"PUSH_CONST_STRING",
+		"PUSH_VAR",
+		"PUSH_VAR_WITH_FIELD",
+		"PUSH_FUNCTION",
+	};
+	constexpr int kCount = static_cast<int>(sizeof(kNames) / sizeof(kNames[0]));
+	if (type >= 0 && type < kCount) {
+		return QString::fromLatin1(kNames[type]);
+	}
+	return QString("PUSH_UNKNOWN_%1").arg(type);
+}
+
+QString os_variable_type_name(int type) {
+	static const char* kNames[] = {
+		"TypeINT",
+		"TypeFLOAT",
+		"TypeVECTOR",
+		"TypeENTITY",
+		"TypeSTRING",
+		"TypeUNKNOWN",
+	};
+	constexpr int kCount = static_cast<int>(sizeof(kNames) / sizeof(kNames[0]));
+	if (type >= 0 && type < kCount) {
+		return QString::fromLatin1(kNames[type]);
+	}
+	return QString("Type%1").arg(type);
+}
+
+QString os_condition_name(int condition) {
+	static const char* kNames[] = {
+		"COND_EQUAL",
+		"COND_LESS_THAN",
+		"COND_LESS_THAN_EQUAL",
+		"COND_GREATER_THAN",
+		"COND_GREATER_THAN_EQUAL",
+		"COND_NOT_EQUAL",
+	};
+	constexpr int kCount = static_cast<int>(sizeof(kNames) / sizeof(kNames[0]));
+	if (condition >= 0 && condition < kCount) {
+		return QString::fromLatin1(kNames[condition]);
+	}
+	return QString("COND_UNKNOWN_%1").arg(condition);
+}
+
+QString os_function_name(int function) {
+	static const char* kNames[] = {
+		"FUNC_FIND_ENTITY_WITH_TARGET",
+		"FUNC_SIN",
+		"FUNC_COS",
+		"FUNC_FIND_ENTITY_WITH_SCRIPT",
+		"FUNC_SPAWN",
+		"FUNC_GET_OTHER",
+		"FUNC_GET_ACTIVATOR",
+	};
+	constexpr int kCount = static_cast<int>(sizeof(kNames) / sizeof(kNames[0]));
+	if (function >= 0 && function < kCount) {
+		return QString::fromLatin1(kNames[function]);
+	}
+	return QString("FUNC_UNKNOWN_%1").arg(function);
+}
+
+QString os_short_string(QString value) {
+	value.replace('\n', "\\n");
+	value.replace('\r', "\\r");
+	value.replace('\t', "\\t");
+	if (value.size() > 80) {
+		value = value.left(77) + "...";
+	}
+	return value;
+}
+
+struct OsCursor {
+	explicit OsCursor(const QByteArray& data, int start = 0) : bytes(data), pos(start) {}
+
+	const QByteArray& bytes;
+	int pos = 0;
+	QString error;
+
+	bool read_byte(quint8* out, const QString& context) {
+		if (!out || pos < 0 || pos + 1 > bytes.size()) {
+			error = QString("Truncated %1 at offset %2.").arg(context).arg(pos);
+			return false;
+		}
+		*out = static_cast<quint8>(bytes.at(pos));
+		++pos;
+		return true;
+	}
+
+	bool read_i32(qint32* out, const QString& context) {
+		if (!out || pos < 0 || pos + 4 > bytes.size()) {
+			error = QString("Truncated %1 at offset %2.").arg(context).arg(pos);
+			return false;
+		}
+		if (!read_i32_le(bytes, pos, out)) {
+			error = QString("Unable to read %1 at offset %2.").arg(context).arg(pos);
+			return false;
+		}
+		pos += 4;
+		return true;
+	}
+
+	bool read_float(float* out, const QString& context) {
+		if (!out || pos < 0 || pos + 4 > bytes.size()) {
+			error = QString("Truncated %1 at offset %2.").arg(context).arg(pos);
+			return false;
+		}
+		if (!read_f32_le(bytes, pos, out)) {
+			error = QString("Unable to read %1 at offset %2.").arg(context).arg(pos);
+			return false;
+		}
+		pos += 4;
+		return true;
+	}
+
+	bool read_string(QString* out, const QString& context, int max_len = 4096) {
+		if (out) {
+			out->clear();
+		}
+		if (pos < 0 || pos >= bytes.size()) {
+			error = QString("Truncated %1 string at offset %2.").arg(context).arg(pos);
+			return false;
+		}
+		const int start = pos;
+		int len = 0;
+		while (pos < bytes.size() && bytes.at(pos) != '\0') {
+			++pos;
+			++len;
+			if (len > max_len) {
+				error = QString("%1 string exceeds %2 bytes at offset %3.").arg(context).arg(max_len).arg(start);
+				return false;
+			}
+		}
+		if (pos >= bytes.size()) {
+			error = QString("Unterminated %1 string at offset %2.").arg(context).arg(start);
+			return false;
+		}
+		if (out) {
+			*out = QString::fromLatin1(bytes.constData() + start, len);
+		}
+		++pos;
+		return true;
+	}
+};
+
+bool os_read_value(OsCursor& cursor, int type, QString* detail) {
+	if (detail) {
+		detail->clear();
+	}
+	switch (type) {
+		case 0: {
+			qint32 value = 0;
+			if (!cursor.read_i32(&value, "integer value")) {
+				return false;
+			}
+			if (detail) {
+				*detail = QString::number(value);
+			}
+			return true;
+		}
+		case 1: {
+			float value = 0.0f;
+			if (!cursor.read_float(&value, "float value")) {
+				return false;
+			}
+			if (detail) {
+				*detail = QString::number(value, 'g', 6);
+			}
+			return true;
+		}
+		case 2: {
+			float x = 0.0f;
+			float y = 0.0f;
+			float z = 0.0f;
+			if (!cursor.read_float(&x, "vector x") || !cursor.read_float(&y, "vector y") || !cursor.read_float(&z, "vector z")) {
+				return false;
+			}
+			if (detail) {
+				*detail = QString("(%1, %2, %3)")
+				            .arg(QString::number(x, 'g', 6), QString::number(y, 'g', 6), QString::number(z, 'g', 6));
+			}
+			return true;
+		}
+		case 3: {
+			qint32 value = 0;
+			if (!cursor.read_i32(&value, "entity value")) {
+				return false;
+			}
+			if (detail) {
+				*detail = QString::number(value);
+			}
+			return true;
+		}
+		case 4: {
+			QString value;
+			if (!cursor.read_string(&value, "string value")) {
+				return false;
+			}
+			if (detail) {
+				*detail = QString("\"%1\"").arg(os_short_string(value));
+			}
+			return true;
+		}
+		case 5:
+			if (detail) {
+				*detail = "<unknown>";
+			}
+			return true;
+		default:
+			cursor.error = QString("Unknown variable type %1 at offset %2.").arg(type).arg(cursor.pos);
+			return false;
+	}
+}
+
+bool os_read_declaration(OsCursor& cursor, QString* detail, int* type_out) {
+	QString name;
+	quint8 type = 0;
+	qint32 index = 0;
+	if (!cursor.read_string(&name, "declaration name") || !cursor.read_byte(&type, "declaration type") ||
+	    !cursor.read_i32(&index, "declaration index")) {
+		return false;
+	}
+	if (type_out) {
+		*type_out = static_cast<int>(type);
+	}
+	if (detail) {
+		*detail = QString("%1 type=%2 index=%3")
+		            .arg(name.isEmpty() ? QString("<unnamed>") : os_short_string(name))
+		            .arg(os_variable_type_name(type))
+		            .arg(index);
+	}
+	return true;
+}
+
+bool os_parse_push(OsCursor& cursor, QString* detail) {
+	quint8 push_type = 0;
+	if (!cursor.read_byte(&push_type, "push type")) {
+		return false;
+	}
+
+	QString suffix;
+	switch (push_type) {
+		case 0:
+		case 1:
+		case 2:
+		case 3:
+		case 4: {
+			QString value;
+			if (!os_read_value(cursor, push_type, &value)) {
+				return false;
+			}
+			suffix = QString(" value=%1").arg(value);
+			break;
+		}
+		case 5: {
+			qint32 index = 0;
+			if (!cursor.read_i32(&index, "variable index")) {
+				return false;
+			}
+			suffix = QString(" index=%1").arg(index);
+			break;
+		}
+		case 6: {
+			qint32 var_index = 0;
+			qint32 field_index = 0;
+			if (!cursor.read_i32(&var_index, "field variable index") || !cursor.read_i32(&field_index, "field index")) {
+				return false;
+			}
+			suffix = QString(" var=%1 field=%2").arg(var_index).arg(field_index);
+			break;
+		}
+		case 7: {
+			quint8 function = 0;
+			if (!cursor.read_byte(&function, "function index")) {
+				return false;
+			}
+			suffix = QString(" function=%1").arg(os_function_name(function));
+			if (function == 4) {
+				quint8 spawn_count = 0;
+				if (!cursor.read_byte(&spawn_count, "spawn field count")) {
+					return false;
+				}
+				suffix += QString(" spawnFields=%1").arg(spawn_count);
+			}
+			break;
+		}
+		default:
+			cursor.error = QString("Unknown push type %1 at offset %2.").arg(push_type).arg(cursor.pos - 1);
+			return false;
+	}
+
+	if (detail) {
+		*detail = os_push_type_name(push_type) + suffix;
+	}
+	return true;
+}
+
+bool os_parse_instruction(OsCursor& cursor, int* opcode_out, QString* detail, bool* terminal) {
+	if (detail) {
+		detail->clear();
+	}
+	if (terminal) {
+		*terminal = false;
+	}
+
+	quint8 opcode = 0;
+	if (!cursor.read_byte(&opcode, "opcode")) {
+		return false;
+	}
+	if (opcode_out) {
+		*opcode_out = opcode;
+	}
+	if (opcode > 42) {
+		cursor.error = QString("Unknown opcode %1 at offset %2.").arg(opcode).arg(cursor.pos - 1);
+		return false;
+	}
+
+	switch (opcode) {
+		case 0:
+		case 2:
+		case 4:
+			return os_read_declaration(cursor, detail, nullptr);
+		case 1:
+		case 3:
+		case 5: {
+			int type = 5;
+			QString declaration;
+			QString value;
+			if (!os_read_declaration(cursor, &declaration, &type) || !os_read_value(cursor, type, &value)) {
+				return false;
+			}
+			if (detail) {
+				*detail = QString("%1 default=%2").arg(declaration, value);
+			}
+			return true;
+		}
+		case 6: {
+			QString name;
+			quint8 type = 0;
+			qint32 index = 0;
+			if (!cursor.read_string(&name, "field name") || !cursor.read_byte(&type, "field type") ||
+			    !cursor.read_i32(&index, "field index")) {
+				return false;
+			}
+			if (detail) {
+				*detail = QString("%1 type=%2 index=%3")
+				            .arg(name.isEmpty() ? QString("<unnamed>") : os_short_string(name))
+				            .arg(os_variable_type_name(type))
+				            .arg(index);
+			}
+			return true;
+		}
+		case 16: {
+			qint32 location = 0;
+			if (!cursor.read_i32(&location, "goto location")) {
+				return false;
+			}
+			if (detail) {
+				*detail = QString("target=%1").arg(location);
+			}
+			return true;
+		}
+		case 17:
+			return os_parse_push(cursor, detail);
+		case 19: {
+			quint8 condition = 0;
+			qint32 location = 0;
+			if (!cursor.read_byte(&condition, "condition") || !cursor.read_i32(&location, "if location")) {
+				return false;
+			}
+			if (detail) {
+				*detail = QString("%1 elseTarget=%2").arg(os_condition_name(condition)).arg(location);
+			}
+			return true;
+		}
+		case 20:
+		case 21:
+			if (terminal) {
+				*terminal = true;
+			}
+			return true;
+		case 23:
+		case 24: {
+			quint8 count = 0;
+			if (!cursor.read_byte(&count, "wait count")) {
+				return false;
+			}
+			if (detail) {
+				const bool clears_existing = (count & 0x80u) != 0;
+				*detail = QString("signals=%1%2").arg(static_cast<int>(count & 0x7Fu)).arg(clears_existing ? " clear" : "");
+			}
+			return true;
+		}
+		case 25:
+		case 26:
+		case 28:
+		case 29:
+		case 30:
+		case 33: {
+			quint8 flags = 0;
+			if (!cursor.read_byte(&flags, "command flags")) {
+				return false;
+			}
+			if (detail) {
+				*detail = QString("flags=0x%1").arg(QString::number(flags, 16).rightJustified(2, QLatin1Char('0')));
+			}
+			return true;
+		}
+		case 31:
+		case 32: {
+			quint8 feature = 0;
+			if (!cursor.read_byte(&feature, "feature type")) {
+				return false;
+			}
+			if (detail) {
+				*detail = QString("feature=%1").arg(static_cast<int>(feature));
+			}
+			return true;
+		}
+		case 34: {
+			QString text;
+			if (!cursor.read_string(&text, "debug statement")) {
+				return false;
+			}
+			if (detail) {
+				*detail = QString("\"%1\"").arg(os_short_string(text));
+			}
+			return true;
+		}
+		case 39:
+		case 40:
+		case 41:
+		case 42:
+			if (detail) {
+				*detail = "disk-file opcode; operands are not decoded";
+			}
+			cursor.error = QString("%1 at offset %2 may have disk-file-only operands.").arg(os_opcode_name(opcode)).arg(cursor.pos - 1);
+			return false;
+		default:
+			return true;
+	}
+}
+
+IdTechAssetDecodeResult decode_os(const QByteArray& bytes) {
+	constexpr qint32 kScriptVersion = 3;
+	constexpr int kMaxOpcodes = 43;
+	constexpr int kPreviewCount = 80;
+	constexpr int kMaxInstructions = 20000;
+
+	if (bytes.size() < 4) {
+		return IdTechAssetDecodeResult{"Heretic II Object Script (OS)", {}, "OS file is too small."};
+	}
+
+	qint32 version = 0;
+	if (!read_i32_le(bytes, 0, &version)) {
+		return IdTechAssetDecodeResult{"Heretic II Object Script (OS)", {}, "Unable to read OS version."};
+	}
+
+	OsCursor cursor(bytes, 4);
+	QVector<int> opcode_counts(kMaxOpcodes, 0);
+	QStringList preview;
+	preview.reserve(kPreviewCount);
+	QString parse_status = "complete";
+	int instructions = 0;
+	bool saw_terminal = false;
+
+	while (cursor.pos < bytes.size() && instructions < kMaxInstructions) {
+		const int offset = cursor.pos;
+		int opcode = -1;
+		QString detail;
+		bool terminal = false;
+		if (!os_parse_instruction(cursor, &opcode, &detail, &terminal)) {
+			parse_status = cursor.error.isEmpty() ? QString("stopped at offset %1").arg(offset) : cursor.error;
+			if (opcode >= 0 && opcode < kMaxOpcodes && preview.size() < kPreviewCount) {
+				QString line = QString("0x%1  %2")
+				                 .arg(offset, 6, 16, QLatin1Char('0'))
+				                 .arg(os_opcode_name(opcode));
+				if (!detail.isEmpty()) {
+					line += QString("  %1").arg(detail);
+				}
+				line += "  [stopped]";
+				preview.push_back(line);
+			}
+			break;
+		}
+		if (opcode >= 0 && opcode < kMaxOpcodes) {
+			++opcode_counts[opcode];
+		}
+		if (preview.size() < kPreviewCount) {
+			QString line = QString("0x%1  %2")
+			                 .arg(offset, 6, 16, QLatin1Char('0'))
+			                 .arg(os_opcode_name(opcode));
+			if (!detail.isEmpty()) {
+				line += QString("  %1").arg(detail);
+			}
+			preview.push_back(line);
+		}
+		++instructions;
+		if (terminal) {
+			saw_terminal = true;
+		}
+	}
+
+	if (instructions >= kMaxInstructions && cursor.pos < bytes.size()) {
+		parse_status = QString("stopped after %1 instructions").arg(kMaxInstructions);
+	}
+
+	QStringList count_lines;
+	for (int i = 0; i < opcode_counts.size(); ++i) {
+		if (opcode_counts[i] > 0) {
+			count_lines.push_back(QString("%1=%2").arg(os_opcode_name(i)).arg(opcode_counts[i]));
+		}
+	}
+
+	QString summary;
+	QTextStream s(&summary);
+	s << "Type: Heretic II dynamic script bytecode\n";
+	s << "Format: OS\n";
+	s << "Version: " << version;
+	if (version != kScriptVersion) {
+		s << " (unexpected; Heretic II source uses " << kScriptVersion << ")";
+	}
+	s << "\n";
+	s << "Payload bytes: " << (bytes.size() - 4) << "\n";
+	s << "Decoded instructions: " << instructions << "\n";
+	s << "Parse status: " << parse_status << "\n";
+	s << "Terminal opcode seen: " << (saw_terminal ? "yes" : "no") << "\n";
+	s << "Runtime path convention: ds/<script>.os\n";
+	s << "Reference: https://github.com/0lvin/heretic2\n";
+	if (!count_lines.isEmpty()) {
+		s << "Opcode counts:\n";
+		for (const QString& line : count_lines) {
+			s << "  " << line << "\n";
+		}
+	}
+	if (!preview.isEmpty()) {
+		s << "Bytecode preview:\n";
+		for (const QString& line : preview) {
+			s << "  " << line << "\n";
+		}
+		if (instructions > kPreviewCount) {
+			s << "  ... (" << (instructions - kPreviewCount) << " more decoded instructions)\n";
+		}
+	}
+
+	return IdTechAssetDecodeResult{"Heretic II Object Script (OS)", summary, {}};
+}
 }  // namespace
 
 bool is_supported_idtech_asset_file(const QString& file_name) {
 	const QString ext = file_ext_lower(file_name);
-	return ext == "spr" || ext == "sp2" || ext == "spr2" || ext == "dm2" || ext == "aas" || ext == "qvm" || ext == "crc" ||
+	return ext == "spr" || ext == "sp2" || ext == "spr2" || ext == "bk" || ext == "dm2" || ext == "aas" || ext == "qvm" || ext == "crc" ||
 	       ext == "skb" || ext == "skd" || ext == "skc" || ext == "ska" || ext == "tag" || ext == "mdx" || ext == "mds" ||
-	       (ext == "dat" && is_quake_progs_dat_file(file_name));
+	       ext == "os" || (ext == "dat" && is_quake_progs_dat_file(file_name));
 }
 
 IdTechAssetDecodeResult decode_idtech_asset_bytes(const QByteArray& bytes, const QString& file_name) {
@@ -2126,6 +2862,9 @@ IdTechAssetDecodeResult decode_idtech_asset_bytes(const QByteArray& bytes, const
 	}
 	if (ext == "sp2" || ext == "spr2") {
 		return decode_sp2(bytes);
+	}
+	if (ext == "bk") {
+		return decode_bk(bytes);
 	}
 	if (ext == "dm2") {
 		return decode_dm2(bytes);
@@ -2159,6 +2898,9 @@ IdTechAssetDecodeResult decode_idtech_asset_bytes(const QByteArray& bytes, const
 	}
 	if (ext == "dat" && is_quake_progs_dat_file(file_name)) {
 		return decode_progs_dat(bytes);
+	}
+	if (ext == "os") {
+		return decode_os(bytes);
 	}
 
 	return IdTechAssetDecodeResult{{}, {}, "Unsupported idTech asset type."};

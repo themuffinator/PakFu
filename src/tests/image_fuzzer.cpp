@@ -32,6 +32,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
 	       "fixture.pcx",
 	       "fixture.wal",
 	       "fixture.swl",
+	       "fixture.m8",
 	       "fixture.dds",
 	       "fixture.ftx",
 	       "fixture.lmp",

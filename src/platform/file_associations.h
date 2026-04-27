@@ -14,6 +14,7 @@ public:
   static QStringList managed_video_extensions();
   static QStringList managed_audio_extensions();
   static QStringList managed_model_extensions();
+  static QStringList managed_asset_extensions();
 
   // Returns all managed extensions this helper manages (for UI/help text).
   static QString managed_extension_list();
@@ -22,12 +23,14 @@ public:
   static QString managed_video_extension_list();
   static QString managed_audio_extension_list();
   static QString managed_model_extension_list();
+  static QString managed_asset_extension_list();
 
   static bool is_archive_extension(const QString& extension);
   static bool is_image_extension(const QString& extension);
   static bool is_video_extension(const QString& extension);
   static bool is_audio_extension(const QString& extension);
   static bool is_model_extension(const QString& extension);
+  static bool is_asset_extension(const QString& extension);
 
   // Returns a generated file-association icon for a managed extension.
   // Returns a null icon when the extension is not managed.
