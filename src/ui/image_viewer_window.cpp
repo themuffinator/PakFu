@@ -126,7 +126,7 @@ ImageViewerWindow::ImageViewerWindow(QWidget* parent) : QMainWindow(parent) {
 
 bool ImageViewerWindow::is_supported_image_ext(const QString& ext) {
 	static const QSet<QString> kImageExts = {
-		"png", "jpg", "jpeg", "bmp", "gif", "tga", "pcx", "wal", "swl", "m8", "dds", "lmp", "mip", "ftx", "tif", "tiff",
+		"png", "jpg", "jpeg", "bmp", "gif", "tga", "pcx", "wal", "swl", "m8", "m32", "dds", "lmp", "mip", "ftx", "tif", "tiff",
 	};
 	return kImageExts.contains(ext.toLower());
 }
@@ -305,8 +305,8 @@ void ImageViewerWindow::show_current_image() {
 	}
 
 	const QString ext = file_ext_lower(info.fileName());
-	const bool supports_mips = (ext == "wal" || ext == "swl" || ext == "m8" || ext == "mip");
-	preview_->set_image_mip_controls(supports_mips, preview_->image_mip_level(), ext == "m8" ? 16 : 4);
+	const bool supports_mips = (ext == "wal" || ext == "swl" || ext == "m8" || ext == "m32" || ext == "mip");
+	preview_->set_image_mip_controls(supports_mips, preview_->image_mip_level(), (ext == "m8" || ext == "m32") ? 16 : 4);
 	preview_->set_current_file_info(info.absoluteFilePath(),
 	                                info.size(),
 	                                info.lastModified().toUTC().toSecsSinceEpoch());
@@ -347,6 +347,8 @@ void ImageViewerWindow::show_current_image() {
 		}
 	} else if (ext == "m8") {
 		asset_context.palette_provenance = "Embedded Heretic II M8 palette.";
+	} else if (ext == "m32") {
+		asset_context.palette_provenance = "Heretic II M32 RGBA texture.";
 	} else if (ext == "swl") {
 		asset_context.palette_provenance = "Embedded SWL palette.";
 	} else if (ext == "pcx") {

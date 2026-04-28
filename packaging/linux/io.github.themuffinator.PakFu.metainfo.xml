@@ -18,6 +18,7 @@
     <mediatype>application/x-quake-bsp</mediatype>
     <mediatype>text/x-idtech-map</mediatype>
     <mediatype>image/x-idtech-wal</mediatype>
+    <mediatype>image/x-heretic2-m32</mediatype>
     <mediatype>video/x-roq</mediatype>
     <mediatype>audio/x-idwav</mediatype>
     <mediatype>model/x-idtech-md3</mediatype>

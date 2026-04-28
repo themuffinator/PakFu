@@ -41,12 +41,12 @@ repository does not need copyrighted game assets to verify the core contract.
 | Area | Formats | Current status | Evidence |
 |---|---|---|---|
 | Core image preview | `pcx`, `wal`, `png`, `tga`, `jpg`, `jpeg` | Supported | TGA decode and PCX encode/decode are fixture-backed; PNG/JPEG use Qt; WAL requires a 256-color Quake II palette |
-| Additional image preview | `bmp`, `gif`, `tif`, `tiff`, `swl`, `m8`, `mip`, `lmp`, `dds`, `ftx` | Supported | M8 is fixture-backed; other loaders are implementation-backed built-ins or Qt image readers; M8/SWL use embedded palettes and expose mip previews |
+| Additional image preview | `bmp`, `gif`, `tif`, `tiff`, `swl`, `m8`, `m32`, `mip`, `lmp`, `dds`, `ftx` | Supported | M8 and M32 are fixture-backed; other loaders are implementation-backed built-ins or Qt image readers; M8/SWL use embedded palettes, M32 stores RGBA, and mip-capable formats expose mip previews |
 | Image conversion output | `png`, `jpg`, `bmp`, `gif`, `tga`, `tiff`, `pcx`, `wal`, `swl`, `mip`, `lmp`, `ftx`, `dds` | Supported | PCX output is fixture-backed; remaining formats are implementation-backed and format-aware |
 | Audio playback | `wav`, `ogg`, `mp3`, `idwav` | Supported | Backend-dependent playback; IDWAV is converted to WAV for supported embedded codecs |
 | Built-in cinematics | `cin`, `roq` | Supported | Implementation-backed built-in decoders |
 | Backend video playback | `bik`, `ogv`, `mp4`, `mkv`, `avi`, `webm` | Supported when codecs are available | Backend-dependent Qt Multimedia playback |
-| Models | `mdl`, `md2`, `fm`, `md3`, `mdc`, `md4`, `mdr`, `skb`, `skd`, `mdm`, `glm`, `iqm`, `md5mesh`, `tan`, `obj`, `lwo` | Supported | FM is fixture-backed; other loaders are implementation-backed; FM resolves Heretic II `.m8` skins |
+| Models | `mdl`, `md2`, `fm`, `md3`, `mdc`, `md4`, `mdr`, `skb`, `skd`, `mdm`, `glm`, `iqm`, `md5mesh`, `tan`, `obj`, `lwo` | Supported | FM is fixture-backed; other loaders are implementation-backed; FM resolves Heretic II `.m8`/`.m32` skins |
 | BSP/map preview | `bsp` | Supported | Heretic II native `IBSP` and converted `QBSP` BSPs are fixture-backed; Quake/Quake II/Quake III-family loaders are implementation-backed |
 | idTech4 map inspection | `map`, `proc` | Text/metadata inspection supported; no 3D idTech4 renderer is claimed | Fixture-backed synthetic `.map` source and `.proc` render-description summaries |
 | idTech sprite/assets | `spr`, `sp2`, `spr2`, `bk`, `os` | Supported | BK/OS are fixture-backed; SPR/SP2 are implementation-backed animated previews and metadata views |

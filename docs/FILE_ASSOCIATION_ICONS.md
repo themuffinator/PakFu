@@ -23,6 +23,7 @@ PakFu uses a per-extension icon set for managed archive, image, video, audio, mo
 | Image | `.wal` | `#1565C0` |
 | Image | `.swl` | `#2E7D32` |
 | Image | `.m8` | `#7B1FA2` |
+| Image | `.m32` | `#8E24AA` |
 | Image | `.mip` | `#6A1B9A` |
 | Image | `.lmp` | `#5D4037` |
 | Image | `.dds` | `#0277BD` |

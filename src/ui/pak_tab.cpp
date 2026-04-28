@@ -969,7 +969,7 @@ bool is_image_file_name(const QString& name) {
   }
   const QString ext = lower.mid(dot + 1);
   static const QSet<QString> kImageExts = {
-    "png", "jpg", "jpeg", "bmp", "gif", "tga", "pcx", "wal", "swl", "m8", "dds", "lmp", "mip", "ftx", "tif", "tiff"
+    "png", "jpg", "jpeg", "bmp", "gif", "tga", "pcx", "wal", "swl", "m8", "m32", "dds", "lmp", "mip", "ftx", "tif", "tiff"
   };
   return kImageExts.contains(ext);
 }
@@ -9784,9 +9784,9 @@ void PakTab::update_preview() {
   if (is_image_file_name(leaf)) {
     ImageDecodeOptions decode_options;
     PreviewAssetContext asset_context;
-    const bool supports_mips = (ext == "wal" || ext == "swl" || ext == "m8" || ext == "mip");
+    const bool supports_mips = (ext == "wal" || ext == "swl" || ext == "m8" || ext == "m32" || ext == "mip");
     if (preview_) {
-      preview_->set_image_mip_controls(supports_mips, preview_->image_mip_level(), ext == "m8" ? 16 : 4);
+      preview_->set_image_mip_controls(supports_mips, preview_->image_mip_level(), (ext == "m8" || ext == "m32") ? 16 : 4);
     }
     decode_options.mip_level = supports_mips && preview_ ? preview_->image_mip_level() : 0;
     if (ext == "wal") {
@@ -9828,6 +9828,8 @@ void PakTab::update_preview() {
     }
     if (ext == "m8") {
       asset_context.palette_provenance = "Embedded Heretic II M8 palette.";
+    } else if (ext == "m32") {
+      asset_context.palette_provenance = "Heretic II M32 RGBA texture.";
     } else if (ext == "swl") {
       asset_context.palette_provenance = "Embedded SWL palette.";
     } else if (ext == "pcx") {
@@ -10077,7 +10079,7 @@ void PakTab::update_preview() {
         score += (model_ext == "mdl") ? 24 : 11;
       } else if (skin_ext == "pcx") {
         score += 14;
-      } else if (skin_ext == "m8") {
+      } else if (skin_ext == "m8" || skin_ext == "m32") {
         score += (model_ext == "fm") ? 30 : 13;
       } else if (skin_ext == "wal") {
         score += 12;
@@ -10097,7 +10099,7 @@ void PakTab::update_preview() {
         return {};
       }
 
-      QStringList filters = {"*.png", "*.tga", "*.jpg", "*.jpeg", "*.pcx", "*.wal", "*.swl", "*.m8", "*.dds", "*.lmp", "*.mip", "*.ftx"};
+      QStringList filters = {"*.png", "*.tga", "*.jpg", "*.jpeg", "*.pcx", "*.wal", "*.swl", "*.m8", "*.m32", "*.dds", "*.lmp", "*.mip", "*.ftx"};
       if (model_ext == "md3" || model_ext == "mdc" || model_ext == "mdr") {
         filters.push_back("*.skin");
       }
@@ -10293,7 +10295,7 @@ void PakTab::update_preview() {
         const int slash = normalized_model.lastIndexOf('/');
         const QString model_dir_prefix = (slash >= 0) ? normalized_model.left(slash + 1) : QString();
 
-        const QStringList img_exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "swl", "m8", "dds", "lmp", "mip", "ftx"};
+        const QStringList img_exts = {"png", "tga", "jpg", "jpeg", "pcx", "wal", "swl", "m8", "m32", "dds", "lmp", "mip", "ftx"};
 
         // Build a quick case-insensitive lookup across the currently-viewed archive + added files.
         QHash<QString, QString> by_lower;
@@ -10807,8 +10809,8 @@ void PakTab::update_preview() {
         constexpr int kMaxBspTexturePreviewRefs = 256;
         const BspFamily bsp_family = bsp_family_bytes(bsp_bytes);
         const QStringList exts_q3 = {"ftx", "tga", "jpg", "jpeg", "png", "dds"};
-        const QStringList exts_q2 = {"wal", "swl", "m8", "png", "tga", "jpg", "jpeg", "dds"};
-        const QStringList exts_h2 = {"m8", "wal", "swl", "png", "tga", "jpg", "jpeg", "dds"};
+        const QStringList exts_q2 = {"wal", "swl", "m8", "m32", "png", "tga", "jpg", "jpeg", "dds"};
+        const QStringList exts_h2 = {"m32", "m8", "wal", "swl", "png", "tga", "jpg", "jpeg", "dds"};
         const QStringList exts_q1 = {"mip", "lmp", "pcx", "png", "tga", "jpg", "jpeg"};
 
         QHash<QString, QString> by_lower;
@@ -11411,7 +11413,7 @@ void PakTab::update_preview() {
           return key.isEmpty() ? QString() : by_lower.value(key);
         };
 
-        const QStringList tex_exts = {"tga", "jpg", "jpeg", "png", "dds", "wal", "swl", "m8", "pcx", "lmp", "mip"};
+        const QStringList tex_exts = {"tga", "jpg", "jpeg", "png", "dds", "wal", "swl", "m8", "m32", "pcx", "lmp", "mip"};
         const QString shader_dir = source_path.isEmpty() ? QString() : QFileInfo(source_path).absolutePath();
         QStringList local_roots;
         if (!shader_dir.isEmpty()) {

@@ -452,7 +452,7 @@ QString ModelViewerWindow::find_skin_on_disk(const QString& model_path) const {
 			score += (model_ext == "mdl") ? 24 : 11;
 		} else if (skin_ext == "pcx") {
 			score += 14;
-		} else if (skin_ext == "m8") {
+		} else if (skin_ext == "m8" || skin_ext == "m32") {
 			score += (model_ext == "fm") ? 30 : 13;
 		} else if (skin_ext == "wal" || skin_ext == "swl") {
 			score += 12;
@@ -463,7 +463,7 @@ QString ModelViewerWindow::find_skin_on_disk(const QString& model_path) const {
 		return score;
 	};
 
-	QStringList filters = {"*.png", "*.tga", "*.jpg", "*.jpeg", "*.pcx", "*.wal", "*.swl", "*.m8", "*.dds", "*.lmp", "*.mip", "*.ftx"};
+	QStringList filters = {"*.png", "*.tga", "*.jpg", "*.jpeg", "*.pcx", "*.wal", "*.swl", "*.m8", "*.m32", "*.dds", "*.lmp", "*.mip", "*.ftx"};
 	if (model_ext == "md3" || model_ext == "mdc" || model_ext == "mdr") {
 		filters.push_back("*.skin");
 	}

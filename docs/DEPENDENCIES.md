@@ -55,6 +55,7 @@
   - WAL: built-in decoder (Quake II; requires `pics/colormap.pcx` palette; previews all mip levels)
   - SWL: built-in decoder (SiN texture; embedded palette; previews mip levels)
   - M8: built-in decoder (Heretic II texture; embedded palette; previews up to 16 mip levels; format reference credited to [0lvin/heretic2](https://github.com/0lvin/heretic2))
+  - M32: built-in decoder (Heretic II RGBA texture; previews up to 16 mip levels; format reference credited to [0lvin/heretic2](https://github.com/0lvin/heretic2))
   - DDS: built-in decoder (uncompressed masks + BC1/BC2/BC3/BC4/BC5, including DX10 headers)
 
 - Archive support:
@@ -65,7 +66,7 @@
   - Quake Live Beta encrypted PK3: built-in decrypt/encrypt (XOR) loader/writer
 
 - Model loaders:
-  - FM: built-in loader (Heretic II mesh frames with MD2-style vertices, mesh-node surfaces, and `.m8` skin hints; format reference credited to [0lvin/heretic2](https://github.com/0lvin/heretic2))
+  - FM: built-in loader (Heretic II mesh frames with MD2-style vertices, mesh-node surfaces, and `.m8`/`.m32` skin hints; format reference credited to [0lvin/heretic2](https://github.com/0lvin/heretic2))
   - MDC: built-in loader (RtCW/Enemy Territory compressed mesh)
   - MD4: built-in loader (RtCW/Enemy Territory skeletal mesh; frame-0 weighted reconstruction)
   - MDR: built-in loader (Raven skeletal mesh used by Elite Force/JK2-family games; frame-0 weighted reconstruction)
@@ -74,7 +75,7 @@
   - GLM: built-in loader (Ghoul2 mesh; companion `.gla` base pose when available)
 
 - BSP/map preview:
-  - Heretic II: built-in Quake II-family BSP loader support for native `IBSP` maps and converted `QBSP` maps, including Heretic II texinfo flag detection, 64-byte converted texture names, and `.m8` texture lookup priority; format reference credited to [0lvin/heretic2](https://github.com/0lvin/heretic2)
+  - Heretic II: built-in Quake II-family BSP loader support for native `IBSP` maps and converted `QBSP` maps, including Heretic II texinfo flag detection, 64-byte converted texture names, and `.m32`/`.m8` texture lookup priority; format reference credited to [0lvin/heretic2](https://github.com/0lvin/heretic2)
   - idTech4: `.map` source files and `.proc` compiled render descriptions are text/metadata-inspected with explicit scope notes; PakFu does not currently claim 3D idTech4 `.proc` or collision-map rendering
 
 - Cinematics (built-in decoders; used for thumbnails + playback widget):

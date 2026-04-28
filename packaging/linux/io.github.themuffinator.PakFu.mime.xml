@@ -16,6 +16,7 @@
   <mime-type type="image/x-idtech-wal"><comment>idTech WAL texture</comment><glob pattern="*.wal"/></mime-type>
   <mime-type type="image/x-idtech-swl"><comment>SiN SWL texture</comment><glob pattern="*.swl"/></mime-type>
   <mime-type type="image/x-heretic2-m8"><comment>Heretic II M8 texture</comment><glob pattern="*.m8"/></mime-type>
+  <mime-type type="image/x-heretic2-m32"><comment>Heretic II M32 texture</comment><glob pattern="*.m32"/></mime-type>
   <mime-type type="image/x-idtech-mip"><comment>idTech MIP texture</comment><glob pattern="*.mip"/></mime-type>
   <mime-type type="image/x-idtech-lmp"><comment>idTech LMP lump image</comment><glob pattern="*.lmp"/></mime-type>
   <mime-type type="image/x-kingpin-ftx"><comment>Kingpin FTX texture</comment><glob pattern="*.ftx"/></mime-type>

@@ -70,6 +70,7 @@ namespace {
 		hints << dir + base + ".jpg";
 		hints << dir + base + ".jpeg";
 		hints << dir + base + ".m8";
+		hints << dir + base + ".m32";
 	}
 	if (ext == "shader") {
 		hints << "textures/";

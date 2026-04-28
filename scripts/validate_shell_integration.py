@@ -103,7 +103,7 @@ def main() -> int:
     custom_mime_exts = mime_glob_extensions(mime_path)
     required_custom_exts = {
         "pak", "sin", "pk3", "pk4", "pkz", "resources", "wad", "wad2", "wad3",
-        "bsp", "map", "proc", "pcx", "wal", "swl", "m8", "mip", "lmp", "ftx",
+        "bsp", "map", "proc", "pcx", "wal", "swl", "m8", "m32", "mip", "lmp", "ftx",
         "cin", "roq", "bik", "idwav", "mdl", "md2", "fm", "md3", "mdc", "md4",
         "mdr", "skb", "skd", "mdm", "glm", "iqm", "md5mesh", "tan", "lwo",
         "cfg", "shader", "menu", "def", "mtr", "spr", "sp2", "spr2", "bk", "os",

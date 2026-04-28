@@ -69,6 +69,7 @@ const QVector<AssociationSpec>& association_specs() {
 	  {"wal", "WAL Image", QColor("#1565C0"), AssociationCategory::Image},
 	  {"swl", "SWL Image", QColor("#2E7D32"), AssociationCategory::Image},
 	  {"m8", "M8 Image", QColor("#7B1FA2"), AssociationCategory::Image},
+	  {"m32", "M32 Image", QColor("#8E24AA"), AssociationCategory::Image},
 	  {"mip", "MIP Image", QColor("#6A1B9A"), AssociationCategory::Image},
 	  {"lmp", "LMP Image", QColor("#5D4037"), AssociationCategory::Image},
 	  {"dds", "DDS Image", QColor("#0277BD"), AssociationCategory::Image},

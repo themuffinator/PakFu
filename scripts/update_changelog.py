@@ -65,6 +65,7 @@ USER_IMPACT_KEYWORDS = (
     "memory",
     "model",
     "m8",
+    "m32",
     "bk",
     "fm",
     "opengl",
@@ -96,10 +97,12 @@ FORMAT_SUPPORT_KEYWORDS = (
     "heretic",
     "heretic ii",
     "m8",
+    "m32",
     "bk",
     "fm",
     " os ",
     "src/formats/m8_image",
+    "src/formats/m32_image",
     "src/formats/idtech_asset_loader",
     "src/formats/model.cpp",
     "src/formats/sprite_loader.cpp",
@@ -272,7 +275,7 @@ def classify_user_change(
         items.append(
             (
                 "Compatibility",
-                "Heretic II filetype support has been added, including M8 textures, FM models, BK book sprites, OS script bytecode previews, and related file associations.",
+                "Heretic II filetype support has been added, including M8/M32 textures, FM models, BK book sprites, OS script bytecode previews, and related file associations.",
             )
         )
     if contains_any(context, IDTECH4_MAP_KEYWORDS):

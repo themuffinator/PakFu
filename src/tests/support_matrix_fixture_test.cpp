@@ -385,6 +385,32 @@ QByteArray one_pixel_m8() {
 	return bytes;
 }
 
+QByteArray one_pixel_m32() {
+	constexpr int kM32MipLevels = 16;
+	constexpr int kM32HeaderSize = 968;
+	constexpr int kNameOffset = 4;
+	constexpr int kWidthOffset = 516;
+	constexpr int kHeightOffset = 580;
+	constexpr int kMipOffset = 644;
+
+	QByteArray bytes(kM32HeaderSize, '\0');
+	write_u32_le(&bytes, 0, 4);
+	const QByteArray name = "fixture";
+	std::memcpy(bytes.data() + kNameOffset, name.constData(), static_cast<size_t>(name.size()));
+	for (int i = 0; i < kM32MipLevels; ++i) {
+		write_u32_le(&bytes, kWidthOffset + i * 4, 1);
+		write_u32_le(&bytes, kHeightOffset + i * 4, 1);
+		write_u32_le(&bytes, kMipOffset + i * 4, static_cast<quint32>(kM32HeaderSize + i * 4));
+	}
+	for (int i = 0; i < kM32MipLevels; ++i) {
+		bytes.append(static_cast<char>(12));
+		bytes.append(static_cast<char>(34));
+		bytes.append(static_cast<char>(56));
+		bytes.append(static_cast<char>(255));
+	}
+	return bytes;
+}
+
 QByteArray one_tile_bk(QString* error) {
 	QByteArray bytes;
 	append_u32_le(&bytes, 0x4B4F4F42u);  // BOOK
@@ -419,7 +445,7 @@ bool append_fm_block(QByteArray* bytes, const QString& name, qint32 version, con
 	return true;
 }
 
-QByteArray one_triangle_fm(QString* error) {
+QByteArray one_triangle_fm(QString* error, const QString& skin_name = QStringLiteral("triangle.m8")) {
 	constexpr qint32 skin_width = 64;
 	constexpr qint32 skin_height = 64;
 	constexpr qint32 vertex_count = 3;
@@ -442,7 +468,7 @@ QByteArray one_triangle_fm(QString* error) {
 	append_i32_le(&header, mesh_node_count);
 
 	QByteArray skins;
-	if (!append_fixed_name(&skins, "triangle.m8", 64, error)) {
+	if (!append_fixed_name(&skins, skin_name, 64, error)) {
 		return {};
 	}
 
@@ -797,6 +823,18 @@ bool test_image_fixture(const QString& root, QString* error) {
 		set_error(error, "M8 fixture decoded with unexpected dimensions or pixel color.");
 		return false;
 	}
+
+	ImageDecodeOptions m32_options;
+	m32_options.mip_level = 15;
+	const ImageDecodeResult m32 = decode_image_bytes(one_pixel_m32(), "fixture.m32", m32_options);
+	if (!m32.ok()) {
+		set_error(error, m32.error.isEmpty() ? "M32 fixture decode failed." : m32.error);
+		return false;
+	}
+	if (m32.image.size() != QSize(1, 1) || m32.image.pixelColor(0, 0) != QColor(12, 34, 56, 255)) {
+		set_error(error, "M32 fixture decoded with unexpected dimensions or pixel color.");
+		return false;
+	}
 	return true;
 }
 
@@ -867,6 +905,25 @@ bool test_model_fixture(const QString& root, QString* error) {
 	if (loaded->format != "fm" || loaded->mesh.vertices.size() != 3 || loaded->mesh.indices.size() != 3 ||
 	    loaded->surfaces.size() != 1 || loaded->surfaces[0].shader != "triangle.m8") {
 		set_error(error, "FM fixture loaded with unexpected geometry or skin metadata.");
+		return false;
+	}
+
+	const QString fm_m32_path = QDir(root).filePath("triangle_m32.fm");
+	const QByteArray fm_m32 = one_triangle_fm(error, QStringLiteral("triangle.m32"));
+	if (fm_m32.isEmpty()) {
+		return false;
+	}
+	if (!write_file(fm_m32_path, fm_m32, error)) {
+		return false;
+	}
+
+	const std::optional<LoadedModel> loaded_m32 = load_model_file(fm_m32_path, error);
+	if (!loaded_m32) {
+		return false;
+	}
+	if (loaded_m32->format != "fm" || loaded_m32->surfaces.size() != 1 ||
+	    loaded_m32->surfaces[0].shader != "triangle.m32") {
+		set_error(error, "FM fixture did not preserve Heretic II M32 skin metadata.");
 		return false;
 	}
 	return true;

@@ -15,7 +15,7 @@ That compatibility is informed by public format lineage, engine behavior, and hi
 - id Software family engines and assets (Quake, Quake II, Quake III, Doom-family)
 - Related studio ecosystems that built on or extended those formats (for example Raven/Ritual/Gray Matter era pipelines)
 - Community-maintained references from open-source engine projects and modding documentation
-- [0lvin/heretic2](https://github.com/0lvin/heretic2), used as the credited Heretic II source reference for `.m8`, `.fm`, `.bk`, `.os`, and Heretic II BSP behavior
+- [0lvin/heretic2](https://github.com/0lvin/heretic2), checked at revision `16aaf15b66183debb4d770ea13f25b43c4dfae0b`, used as the credited Heretic II source reference for `.m8`, `.m32`, `.fm`, `.bk`, `.os`, and Heretic II BSP behavior
 
 ## Thanks
 - Modding communities who preserved format knowledge, test assets, and practical edge cases across decades of tool use
