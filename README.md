@@ -16,6 +16,7 @@
   <a href="https://github.com/themuffinator/PakFu/releases"><img alt="Download" src="https://img.shields.io/badge/download-GitHub%20Releases-2EA44F?style=for-the-badge"></a>
   <a href="docs/DEPENDENCIES.md"><img alt="Dependencies" src="https://img.shields.io/badge/docs-Dependencies-444444?style=for-the-badge"></a>
   <a href="docs/RELEASES.md"><img alt="Release Policy" src="https://img.shields.io/badge/docs-Release%20Policy-444444?style=for-the-badge"></a>
+  <a href="docs/CREDITS.md"><img alt="Credits" src="https://img.shields.io/badge/docs-Credits-6F42C1?style=for-the-badge"></a>
 </p>
 
 <p align="center">
@@ -26,11 +27,37 @@ Step into the PakFu dojo: your Sensei demands tidy archives, sharp tools, and wo
 
 PakFu is a cross-platform archive manager and asset viewer for idTech-era and adjacent game formats. It is built with modern C++ and Qt6, and it keeps both GUI and CLI workflows first-class.
 
+## Getting Started
+
+Pick the path that matches what you want to do first:
+
+| Goal | Start here |
+|---|---|
+| Install or update PakFu | Download the latest Windows, macOS, or Linux package from [GitHub Releases](https://github.com/themuffinator/PakFu/releases). Prefer the installer for your platform unless you specifically want a portable copy. |
+| Open archives in the GUI | Launch PakFu, add or auto-detect your game installation, then open a `.pak`, `.pk3`, `.pk4`, `.zip`, `.wad`, supported resource archive, or folder. |
+| Use PakFu from scripts | Run `pakfu --cli --help`, then see the [CLI quick reference](#cli-quick-reference) for listing, extracting, validating, converting, and update checks. |
+| Build from source | Install the [dependencies](docs/DEPENDENCIES.md), then follow [Build and Run](#build-and-run). |
+
+Release packages follow a consistent shape:
+- Windows: `installer.msi` (recommended) or `portable.zip`
+- macOS: `installer.pkg` (recommended) or `portable.zip`
+- Linux: `installer.AppImage` (recommended) or `portable.tar.gz`
+
+The Linux portable archive is a deployed runtime tree with Qt and non-Qt
+runtime libraries bundled. After extracting it, run `./pakfu` from the extracted
+directory.
+
+PakFu can also check for updates at runtime (GUI) and via CLI (`--check-updates`).
+Every installer and portable package includes an offline HTML user guide in a
+`Documentation` folder (or the platform's app documentation location). The guide
+is generated from the user-facing sections of this README, so packaged help stays
+aligned without carrying build instructions or repository maintenance notes.
+
 <details>
   <summary><strong>Table of Contents</strong></summary>
 
+- [Getting Started](#getting-started)
 - [Overview](#overview)
-- [Download](#download)
 - [Highlights](#highlights)
 - [Supported Formats](#supported-formats)
 - [Build and Run](#build-and-run)
@@ -53,22 +80,6 @@ PakFu is a cross-platform archive manager and asset viewer for idTech-era and ad
 - UI framework: Qt6 Widgets.
 - Primary focus: browse, inspect, preview, extract, and rebuild archive content with a documented CLI.
 - Project state: active development with frequent feature updates.
-
-## Download
-Get PakFu from GitHub Releases:
-- Windows: `installer.msi` (recommended) or `portable.zip`
-- macOS: `installer.pkg` (recommended) or `portable.zip`
-- Linux: `installer.AppImage` (recommended) or `portable.tar.gz`
-
-The Linux portable archive is a deployed runtime tree with Qt and non-Qt
-runtime libraries bundled. After extracting it, run `./pakfu` from the extracted
-directory.
-
-PakFu can also check for updates at runtime (GUI) and via CLI (`--check-updates`).
-Every installer and portable package includes an offline HTML user guide in a
-`Documentation` folder (or the platform's app documentation location). The guide
-is generated from the user-facing sections of this README, so packaged help stays
-aligned without carrying build instructions or repository maintenance notes.
 
 ## Highlights
 - Archive and folder support in both GUI and CLI.
@@ -359,21 +370,22 @@ For full policy details, see `docs/RELEASES.md`.
 | `QT_MEDIA_BACKEND` | Override Qt multimedia backend selection. |
 
 ## Documentation
-- `docs/CORE_LIBRARY.md` : `pakfu_core` public headers, API metadata, install contract, and sample consumer code.
-- `docs/DEPENDENCIES.md` : dependency baseline and optional libraries.
-- `docs/EXTENSIONS.md` : manifest schema, JSON payload contract, and CLI/GUI extension workflow.
-- `examples/extensions/` : source-first extension examples for local development and plugin-report smoke checks.
-- `docs/QA_ARCHIVE_FILE_OPS.md` : practical QA checklist for selection, drag/drop, cut/copy/paste, and modifiers.
-- `docs/RELEASES.md` : versioning, release rules, and asset contract.
-- `docs/UI_BUTTON_ICONS.md` : UI action icon inventory.
-- `docs/FILE_ASSOCIATION_ICONS.md` : file association icon mapping and implementation notes.
-- `docs/CREDITS.md` : project attributions, compatibility acknowledgements, and third-party credits.
-- `CHANGELOG.md` : release-by-release change history.
-- `scripts/build_user_guide.py` : generates the packaged HTML user guide from the user-facing README sections.
+- [Core library](docs/CORE_LIBRARY.md): `pakfu_core` public headers, API metadata, install contract, and sample consumer code.
+- [Dependencies](docs/DEPENDENCIES.md): dependency baseline and optional libraries.
+- [Extensions](docs/EXTENSIONS.md): manifest schema, JSON payload contract, and CLI/GUI extension workflow.
+- [Extension examples](examples/extensions/): source-first extension examples for local development and plugin-report smoke checks.
+- [Archive file operations QA](docs/QA_ARCHIVE_FILE_OPS.md): practical QA checklist for selection, drag/drop, cut/copy/paste, and modifiers.
+- [Release policy](docs/RELEASES.md): versioning, release rules, and asset contract.
+- [UI button icons](docs/UI_BUTTON_ICONS.md): UI action icon inventory.
+- [File association icons](docs/FILE_ASSOCIATION_ICONS.md): file association icon mapping and implementation notes.
+- [Credits and acknowledgements](docs/CREDITS.md): project attributions, compatibility acknowledgements, and third-party credits.
+- [Changelog](CHANGELOG.md): release-by-release change history.
+- [User guide builder](scripts/build_user_guide.py): generates the packaged HTML user guide from the user-facing README sections.
 
 ## Credits
-- Creator: themuffinator (DarkMatter Productions)
-- Full attribution list: `docs/CREDITS.md`
+PakFu is created by themuffinator (DarkMatter Productions), with project attributions,
+compatibility acknowledgements, and third-party credits maintained in the
+[credits document](docs/CREDITS.md).
 
 ## Tech Stack
 - Language: C++20
