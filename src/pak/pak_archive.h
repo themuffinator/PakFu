@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QHash>
 #include <QVector>
 #include <QString>
 #include <QtGlobal>
@@ -35,4 +36,5 @@ private:
   QString path_;
   qint64 file_size_ = 0;
   QVector<ArchiveEntry> entries_;
+  QHash<QString, int> index_by_name_;
 };

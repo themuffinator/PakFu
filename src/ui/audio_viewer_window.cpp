@@ -181,6 +181,12 @@ QString AudioViewerWindow::current_audio_path() const {
 	return audio_paths_[current_index_];
 }
 
+void AudioViewerWindow::apply_preferences_from_settings() {
+	if (preview_) {
+		preview_->apply_preferences_from_settings();
+	}
+}
+
 void AudioViewerWindow::rebuild_audio_list_for(const QString& file_path) {
 	audio_paths_.clear();
 	current_index_ = -1;

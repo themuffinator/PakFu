@@ -10,6 +10,8 @@
 #include <QFile>
 #include <QSaveFile>
 
+#include "foundation/performance_metrics.h"
+
 namespace {
 constexpr int kPakHeaderSize = 12;
 constexpr int kQuakePakDirEntrySize = 64;
@@ -145,6 +147,7 @@ QString normalize_lookup_name(QString name) {
 }  // namespace
 
 bool PakArchive::load(const QString& path, QString* error) {
+  PakFu::Metrics::ScopedTimer load_timer("archive", "pak_load", QFileInfo(path).fileName());
   loaded_ = false;
   sin_archive_ = false;
   dir_entry_size_ = kQuakePakDirEntrySize;
@@ -153,6 +156,7 @@ bool PakArchive::load(const QString& path, QString* error) {
   path_.clear();
   file_size_ = 0;
   entries_.clear();
+  index_by_name_.clear();
 
   QFile file(path);
   if (!file.open(QIODevice::ReadOnly)) {
@@ -225,6 +229,7 @@ bool PakArchive::load(const QString& path, QString* error) {
   }
 
   entries_.reserve(count);
+  index_by_name_.reserve(count);
 
   for (int i = 0; i < count; ++i) {
     const QByteArray entry_bytes = file.read(dir_entry_size_);
@@ -268,6 +273,10 @@ bool PakArchive::load(const QString& path, QString* error) {
     entry.size = size;
     entry.mtime_utc_secs = -1;
     entries_.push_back(std::move(entry));
+    const QString lookup_key = normalize_lookup_name(name);
+    if (!lookup_key.isEmpty() && !index_by_name_.contains(lookup_key)) {
+      index_by_name_.insert(lookup_key, entries_.size() - 1);
+    }
   }
 
   loaded_ = true;
@@ -283,12 +292,11 @@ const ArchiveEntry* PakArchive::find_entry(const QString& name) const {
   if (needle.isEmpty()) {
     return nullptr;
   }
-  for (const ArchiveEntry& e : entries_) {
-    if (e.name == needle) {
-      return &e;
-    }
+  const int idx = index_by_name_.value(needle, -1);
+  if (idx < 0 || idx >= entries_.size()) {
+    return nullptr;
   }
-  return nullptr;
+  return &entries_[idx];
 }
 
 bool PakArchive::read_entry_bytes(const QString& name,

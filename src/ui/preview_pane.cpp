@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <utility>
 
 #include <QAudioOutput>
 #include <QColorDialog>
@@ -47,6 +48,7 @@
 #include <QWidgetAction>
 
 #include "formats/idwav_audio.h"
+#include "formats/fontdat_font.h"
 #include "formats/image_loader.h"
 #include "ui/bsp_preview_vulkan_widget.h"
 #include "ui/bsp_preview_widget.h"
@@ -226,6 +228,28 @@ QString background_mode_label(PreviewBackgroundMode mode) {
 	return "themed";
 }
 
+void set_combo_current_data(QComboBox* combo, const QString& data) {
+	if (!combo) {
+		return;
+	}
+	const int idx = combo->findData(data);
+	if (idx < 0) {
+		return;
+	}
+	const bool blocked = combo->blockSignals(true);
+	combo->setCurrentIndex(idx);
+	combo->blockSignals(blocked);
+}
+
+void set_button_checked(QToolButton* button, bool checked) {
+	if (!button) {
+		return;
+	}
+	const bool blocked = button->blockSignals(true);
+	button->setChecked(checked);
+	button->blockSignals(blocked);
+}
+
 QString normalize_dependency_key(QString key) {
 	key = key.trimmed().toLower();
 	key.replace('\\', '/');
@@ -235,185 +259,6 @@ QString normalize_dependency_key(QString key) {
 	return key;
 }
 
-BspPreviewWidget* as_gl_bsp_widget(QWidget* widget) {
-	return dynamic_cast<BspPreviewWidget*>(widget);
-}
-
-BspPreviewVulkanWidget* as_vk_bsp_widget(QWidget* widget) {
-	return dynamic_cast<BspPreviewVulkanWidget*>(widget);
-}
-
-ModelViewerWidget* as_gl_model_widget(QWidget* widget) {
-	return dynamic_cast<ModelViewerWidget*>(widget);
-}
-
-ModelViewerVulkanWidget* as_vk_model_widget(QWidget* widget) {
-	return dynamic_cast<ModelViewerVulkanWidget*>(widget);
-}
-
-void apply_bsp_lightmap(QWidget* widget, bool enabled) {
-	if (auto* gl = as_gl_bsp_widget(widget)) {
-		gl->set_lightmap_enabled(enabled);
-		return;
-	}
-	if (auto* vk = as_vk_bsp_widget(widget)) {
-		vk->set_lightmap_enabled(enabled);
-	}
-}
-
-PreviewCameraState camera_state_for_widget(QWidget* widget) {
-	if (!widget) {
-		return {};
-	}
-	if (auto* gl = as_gl_bsp_widget(widget)) {
-		return gl->camera_state();
-	}
-	if (auto* vk = as_vk_bsp_widget(widget)) {
-		return vk->camera_state();
-	}
-	if (auto* gl = as_gl_model_widget(widget)) {
-		return gl->camera_state();
-	}
-	if (auto* vk = as_vk_model_widget(widget)) {
-		return vk->camera_state();
-	}
-	return {};
-}
-
-void apply_camera_state(QWidget* widget, const PreviewCameraState& state) {
-	if (!widget || !state.valid) {
-		return;
-	}
-	if (auto* gl = as_gl_bsp_widget(widget)) {
-		gl->set_camera_state(state);
-		return;
-	}
-	if (auto* vk = as_vk_bsp_widget(widget)) {
-		vk->set_camera_state(state);
-		return;
-	}
-	if (auto* gl = as_gl_model_widget(widget)) {
-		gl->set_camera_state(state);
-		return;
-	}
-	if (auto* vk = as_vk_model_widget(widget)) {
-		vk->set_camera_state(state);
-	}
-}
-
-void apply_3d_visual_settings(QWidget* widget,
-                              PreviewGridMode grid_mode,
-                              PreviewBackgroundMode bg_mode,
-                              const QColor& bg_color,
-                              bool wireframe_enabled,
-                              bool textured_enabled,
-                              int fov_degrees,
-                              bool glow_enabled) {
-	if (!widget) {
-		return;
-	}
-	const int fov = std::clamp(fov_degrees, 40, 120);
-	if (auto* gl = as_gl_bsp_widget(widget)) {
-		gl->set_grid_mode(grid_mode);
-		gl->set_background_mode(bg_mode, bg_color);
-		gl->set_wireframe_enabled(wireframe_enabled);
-		gl->set_textured_enabled(textured_enabled);
-		gl->set_fov_degrees(fov);
-		return;
-	}
-	if (auto* vk = as_vk_bsp_widget(widget)) {
-		vk->set_grid_mode(grid_mode);
-		vk->set_background_mode(bg_mode, bg_color);
-		vk->set_wireframe_enabled(wireframe_enabled);
-		vk->set_textured_enabled(textured_enabled);
-		vk->set_fov_degrees(fov);
-		return;
-	}
-	if (auto* gl = as_gl_model_widget(widget)) {
-		gl->set_grid_mode(grid_mode);
-		gl->set_background_mode(bg_mode, bg_color);
-		gl->set_wireframe_enabled(wireframe_enabled);
-		gl->set_textured_enabled(textured_enabled);
-		gl->set_fov_degrees(fov);
-		gl->set_glow_enabled(glow_enabled);
-		return;
-	}
-	if (auto* vk = as_vk_model_widget(widget)) {
-		vk->set_grid_mode(grid_mode);
-		vk->set_background_mode(bg_mode, bg_color);
-		vk->set_wireframe_enabled(wireframe_enabled);
-		vk->set_textured_enabled(textured_enabled);
-		vk->set_fov_degrees(fov);
-		vk->set_glow_enabled(glow_enabled);
-	}
-}
-
-struct ModelAnimationState {
-	bool valid = false;
-	int frame_count = 0;
-	int current_frame = 0;
-	bool playing = false;
-	bool loop_enabled = true;
-	float speed_multiplier = 1.0f;
-	bool skeleton_enabled = false;
-	bool has_native_animation = false;
-	bool has_native_skeleton = false;
-	int skeleton_joint_count = 0;
-};
-
-ModelAnimationState model_animation_state_for_widget(QWidget* widget) {
-	ModelAnimationState st;
-	if (auto* gl = as_gl_model_widget(widget)) {
-		st.valid = gl->has_model();
-		st.frame_count = gl->animation_frame_count();
-		st.current_frame = gl->animation_current_frame();
-		st.playing = gl->animation_playing();
-		st.loop_enabled = gl->animation_loop_enabled();
-		st.speed_multiplier = gl->animation_speed_multiplier();
-		st.skeleton_enabled = gl->skeleton_overlay_enabled();
-		st.has_native_animation = gl->has_native_animation();
-		st.has_native_skeleton = gl->has_native_skeleton();
-		st.skeleton_joint_count = gl->skeleton_joint_count();
-		return st;
-	}
-	if (auto* vk = as_vk_model_widget(widget)) {
-		st.valid = vk->has_model();
-		st.frame_count = vk->animation_frame_count();
-		st.current_frame = vk->animation_current_frame();
-		st.playing = vk->animation_playing();
-		st.loop_enabled = vk->animation_loop_enabled();
-		st.speed_multiplier = vk->animation_speed_multiplier();
-		st.skeleton_enabled = vk->skeleton_overlay_enabled();
-		st.has_native_animation = vk->has_native_animation();
-		st.has_native_skeleton = vk->has_native_skeleton();
-		st.skeleton_joint_count = vk->skeleton_joint_count();
-		return st;
-	}
-	return st;
-}
-
-void apply_model_animation_settings(QWidget* widget, const ModelAnimationState& st) {
-	if (!widget) {
-		return;
-	}
-	const int clamped_frame = std::max(0, st.current_frame);
-	const float speed = std::clamp(st.speed_multiplier, 0.1f, 8.0f);
-	if (auto* gl = as_gl_model_widget(widget)) {
-		gl->set_animation_loop_enabled(st.loop_enabled);
-		gl->set_animation_speed_multiplier(speed);
-		gl->set_skeleton_overlay_enabled(st.skeleton_enabled);
-		gl->set_animation_frame(clamped_frame);
-		gl->set_animation_playing(st.playing);
-		return;
-	}
-	if (auto* vk = as_vk_model_widget(widget)) {
-		vk->set_animation_loop_enabled(st.loop_enabled);
-		vk->set_animation_speed_multiplier(speed);
-		vk->set_skeleton_overlay_enabled(st.skeleton_enabled);
-		vk->set_animation_frame(clamped_frame);
-		vk->set_animation_playing(st.playing);
-	}
-}
 }  // namespace
 
 /*
@@ -434,20 +279,18 @@ PreviewPane::~PreviewPane() {
 }
 
 void PreviewPane::set_current_file_info(const QString& pak_path, qint64 size, qint64 mtime_utc_secs) {
-	current_pak_path_ = pak_path;
-	current_file_size_ = size;
-	current_mtime_utc_secs_ = mtime_utc_secs;
+	preview_session_.set_current_file_info(pak_path, size, mtime_utc_secs);
 }
 
 void PreviewPane::set_asset_context(const PreviewAssetContext& context) {
-	asset_context_ = context;
+	preview_session_.set_asset_context(context);
 	if (overview_card_ && overview_card_->isVisible()) {
 		apply_asset_context_overview();
 	}
 }
 
 void PreviewPane::clear_asset_context() {
-	asset_context_ = {};
+	preview_session_.clear_asset_context();
 }
 
 /*
@@ -566,12 +409,8 @@ void PreviewPane::enter_3d_fullscreen() {
 		                         three_d_fov_degrees_,
 		                         glow_enabled_);
 
-		if (has_cached_bsp_) {
-			if (auto* gl = as_gl_bsp_widget(fullscreen_widget)) {
-				gl->set_mesh(cached_bsp_mesh_, cached_bsp_textures_);
-			} else if (auto* vk = as_vk_bsp_widget(fullscreen_widget)) {
-				vk->set_mesh(cached_bsp_mesh_, cached_bsp_textures_);
-			}
+		if (cached_bsp_scene_.is_valid()) {
+			apply_bsp_scene_to_widget(fullscreen_widget, cached_bsp_scene_);
 		}
 	} else if (page == model_page_) {
 		switch (renderer_effective_) {
@@ -605,21 +444,9 @@ void PreviewPane::enter_3d_fullscreen() {
 			vk->set_palettes(model_palette_quake1_, model_palette_quake2_);
 		}
 
-		if (has_cached_model_) {
+		if (cached_model_scene_.is_valid()) {
 			QString err;
-			const bool ok = [&]() {
-				if (auto* gl = as_gl_model_widget(fullscreen_widget)) {
-					return cached_model_skin_path_.isEmpty()
-						       ? gl->load_file(cached_model_file_path_, &err)
-						       : gl->load_file(cached_model_file_path_, cached_model_skin_path_, &err);
-				}
-				if (auto* vk = as_vk_model_widget(fullscreen_widget)) {
-					return cached_model_skin_path_.isEmpty()
-						       ? vk->load_file(cached_model_file_path_, &err)
-						       : vk->load_file(cached_model_file_path_, cached_model_skin_path_, &err);
-				}
-				return false;
-			}();
+			const bool ok = load_model_scene_into_widget(fullscreen_widget, cached_model_scene_, &err);
 			if (!ok) {
 				qWarning() << "PreviewPane: fullscreen model reload failed:" << err;
 			}
@@ -1452,84 +1279,7 @@ void PreviewPane::build_ui() {
 	stack_->addWidget(model_page_);
 	rebuild_model_widget();
 
-	QSettings settings;
-	const QString bg_mode = settings.value("preview/image/backgroundMode").toString().trimmed().toLower();
-	if (bg_mode == "solid") {
-		image_bg_mode_ = ImageBackgroundMode::Solid;
-	} else if (bg_mode == "transparent") {
-		image_bg_mode_ = ImageBackgroundMode::Transparent;
-	} else if (bg_mode == "checkerboard") {
-		image_bg_mode_ = ImageBackgroundMode::Checkerboard;
-	} else {
-		const bool checker = settings.value("preview/image/checkerboard", true).toBool();
-		image_bg_mode_ = checker ? ImageBackgroundMode::Checkerboard : ImageBackgroundMode::Solid;
-	}
-	const QString layout_mode = settings.value("preview/image/layout").toString().trimmed().toLower();
-	image_layout_mode_ = (layout_mode == "tile") ? ImageLayoutMode::Tile : ImageLayoutMode::Fit;
-	image_reveal_transparency_ = settings.value("preview/image/revealTransparent", false).toBool();
-	text_word_wrap_enabled_ = settings.value("preview/text/wordWrap", false).toBool();
-	image_texture_smoothing_ = settings.value("preview/image/textureSmoothing", false).toBool();
-	model_texture_smoothing_ = settings.value("preview/model/textureSmoothing", false).toBool();
-	bsp_lightmapping_enabled_ = settings.value("preview/bsp/lightmapping", true).toBool();
-	{
-		const QString grid_mode = settings.value("preview/3d/gridMode", "floor").toString().trimmed().toLower();
-		if (grid_mode == "grid") {
-			three_d_grid_mode_ = PreviewGridMode::Grid;
-		} else if (grid_mode == "none") {
-			three_d_grid_mode_ = PreviewGridMode::None;
-		} else {
-			three_d_grid_mode_ = PreviewGridMode::Floor;
-		}
-	}
-	{
-		const QString bg_mode = settings.value("preview/3d/backgroundMode", "themed").toString().trimmed().toLower();
-		if (bg_mode == "grey") {
-			three_d_bg_mode_ = PreviewBackgroundMode::Grey;
-		} else if (bg_mode == "custom") {
-			three_d_bg_mode_ = PreviewBackgroundMode::Custom;
-		} else {
-			three_d_bg_mode_ = PreviewBackgroundMode::Themed;
-		}
-	}
-	three_d_wireframe_enabled_ = settings.value("preview/3d/wireframe", false).toBool();
-	three_d_textured_enabled_ = settings.value("preview/3d/textured", true).toBool();
-	three_d_fov_degrees_ = std::clamp(settings.value("preview/3d/fov", 100).toInt(), 40, 120);
-	model_anim_playing_ = settings.value("preview/model/animPlaying", true).toBool();
-	model_anim_loop_enabled_ = settings.value("preview/model/animLoop", true).toBool();
-	model_skeleton_enabled_ = settings.value("preview/model/skeletonOverlay", false).toBool();
-	model_anim_speed_multiplier_ =
-		std::clamp(static_cast<float>(settings.value("preview/model/animSpeed", 1.0).toDouble()), 0.1f, 8.0f);
-
-	{
-		QVariant bg = settings.value("preview/image/backgroundColor");
-		QColor c;
-		if (bg.canConvert<QColor>()) {
-			c = bg.value<QColor>();
-		} else {
-			c = QColor(bg.toString());
-		}
-
-		if (!c.isValid()) {
-			const QColor base = palette().color(QPalette::Window);
-			c = (base.lightness() < 128) ? QColor(64, 64, 64) : QColor(224, 224, 224);
-		}
-		image_bg_color_ = c;
-	}
-
-	{
-		QVariant bg = settings.value("preview/3d/backgroundColor");
-		QColor c;
-		if (bg.canConvert<QColor>()) {
-			c = bg.value<QColor>();
-		} else {
-			c = QColor(bg.toString());
-		}
-		if (!c.isValid()) {
-			const QColor base = palette().color(QPalette::Window);
-			c = (base.lightness() < 128) ? QColor(40, 40, 44) : QColor(210, 210, 210);
-		}
-		three_d_bg_color_ = c;
-	}
+	apply_preferences_from_settings();
 
 	if (image_bg_mode_combo_) {
 		const QString want = (image_bg_mode_ == ImageBackgroundMode::Solid) ? "solid"
@@ -1861,6 +1611,143 @@ void PreviewPane::build_ui() {
 	update_shader_viewport_width();
 }
 
+void PreviewPane::apply_preferences_from_settings() {
+	QSettings settings;
+
+	const QString image_bg_mode = settings.value("preview/image/backgroundMode").toString().trimmed().toLower();
+	if (image_bg_mode == "solid") {
+		image_bg_mode_ = ImageBackgroundMode::Solid;
+	} else if (image_bg_mode == "transparent") {
+		image_bg_mode_ = ImageBackgroundMode::Transparent;
+	} else if (image_bg_mode == "checkerboard") {
+		image_bg_mode_ = ImageBackgroundMode::Checkerboard;
+	} else {
+		const bool checker = settings.value("preview/image/checkerboard", true).toBool();
+		image_bg_mode_ = checker ? ImageBackgroundMode::Checkerboard : ImageBackgroundMode::Solid;
+	}
+
+	const QString layout_mode = settings.value("preview/image/layout").toString().trimmed().toLower();
+	image_layout_mode_ = (layout_mode == "tile") ? ImageLayoutMode::Tile : ImageLayoutMode::Fit;
+	image_reveal_transparency_ = settings.value("preview/image/revealTransparent", false).toBool();
+	text_word_wrap_enabled_ = settings.value("preview/text/wordWrap", false).toBool();
+	image_texture_smoothing_ = settings.value("preview/image/textureSmoothing", false).toBool();
+	model_texture_smoothing_ = settings.value("preview/model/textureSmoothing", false).toBool();
+	bsp_lightmapping_enabled_ = settings.value("preview/bsp/lightmapping", true).toBool();
+
+	const QString grid_mode = settings.value("preview/3d/gridMode", "floor").toString().trimmed().toLower();
+	if (grid_mode == "grid") {
+		three_d_grid_mode_ = PreviewGridMode::Grid;
+	} else if (grid_mode == "none") {
+		three_d_grid_mode_ = PreviewGridMode::None;
+	} else {
+		three_d_grid_mode_ = PreviewGridMode::Floor;
+	}
+
+	const QString bg_mode = settings.value("preview/3d/backgroundMode", "themed").toString().trimmed().toLower();
+	if (bg_mode == "grey") {
+		three_d_bg_mode_ = PreviewBackgroundMode::Grey;
+	} else if (bg_mode == "custom") {
+		three_d_bg_mode_ = PreviewBackgroundMode::Custom;
+	} else {
+		three_d_bg_mode_ = PreviewBackgroundMode::Themed;
+	}
+
+	three_d_wireframe_enabled_ = settings.value("preview/3d/wireframe", false).toBool();
+	three_d_textured_enabled_ = settings.value("preview/3d/textured", true).toBool();
+	three_d_fov_degrees_ = std::clamp(settings.value("preview/3d/fov", 100).toInt(), 40, 120);
+	model_anim_playing_ = settings.value("preview/model/animPlaying", true).toBool();
+	model_anim_loop_enabled_ = settings.value("preview/model/animLoop", true).toBool();
+	model_skeleton_enabled_ = settings.value("preview/model/skeletonOverlay", false).toBool();
+	model_anim_speed_multiplier_ =
+		std::clamp(static_cast<float>(settings.value("preview/model/animSpeed", 1.0).toDouble()), 0.1f, 8.0f);
+
+	{
+		QVariant bg = settings.value("preview/image/backgroundColor");
+		QColor c;
+		if (bg.canConvert<QColor>()) {
+			c = bg.value<QColor>();
+		} else {
+			c = QColor(bg.toString());
+		}
+
+		if (!c.isValid()) {
+			const QColor base = palette().color(QPalette::Window);
+			c = (base.lightness() < 128) ? QColor(64, 64, 64) : QColor(224, 224, 224);
+		}
+		image_bg_color_ = c;
+	}
+
+	{
+		QVariant bg = settings.value("preview/3d/backgroundColor");
+		QColor c;
+		if (bg.canConvert<QColor>()) {
+			c = bg.value<QColor>();
+		} else {
+			c = QColor(bg.toString());
+		}
+		if (!c.isValid()) {
+			const QColor base = palette().color(QPalette::Window);
+			c = (base.lightness() < 128) ? QColor(40, 40, 44) : QColor(210, 210, 210);
+		}
+		three_d_bg_color_ = c;
+	}
+
+	set_preview_renderer(load_preview_renderer());
+
+	const QString image_bg_key = (image_bg_mode_ == ImageBackgroundMode::Solid) ? "solid"
+	                         : (image_bg_mode_ == ImageBackgroundMode::Transparent) ? "transparent"
+	                                                                                 : "checkerboard";
+	set_combo_current_data(image_bg_mode_combo_, image_bg_key);
+	set_combo_current_data(image_layout_combo_, image_layout_mode_ == ImageLayoutMode::Tile ? "tile" : "fit");
+	set_combo_current_data(three_d_grid_combo_, grid_mode_label(three_d_grid_mode_));
+	set_combo_current_data(three_d_bg_combo_, background_mode_label(three_d_bg_mode_));
+	if (text_wrap_button_) {
+		set_button_checked(text_wrap_button_, text_word_wrap_enabled_);
+	}
+	set_button_checked(three_d_wireframe_button_, three_d_wireframe_enabled_);
+	set_button_checked(three_d_textured_button_, three_d_textured_enabled_);
+	set_button_checked(bsp_lightmap_button_, bsp_lightmapping_enabled_);
+
+	if (model_anim_play_button_) {
+		set_button_checked(model_anim_play_button_, model_anim_playing_);
+		model_anim_play_button_->setText(model_anim_playing_ ? "Pause" : "Play");
+		model_anim_play_button_->setIcon(UiIcons::icon(model_anim_playing_ ? UiIcons::Id::MediaPause : UiIcons::Id::MediaPlay, style()));
+	}
+	set_button_checked(model_anim_loop_button_, model_anim_loop_enabled_);
+	set_button_checked(model_skeleton_button_, model_skeleton_enabled_);
+	if (model_anim_speed_combo_) {
+		int best_index = model_anim_speed_combo_->currentIndex();
+		float best_delta = std::numeric_limits<float>::max();
+		for (int i = 0; i < model_anim_speed_combo_->count(); ++i) {
+			const float v = static_cast<float>(model_anim_speed_combo_->itemData(i).toDouble());
+			const float d = std::abs(v - model_anim_speed_multiplier_);
+			if (d < best_delta) {
+				best_delta = d;
+				best_index = i;
+			}
+		}
+		if (best_index >= 0) {
+			const bool blocked = model_anim_speed_combo_->blockSignals(true);
+			model_anim_speed_combo_->setCurrentIndex(best_index);
+			model_anim_speed_combo_->blockSignals(blocked);
+		}
+	}
+
+	update_image_bg_button();
+	update_3d_bg_button();
+	apply_3d_bg_color_button_state();
+	set_model_texture_smoothing(model_texture_smoothing_);
+	set_image_texture_smoothing(image_texture_smoothing_);
+	apply_3d_settings();
+	apply_bsp_lightmap(bsp_widget_, bsp_lightmapping_enabled_);
+	apply_bsp_lightmap(three_d_fullscreen_widget_, bsp_lightmapping_enabled_);
+	apply_model_animation_settings();
+	sync_model_animation_controls();
+	apply_image_background();
+	apply_text_wrap_mode();
+	update_shader_viewport_width();
+}
+
 /*
 =============
 PreviewPane::set_preview_renderer
@@ -1931,12 +1818,8 @@ void PreviewPane::rebuild_bsp_widget() {
 			apply_bsp_lightmap(bsp_widget_, bsp_lightmapping_enabled_);
 			break;
 	}
-	if (has_cached_bsp_) {
-		if (auto* gl = as_gl_bsp_widget(bsp_widget_)) {
-			gl->set_mesh(cached_bsp_mesh_, cached_bsp_textures_);
-		} else if (auto* vk = as_vk_bsp_widget(bsp_widget_)) {
-			vk->set_mesh(cached_bsp_mesh_, cached_bsp_textures_);
-		}
+	if (cached_bsp_scene_.is_valid()) {
+		apply_bsp_scene_to_widget(bsp_widget_, cached_bsp_scene_);
 	}
 	apply_3d_settings();
 	apply_model_animation_settings();
@@ -1973,18 +1856,11 @@ void PreviewPane::rebuild_model_widget() {
 	}
 	set_model_texture_smoothing(model_texture_smoothing_);
 	set_model_palettes(model_palette_quake1_, model_palette_quake2_);
-	if (has_cached_model_) {
+	if (cached_model_scene_.is_valid()) {
 		QString err;
-		bool ok = false;
-		if (auto* gl = as_gl_model_widget(model_widget_)) {
-			ok = cached_model_skin_path_.isEmpty() ? gl->load_file(cached_model_file_path_, &err)
-			                                       : gl->load_file(cached_model_file_path_, cached_model_skin_path_, &err);
-		} else if (auto* vk = as_vk_model_widget(model_widget_)) {
-			ok = cached_model_skin_path_.isEmpty() ? vk->load_file(cached_model_file_path_, &err)
-			                                       : vk->load_file(cached_model_file_path_, cached_model_skin_path_, &err);
-		}
+		const bool ok = load_model_scene_into_widget(model_widget_, cached_model_scene_, &err);
 		if (!ok) {
-			has_cached_model_ = false;
+			cached_model_scene_.clear();
 		}
 	}
 	apply_3d_settings();
@@ -2021,9 +1897,7 @@ void PreviewPane::show_placeholder() {
 	stop_video_playback();
 	stop_model_preview();
 	current_content_kind_ = ContentKind::None;
-	current_pak_path_.clear();
-	current_file_size_ = -1;
-	current_mtime_utc_secs_ = -1;
+	preview_session_.clear_current_file_info();
 	clear_asset_context();
 
 	clear_overview_fields();
@@ -2056,7 +1930,7 @@ void PreviewPane::show_message(const QString& title, const QString& body) {
 		message_label_->setStyleSheet("color: rgba(220, 220, 220, 210);");
 	}
 
-	const bool have_file_info = !current_pak_path_.isEmpty() || current_file_size_ >= 0 || current_mtime_utc_secs_ >= 0;
+	const bool have_file_info = preview_session_.current_file_info().is_valid();
 	if (image_card_) {
 		image_card_->setVisible(false);
 	}
@@ -2386,6 +2260,101 @@ void PreviewPane::show_font_from_bytes(const QString& title, const QString& subt
 	show_content_block("Font Preview", font_page_);
 }
 
+void PreviewPane::show_fontdat_from_bytes(const QString& title,
+                                          const QString& subtitle,
+                                          const QByteArray& bytes,
+                                          const QImage& atlas,
+                                          const QString& atlas_name) {
+	stop_audio_playback();
+	stop_cinematic_playback();
+	stop_video_playback();
+	stop_model_preview();
+	stop_sprite_animation();
+	current_content_kind_ = ContentKind::Font;
+	set_text_highlighter(TextSyntax::None);
+	set_header(title, subtitle);
+	clear_font_preview_font();
+
+	clear_overview_fields();
+	show_overview_block(true);
+	populate_basic_overview();
+	set_overview_value("Type", "Bitmap Font");
+	set_overview_value("Bytes", format_size(bytes.size()));
+	apply_asset_context_overview();
+
+	const FontDatDecodeResult decoded = decode_fontdat_bytes(bytes);
+	if (!decoded.ok()) {
+		if (image_card_) {
+			image_card_->setVisible(false);
+		}
+		if (message_label_) {
+			message_label_->setText(decoded.error.isEmpty() ? "Unable to parse FONTDAT metrics." : decoded.error);
+		}
+		show_content_block("Font Details", message_page_);
+		return;
+	}
+
+	const FontDatDocument& font = decoded.font;
+	set_overview_value("Glyphs", QString("%1 active / %2 records").arg(font.active_glyph_count()).arg(font.glyphs.size()));
+	set_overview_value("Point size", QString::number(font.point_size));
+	set_overview_value("Font height", QString::number(font.height));
+	set_overview_value("Ascender", QString::number(font.ascender));
+	set_overview_value("Descender", QString::number(font.descender));
+	if (font.trailing_bytes > 0) {
+		set_overview_value("Trailing bytes", QString::number(font.trailing_bytes));
+	}
+	if (!atlas_name.isEmpty()) {
+		set_overview_value("Atlas", atlas_name);
+	}
+	if (!atlas.isNull()) {
+		set_overview_value("Atlas size", QString("%1x%2").arg(atlas.width()).arg(atlas.height()));
+	}
+	apply_asset_context_overview();
+
+	if (atlas.isNull()) {
+		if (image_card_) {
+			image_card_->setVisible(false);
+		}
+		if (message_label_) {
+			message_label_->setText("Parsed FONTDAT metrics, but no companion atlas image was resolved.");
+		}
+		if (text_view_) {
+			text_view_->setPlainText(fontdat_summary_text(font, atlas_name, atlas.size()));
+		}
+		show_content_block("Font Details", text_page_ ? text_page_ : message_page_);
+		return;
+	}
+
+	FontDatRenderOptions render_options;
+	render_options.glyph_scale = (font.max_glyph_height() >= 32) ? 1 : 2;
+	const FontDatRenderResult rendered = render_fontdat_preview(font, atlas, render_options);
+	if (!rendered.ok()) {
+		if (image_card_) {
+			image_card_->setVisible(false);
+		}
+		if (message_label_) {
+			message_label_->setText(rendered.error.isEmpty() ? "Unable to render FONTDAT preview." : rendered.error);
+		}
+		if (text_view_) {
+			text_view_->setPlainText(fontdat_summary_text(font, atlas_name, atlas.size()));
+		}
+		show_content_block("Font Details", text_page_ ? text_page_ : message_page_);
+		return;
+	}
+
+	if (image_card_) {
+		image_card_->setVisible(true);
+	}
+	hide_content_block();
+	set_image_qimage(rendered.image);
+	QTimer::singleShot(0, this, [this]() {
+		if (!image_card_ || !image_card_->isVisible() || image_source_pixmap_.isNull()) {
+			return;
+		}
+		set_image_pixmap(image_source_pixmap_);
+	});
+}
+
 /*
 =============
 PreviewPane::show_binary
@@ -2529,9 +2498,8 @@ void PreviewPane::show_bsp(const QString& title, const QString& subtitle, BspMes
 	stop_cinematic_playback();
 	stop_video_playback();
 	stop_model_preview();
-	cached_bsp_mesh_ = mesh;
-	cached_bsp_textures_ = textures;
-	has_cached_bsp_ = !cached_bsp_mesh_.vertices.isEmpty() && !cached_bsp_mesh_.indices.isEmpty();
+	cached_bsp_scene_.mesh = std::move(mesh);
+	cached_bsp_scene_.textures = std::move(textures);
 	current_content_kind_ = ContentKind::Bsp;
 	set_header(title, subtitle);
 	if (image_card_) {
@@ -2541,9 +2509,9 @@ void PreviewPane::show_bsp(const QString& title, const QString& subtitle, BspMes
 	show_overview_block(true);
 	populate_basic_overview();
 	set_overview_value("Type", "BSP");
-	set_overview_value("Vertices", QString::number(mesh.vertices.size()));
-	set_overview_value("Triangles", QString::number(mesh.indices.size() / 3));
-	set_overview_value("Surfaces", QString::number(mesh.surfaces.size()));
+	set_overview_value("Vertices", QString::number(cached_bsp_scene_.mesh.vertices.size()));
+	set_overview_value("Triangles", QString::number(cached_bsp_scene_.mesh.indices.size() / 3));
+	set_overview_value("Surfaces", QString::number(cached_bsp_scene_.mesh.surfaces.size()));
 	apply_asset_context_overview();
 
 	show_content_block("3D Panel", bsp_page_);
@@ -2575,21 +2543,12 @@ void PreviewPane::show_bsp(const QString& title, const QString& subtitle, BspMes
 		model_anim_frame_label_->setVisible(false);
 	}
 	if (bsp_widget_) {
-		if (auto* gl = as_gl_bsp_widget(bsp_widget_)) {
-			gl->set_lightmap_enabled(bsp_lightmapping_enabled_);
-			gl->set_mesh(std::move(mesh), std::move(textures));
-		} else if (auto* vk = as_vk_bsp_widget(bsp_widget_)) {
-			vk->set_lightmap_enabled(bsp_lightmapping_enabled_);
-			vk->set_mesh(std::move(mesh), std::move(textures));
-		}
+		apply_bsp_lightmap(bsp_widget_, bsp_lightmapping_enabled_);
+		apply_bsp_scene_to_widget(bsp_widget_, cached_bsp_scene_);
 	}
 	if (three_d_fullscreen_window_ && three_d_fullscreen_page_ == bsp_page_ && three_d_fullscreen_widget_) {
 		apply_bsp_lightmap(three_d_fullscreen_widget_, bsp_lightmapping_enabled_);
-		if (auto* gl = as_gl_bsp_widget(three_d_fullscreen_widget_)) {
-			gl->set_mesh(cached_bsp_mesh_, cached_bsp_textures_);
-		} else if (auto* vk = as_vk_bsp_widget(three_d_fullscreen_widget_)) {
-			vk->set_mesh(cached_bsp_mesh_, cached_bsp_textures_);
-		}
+		apply_bsp_scene_to_widget(three_d_fullscreen_widget_, cached_bsp_scene_);
 	}
 }
 
@@ -2788,36 +2747,38 @@ void PreviewPane::clear_overview_fields() {
 }
 
 void PreviewPane::populate_basic_overview() {
-	if (!current_pak_path_.isEmpty()) {
-		set_overview_value("Path", current_pak_path_);
+	const PreviewFileInfo& file_info = preview_session_.current_file_info();
+	if (!file_info.pak_path.isEmpty()) {
+		set_overview_value("Path", file_info.pak_path);
 	}
-	if (current_file_size_ >= 0) {
-		set_overview_value("Size", format_size(current_file_size_));
+	if (file_info.size >= 0) {
+		set_overview_value("Size", format_size(file_info.size));
 	}
-	const QString mtime = format_mtime(current_mtime_utc_secs_);
+	const QString mtime = format_mtime(file_info.mtime_utc_secs);
 	if (!mtime.isEmpty()) {
 		set_overview_value("Modified", mtime);
 	}
 }
 
 void PreviewPane::apply_asset_context_overview() {
-	if (!asset_context_.palette_provenance.isEmpty()) {
-		set_overview_value("Palette", asset_context_.palette_provenance);
+	const PreviewAssetContext& asset_context = preview_session_.asset_context();
+	if (!asset_context.palette_provenance.isEmpty()) {
+		set_overview_value("Palette", asset_context.palette_provenance);
 	}
-	if (!asset_context_.companion_resolution.isEmpty()) {
-		set_overview_value("Companions", asset_context_.companion_resolution);
+	if (!asset_context.companion_resolution.isEmpty()) {
+		set_overview_value("Companions", asset_context.companion_resolution);
 	}
-	if (!asset_context_.texture_dependencies.isEmpty()) {
-		set_overview_value("Texture deps", asset_context_.texture_dependencies);
+	if (!asset_context.texture_dependencies.isEmpty()) {
+		set_overview_value("Texture deps", asset_context.texture_dependencies);
 	}
-	if (!asset_context_.shader_dependencies.isEmpty()) {
-		set_overview_value("Shader deps", asset_context_.shader_dependencies);
+	if (!asset_context.shader_dependencies.isEmpty()) {
+		set_overview_value("Shader deps", asset_context.shader_dependencies);
 	}
-	if (!asset_context_.performance_profile.isEmpty()) {
-		set_overview_value("Preview profile", asset_context_.performance_profile);
+	if (!asset_context.performance_profile.isEmpty()) {
+		set_overview_value("Preview profile", asset_context.performance_profile);
 	}
 
-	QString renderer = asset_context_.renderer_state;
+	QString renderer = asset_context.renderer_state;
 	if (renderer.isEmpty() && (current_content_kind_ == ContentKind::Bsp || current_content_kind_ == ContentKind::Model)) {
 		renderer = renderer_state_summary();
 	}
@@ -2828,8 +2789,8 @@ void PreviewPane::apply_asset_context_overview() {
 	}
 
 	QStringList notes;
-	if (!asset_context_.preview_fallback.isEmpty()) {
-		notes.push_back(asset_context_.preview_fallback);
+	if (!asset_context.preview_fallback.isEmpty()) {
+		notes.push_back(asset_context.preview_fallback);
 	}
 	const QString renderer_note = renderer_fallback_note();
 	if (!renderer_note.isEmpty()) {
@@ -3410,33 +3371,20 @@ void PreviewPane::show_model_from_file(const QString& title,
 		model_anim_frame_label_->setVisible(true);
 	}
 
+	ModelPreviewScene scene;
+	scene.file_path = file_path;
+	scene.skin_path = skin_path;
 	QString err;
-	bool ok = false;
-	if (auto* gl = as_gl_model_widget(model_widget_)) {
-		ok = skin_path.isEmpty() ? gl->load_file(file_path, &err)
-								 : gl->load_file(file_path, skin_path, &err);
-	} else if (auto* vk = as_vk_model_widget(model_widget_)) {
-		ok = skin_path.isEmpty() ? vk->load_file(file_path, &err)
-								 : vk->load_file(file_path, skin_path, &err);
-	}
+	const bool ok = load_model_scene_into_widget(model_widget_, scene, &err);
 	if (!ok) {
-		has_cached_model_ = false;
+		cached_model_scene_.clear();
 		show_message(title, err.isEmpty() ? "Unable to load model." : err);
 		return;
 	}
-	cached_model_file_path_ = file_path;
-	cached_model_skin_path_ = skin_path;
-	has_cached_model_ = true;
+	cached_model_scene_ = scene;
 	if (three_d_fullscreen_window_ && three_d_fullscreen_page_ == model_page_ && three_d_fullscreen_widget_) {
 		QString fs_err;
-		bool fs_ok = false;
-		if (auto* gl = as_gl_model_widget(three_d_fullscreen_widget_)) {
-			fs_ok = skin_path.isEmpty() ? gl->load_file(file_path, &fs_err)
-			                            : gl->load_file(file_path, skin_path, &fs_err);
-		} else if (auto* vk = as_vk_model_widget(three_d_fullscreen_widget_)) {
-			fs_ok = skin_path.isEmpty() ? vk->load_file(file_path, &fs_err)
-			                            : vk->load_file(file_path, skin_path, &fs_err);
-		}
+		const bool fs_ok = load_model_scene_into_widget(three_d_fullscreen_widget_, cached_model_scene_, &fs_err);
 		if (!fs_ok) {
 			qWarning() << "PreviewPane: fullscreen model refresh failed:" << fs_err;
 		}

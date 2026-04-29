@@ -15,6 +15,7 @@
 
 #include "archive/archive.h"
 #include "formats/bsp_preview.h"
+#include "formats/fontdat_font.h"
 #include "formats/idtech_asset_loader.h"
 #include "formats/idtech4_map.h"
 #include "formats/image_loader.h"
@@ -409,6 +410,48 @@ QByteArray one_pixel_m32() {
 		bytes.append(static_cast<char>(255));
 	}
 	return bytes;
+}
+
+QByteArray one_fontdat() {
+	QByteArray bytes;
+	bytes.reserve(256 * 28 + 10);
+	for (int i = 0; i < 256; ++i) {
+		const int col = i % 16;
+		const int row = i / 16;
+		append_i16_le(&bytes, 4);
+		append_i16_le(&bytes, 4);
+		append_i16_le(&bytes, (i == 32) ? 4 : 5);
+		append_i16_le(&bytes, 0);
+		append_i32_le(&bytes, 4);
+		append_f32_le(&bytes, static_cast<float>(col * 4) / 64.0f);
+		append_f32_le(&bytes, static_cast<float>(row * 4) / 64.0f);
+		append_f32_le(&bytes, static_cast<float>(col * 4 + 4) / 64.0f);
+		append_f32_le(&bytes, static_cast<float>(row * 4 + 4) / 64.0f);
+	}
+	append_i16_le(&bytes, 12);
+	append_i16_le(&bytes, 8);
+	append_i16_le(&bytes, 7);
+	append_i16_le(&bytes, 1);
+	append_i16_le(&bytes, 0);
+	return bytes;
+}
+
+QImage one_fontdat_atlas() {
+	QImage image(64, 64, QImage::Format_ARGB32);
+	image.fill(Qt::transparent);
+	for (int i = 0; i < 256; ++i) {
+		const int col = i % 16;
+		const int row = i / 16;
+		for (int y = 0; y < 4; ++y) {
+			for (int x = 0; x < 4; ++x) {
+				const bool stroke = (x == 0 || y == 0 || ((x + y + i) % 3 == 0));
+				if (stroke) {
+					image.setPixelColor(col * 4 + x, row * 4 + y, QColor(255, 255, 255, 255));
+				}
+			}
+		}
+	}
+	return image;
 }
 
 QByteArray one_tile_bk(QString* error) {
@@ -838,6 +881,47 @@ bool test_image_fixture(const QString& root, QString* error) {
 	return true;
 }
 
+bool test_fontdat_fixture(const QString& root, QString* error) {
+	const QByteArray fontdat = one_fontdat();
+	const QString fontdat_path = QDir(root).filePath("hud/font.fontdat");
+	if (!write_file(fontdat_path, fontdat, error)) {
+		return false;
+	}
+
+	const FontDatDecodeResult decoded = decode_fontdat_bytes(fontdat);
+	if (!decoded.ok()) {
+		set_error(error, decoded.error.isEmpty() ? "FONTDAT fixture decode failed." : decoded.error);
+		return false;
+	}
+	if (decoded.font.glyphs.size() != 256 || decoded.font.point_size != 12 || decoded.font.active_glyph_count() != 256) {
+		set_error(error, "FONTDAT fixture decoded with unexpected metrics.");
+		return false;
+	}
+
+	const QStringList candidates = fontdat_atlas_candidates_for_path("hud/font.fontdat");
+	if (candidates.isEmpty() || candidates.first() != "hud/font.png" || !candidates.contains("hud/font.tga")) {
+		set_error(error, "FONTDAT atlas candidate list was unexpected.");
+		return false;
+	}
+
+	const QImage atlas = one_fontdat_atlas();
+	const FontDatRenderResult rendered = render_fontdat_preview(decoded.font, atlas);
+	if (!rendered.ok()) {
+		set_error(error, rendered.error.isEmpty() ? "FONTDAT fixture render failed." : rendered.error);
+		return false;
+	}
+	if (rendered.image.width() <= 0 || rendered.image.height() <= 0 || rendered.image == QImage()) {
+		set_error(error, "FONTDAT fixture rendered an empty image.");
+		return false;
+	}
+	if (!fontdat_summary_text(decoded.font, "hud/font.png", atlas.size()).contains("Active glyphs: 256")) {
+		set_error(error, "FONTDAT summary omitted expected glyph count.");
+		return false;
+	}
+
+	return true;
+}
+
 bool test_heretic2_asset_fixture(const QString& root, QString* error) {
 	Q_UNUSED(root);
 
@@ -1016,9 +1100,33 @@ bool test_idtech4_map_fixture(const QString& root, QString* error) {
 	if (!proc_summary.ok() || proc_summary.artifact != IdTech4MapArtifact::ProcFile ||
 	    !proc_summary.summary.contains("PROC version: 4") ||
 	    !proc_summary.summary.contains("Model sections: 1") ||
+	    !proc_summary.summary.contains("Renderable surfaces: 1") ||
+	    !proc_summary.summary.contains("Materials: 1") ||
 	    !proc_summary.summary.contains("Inter-area portal sections: 1") ||
 	    !proc_summary.summary.contains("Node sections: 1")) {
 		set_error(error, proc_summary.error.isEmpty() ? "idTech4 .proc fixture summary was unexpected." : proc_summary.error);
+		return false;
+	}
+
+	const IdTech4ProcLoadResult proc_mesh = load_idtech4_proc_mesh_bytes(proc, "maps/test.proc");
+	if (!proc_mesh.ok() || proc_mesh.mesh.vertices.size() != 3 || proc_mesh.mesh.indices.size() != 3 ||
+	    proc_mesh.mesh.surfaces.size() != 1 ||
+	    !proc_mesh.material_refs.contains("textures/base_wall/stone", Qt::CaseInsensitive)) {
+		set_error(error, proc_mesh.error.isEmpty() ? "idTech4 .proc fixture mesh was unexpected." : proc_mesh.error);
+		return false;
+	}
+
+	const QByteArray material = QByteArrayLiteral(
+	  "textures/base_wall/stone\n"
+	  "{\n"
+	  "  qer_editorimage textures/base_wall/stone_editor\n"
+	  "  diffusemap textures/base_wall/stone_d\n"
+	  "}\n");
+	const IdTech4MaterialParseResult material_parse = parse_idtech4_material_bytes(material, "materials/test.mtr");
+	if (!material_parse.ok() || material_parse.materials.size() != 1 ||
+	    material_parse.materials[0].name != "textures/base_wall/stone" ||
+	    material_parse.materials[0].preferred_image != "textures/base_wall/stone_d") {
+		set_error(error, material_parse.error.isEmpty() ? "idTech4 material fixture parse was unexpected." : material_parse.error);
 		return false;
 	}
 
@@ -1048,6 +1156,7 @@ int main(int argc, char** argv) {
 	    !test_wad3_fixture(QDir(root).filePath("wad3"), &error) ||
 	    !test_doom_wad_fixture(QDir(root).filePath("doom-wad"), &error) ||
 	    !test_image_fixture(QDir(root).filePath("images"), &error) ||
+	    !test_fontdat_fixture(QDir(root).filePath("fontdat"), &error) ||
 	    !test_heretic2_asset_fixture(QDir(root).filePath("heretic2-assets"), &error) ||
 	    !test_model_fixture(QDir(root).filePath("models"), &error) ||
 	    !test_bsp_fixture(QDir(root).filePath("bsps"), &error) ||

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <utility>
 
 #include <QAction>
 #include <QApplication>
@@ -34,7 +35,6 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QRadioButton>
-#include <QRandomGenerator>
 #include <QResizeEvent>
 #include <QSet>
 #include <QSettings>
@@ -47,11 +47,11 @@
 #include <QVariant>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
-#include <QStackedLayout>
 
 #include "game/game_auto_detect.h"
 #include "game/game_set.h"
 #include "pakfu_config.h"
+#include "ui/preview_renderer.h"
 #include "ui/about_dialog.h"
 #include "ui/file_associations_dialog.h"
 #include "ui/game_set_dialog.h"
@@ -63,6 +63,7 @@
 #include "ui/preferences_tab.h"
 #include "ui/ui_icons.h"
 #include "ui/video_viewer_window.h"
+#include "ui/workspace_tab.h"
 #include "update/update_service.h"
 
 class DropOverlay : public QWidget {
@@ -95,7 +96,7 @@ private:
 };
 
 namespace {
-constexpr int kMaxRecentFiles = 12;
+constexpr int kDefaultMaxRecentFiles = 12;
 constexpr char kLegacyRecentFilesKey[] = "ui/recentFiles";
 constexpr char kRecentFilesByInstallKeyPrefix[] = "ui/recentFilesByInstall";
 constexpr char kRecentFilesByInstallMigratedKey[] = "ui/recentFilesByInstallMigrated";
@@ -105,6 +106,12 @@ constexpr char kConfigureGameSetsUid[] = "__configure_game_sets__";
 constexpr char kArchiveOpenAlwaysAskKey[] = "archive/openChooserAlwaysAsk";
 constexpr char kArchiveOpenDefaultActionKey[] = "archive/openChooserDefaultAction";
 constexpr char kArchiveOpenDefaultInstallUidKey[] = "archive/openChooserDefaultInstallUid";
+constexpr char kRecentFilesLimitKey[] = "ui/recentFilesLimit";
+
+int max_recent_files_from_settings() {
+  QSettings settings;
+  return qBound(1, settings.value(kRecentFilesLimitKey, kDefaultMaxRecentFiles).toInt(), 50);
+}
 
 enum class ArchiveOpenIntent {
   OpenDirect = 0,
@@ -640,6 +647,7 @@ bool is_official_archive_for_set(const GameSet& set, const QString& path) {
 
 QStringList normalize_recent_paths(const QStringList& files) {
   // Normalize, drop empty, de-dupe (preserve order).
+  const int max_recent_files = max_recent_files_from_settings();
   QStringList normalized;
   normalized.reserve(files.size());
   for (const QString& f : files) {
@@ -657,7 +665,7 @@ QStringList normalize_recent_paths(const QStringList& files) {
     if (!seen) {
       normalized.push_back(n);
     }
-    if (normalized.size() >= kMaxRecentFiles) {
+    if (normalized.size() >= max_recent_files) {
       break;
     }
   }
@@ -705,36 +713,125 @@ QString workspace_key_for_install_uid(const QString& uid) {
   return key;
 }
 
-class WelcomeBackdrop : public QWidget {
-public:
-  explicit WelcomeBackdrop(QWidget* parent = nullptr) : QWidget(parent) {
-    setAttribute(Qt::WA_TransparentForMouseEvents, true);
-    setAttribute(Qt::WA_NoSystemBackground, true);
-    setAutoFillBackground(false);
+QString archive_format_display_name(Archive::Format format) {
+  switch (format) {
+    case Archive::Format::Directory:
+      return "Folder";
+    case Archive::Format::Pak:
+      return "PAK/SIN";
+    case Archive::Format::Wad:
+      return "WAD";
+    case Archive::Format::Resources:
+      return "Resources";
+    case Archive::Format::Zip:
+      return "ZIP";
+    case Archive::Format::Unknown:
+    default:
+      return "Unknown";
   }
+}
 
-protected:
-  void paintEvent(QPaintEvent* event) override {
-    Q_UNUSED(event);
-    if (qEnvironmentVariableIsSet("PAKFU_DISABLE_WELCOME_BACKDROP_TEXT")) {
-      return;
+WorkspaceTab::Capability workspace_capability(QString area, QString status, QString details, bool ok = true) {
+  WorkspaceTab::Capability capability;
+  capability.area = std::move(area);
+  capability.status = std::move(status);
+  capability.details = std::move(details);
+  capability.ok = ok;
+  return capability;
+}
+
+QVector<WorkspaceTab::Capability> build_workspace_capabilities(int extension_count,
+                                                               const QStringList& extension_warnings) {
+  QVector<WorkspaceTab::Capability> out;
+  out.push_back(workspace_capability(
+    "Archive backends",
+    "Ready",
+    "Folders, PAK/SIN, ZIP/PK3/PK4/PKZ, WAD2/WAD3/Doom WAD, Doom 3 BFG resources"));
+  out.push_back(workspace_capability(
+    "Images",
+    "Ready",
+    "PCX, WAL, SWL, M8, M32, MIP, LMP, DDS, FTX, PNG, BMP, GIF, TGA, JPEG, TIFF"));
+  out.push_back(workspace_capability(
+    "Audio",
+    "Ready",
+    "WAV, OGG, MP3, idWAV through native and Qt multimedia preview paths"));
+  out.push_back(workspace_capability(
+    "Video",
+    "Ready",
+    "CIN, ROQ, BIK, OGV, MP4, MKV, AVI, WebM where Qt multimedia codecs are available"));
+  out.push_back(workspace_capability(
+    "3D previews",
+    "Ready",
+    QString("BSP and model inspection. Preferred renderer: %1. Vulkan backend: %2.")
+      .arg(preview_renderer_display_name(resolve_preview_renderer(load_preview_renderer())),
+           is_vulkan_renderer_available() ? QStringLiteral("available") : QStringLiteral("not available"))));
+  out.push_back(workspace_capability(
+    "Extension commands",
+    extension_count > 0 ? "Ready" : "Idle",
+    extension_count > 0
+      ? QString("%1 command(s) loaded%2")
+          .arg(extension_count)
+          .arg(extension_warnings.isEmpty()
+                 ? QString()
+                 : QString("; %1 manifest warning(s)").arg(extension_warnings.size()))
+      : (extension_warnings.isEmpty()
+           ? QStringLiteral("No commands discovered in configured extension folders")
+           : QString("%1 manifest warning(s)").arg(extension_warnings.size())),
+    extension_warnings.isEmpty()));
+  return out;
+}
+
+QStringList extension_capability_notes(const ExtensionCommand& command) {
+  QStringList notes;
+  for (const QString& cap : command.capabilities) {
+    if (cap == "archive.read") {
+      notes.push_back("archive.read: receives archive metadata and filesystem paths.");
+    } else if (cap == "entries.read") {
+      notes.push_back("entries.read: receives selected entries as temporary local files.");
+    } else if (cap == "entries.import") {
+      notes.push_back("entries.import: may ask PakFu to import generated files after host validation.");
+    } else {
+      notes.push_back(cap + ": extension-declared capability.");
     }
-    QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setRenderHint(QPainter::TextAntialiasing, true);
-
-    QFont f = font();
-    f.setPixelSize(160);
-    f.setWeight(QFont::Black);
-    painter.setFont(f);
-
-    QColor c = palette().color(QPalette::Text);
-    c.setAlphaF(0.06);
-    painter.setPen(c);
-
-    painter.drawText(rect(), Qt::AlignCenter, QString::fromUtf8(u8"存档很强大"));
   }
-};
+  if (notes.isEmpty()) {
+    notes.push_back("No explicit capabilities requested.");
+  }
+  return notes;
+}
+
+bool confirm_extension_run(QWidget* parent, const ExtensionCommand& command) {
+  QMessageBox box(parent);
+  box.setIcon(QMessageBox::Question);
+  box.setWindowTitle("Run Extension");
+  box.setText(QString("Run %1?").arg(extension_command_display_name(command)));
+  box.setInformativeText("PakFu will launch the extension as an external process with the capabilities shown below.");
+
+  QStringList details;
+  details.push_back(QString("Ref: %1").arg(extension_command_ref(command)));
+  details.push_back(QString("Manifest: %1").arg(command.manifest_path));
+  details.push_back(QString("Working directory: %1").arg(command.working_directory));
+  if (!command.argv.isEmpty()) {
+    details.push_back(QString("Command: %1").arg(command.argv.join(' ')));
+  }
+  details.push_back(QString("Entries: %1, multiple: %2")
+                      .arg(command.requires_entries ? "required" : "optional",
+                           command.allow_multiple ? "yes" : "no"));
+  if (!command.allowed_extensions.isEmpty()) {
+    details.push_back(QString("Allowed extensions: %1").arg(command.allowed_extensions.join(", ")));
+  }
+  details.push_back("Capabilities:");
+  for (const QString& note : extension_capability_notes(command)) {
+    details.push_back("  " + note);
+  }
+  box.setDetailedText(details.join("\n"));
+
+  QPushButton* run_button = box.addButton("Run", QMessageBox::AcceptRole);
+  box.addButton("Cancel", QMessageBox::RejectRole);
+  box.setDefaultButton(run_button);
+  box.exec();
+  return box.clickedButton() == run_button;
+}
 
 QToolButton* make_tab_close_button(QWidget* parent, const std::function<void()>& on_clicked) {
   auto* btn = new QToolButton(parent);
@@ -747,37 +844,6 @@ QToolButton* make_tab_close_button(QWidget* parent, const std::function<void()>&
   btn->setFixedSize(18, 18);
   QObject::connect(btn, &QToolButton::clicked, parent, on_clicked);
   return btn;
-}
-
-QString random_welcome_message() {
-  const QStringList messages = {
-    "Welcome to PakFu. Your archives will learn respect.",
-    "PakFu loaded. Prepare your folders for combat.",
-    "Inner peace achieved. Outer PAKs reorganised.",
-    "The way of the PAK is strong today.",
-    "Unzip with honour.",
-    "Files do not fear PakFu. They should.",
-    "One kick. Many folders.",
-    "Your assets have entered the dojo.",
-    "PAK management through disciplined violence.",
-    "Balance restored. Archives aligned.",
-    "Kung Fu is temporary. PakFu is forever.",
-    "Folders fly. Files cry. PakFu smiles.",
-    "Mastery is knowing when to extract.",
-    "You bring the PAKs. PakFu brings the wisdom.",
-    "The archive has been opened. So has your mind.",
-    "Walk softly. Carry a big PAK.",
-    "Meditate. Breathe. Rebuild index.",
-    "The dojo is open. Drag and drop responsibly.",
-    "A true master backs up first.",
-    "Today is a good day to refactor an archive.",
-  };
-
-  if (messages.isEmpty()) {
-    return "Welcome";
-  }
-  const int idx = static_cast<int>(QRandomGenerator::global()->bounded(messages.size()));
-  return messages[idx];
 }
 
 struct ArchiveOpenChoiceResult {
@@ -948,84 +1014,6 @@ ArchiveOpenChoiceResult prompt_archive_open_choice(QWidget* parent,
   return result;
 }
 
-QWidget* build_welcome_tab(QWidget* parent,
-                          const std::function<void()>& on_new,
-                          const std::function<void()>& on_open_file,
-                          const std::function<void()>& on_open_archive,
-                          const std::function<void()>& on_open_folder,
-                          const std::function<void()>& on_exit) {
-  auto* root = new QWidget(parent);
-
-  // Background decoration (kept non-interactive so it never steals clicks).
-  auto* stacked = new QStackedLayout(root);
-  stacked->setStackingMode(QStackedLayout::StackAll);
-  stacked->setContentsMargins(0, 0, 0, 0);
-
-  auto* backdrop = new WelcomeBackdrop(root);
-  stacked->addWidget(backdrop);
-
-  auto* content = new QWidget(root);
-  auto* layout = new QVBoxLayout(content);
-  layout->setContentsMargins(44, 40, 44, 40);
-  layout->setSpacing(18);
-  stacked->addWidget(content);
-
-  layout->addStretch();
-
-  auto* title = new QLabel(random_welcome_message(), content);
-  title->setAlignment(Qt::AlignCenter);
-  title->setWordWrap(true);
-  QFont title_font = title->font();
-  title_font.setPointSize(title_font.pointSize() + 8);
-  title_font.setWeight(QFont::DemiBold);
-  title->setFont(title_font);
-  layout->addWidget(title);
-
-  auto* subtitle = new QLabel("Create a new PAK, open a file/archive/folder, or exit.", content);
-  subtitle->setAlignment(Qt::AlignCenter);
-  subtitle->setWordWrap(true);
-  layout->addWidget(subtitle);
-
-  auto* button_row = new QHBoxLayout();
-  button_row->addStretch();
-
-  auto* create_button = new QPushButton("Create PAK", content);
-  auto* open_button = new QPushButton("Open…", content);
-  auto* open_menu = new QMenu(open_button);
-  QAction* open_file_action = open_menu->addAction("Open File...");
-  QAction* open_archive_action = open_menu->addAction("Open Archive...");
-  QAction* open_folder_action = open_menu->addAction("Open Folder...");
-  create_button->setIcon(UiIcons::icon(UiIcons::Id::NewPak, create_button->style()));
-  open_button->setIcon(UiIcons::icon(UiIcons::Id::OpenArchive, open_button->style()));
-  open_file_action->setIcon(UiIcons::icon(UiIcons::Id::OpenArchive, open_button->style()));
-  open_archive_action->setIcon(UiIcons::icon(UiIcons::Id::OpenArchive, open_button->style()));
-  open_folder_action->setIcon(UiIcons::icon(UiIcons::Id::OpenFolder, open_button->style()));
-  open_button->setMenu(open_menu);
-  auto* close_button = new QPushButton("Close", content);
-  close_button->setIcon(UiIcons::icon(UiIcons::Id::ExitApp, close_button->style()));
-  create_button->setMinimumWidth(170);
-  open_button->setMinimumWidth(170);
-  close_button->setMinimumWidth(170);
-
-  button_row->addWidget(create_button);
-  button_row->addSpacing(18);
-  button_row->addWidget(open_button);
-  button_row->addSpacing(18);
-  button_row->addWidget(close_button);
-  button_row->addStretch();
-
-  layout->addSpacing(10);
-  layout->addLayout(button_row);
-  layout->addStretch();
-
-  QObject::connect(create_button, &QPushButton::clicked, root, on_new);
-  QObject::connect(open_file_action, &QAction::triggered, root, on_open_file);
-  QObject::connect(open_archive_action, &QAction::triggered, root, on_open_archive);
-  QObject::connect(open_folder_action, &QAction::triggered, root, on_open_folder);
-  QObject::connect(close_button, &QPushButton::clicked, root, on_exit);
-
-  return root;
-}
 }  // namespace
 
 MainWindow::MainWindow(const GameSet& game_set, const QString& initial_pak_path, bool schedule_updates)
@@ -1055,6 +1043,7 @@ MainWindow::MainWindow(const GameSet& game_set, const QString& initial_pak_path,
   if (initial_pak_path.isEmpty()) {
     restore_workspace_for_install(game_set_.uid);
   }
+  update_workspace_tab();
 }
 
 void MainWindow::open_archives(const QStringList& paths) {
@@ -1063,6 +1052,7 @@ void MainWindow::open_archives(const QStringList& paths) {
       open_pak(path);
     }
   }
+  update_workspace_tab();
 }
 
 QString MainWindow::default_directory_for_dialogs() const {
@@ -1099,6 +1089,7 @@ void MainWindow::update_pure_pak_protector_for_tabs() {
     pak_tab->set_pure_pak_protector(enabled, official);
   }
   update_action_states();
+  update_workspace_tab();
 }
 
 void MainWindow::save_workspace_for_current_install() {
@@ -1203,6 +1194,7 @@ void MainWindow::restore_workspace_for_install(const QString& uid) {
   if (!current_path.isEmpty()) {
     focus_tab_by_path(current_path);
   }
+  update_workspace_tab();
 }
 
 void MainWindow::clear_archive_tabs() {
@@ -1215,6 +1207,7 @@ void MainWindow::clear_archive_tabs() {
       close_tab(i);
     }
   }
+  update_workspace_tab();
 }
 
 void MainWindow::setup_central() {
@@ -1248,30 +1241,27 @@ void MainWindow::setup_central() {
   layout->addWidget(tabs_, 1);
   setCentralWidget(central);
 
-  welcome_tab_ = build_welcome_tab(
-    tabs_,
-    [this]() { create_new_pak(); },
-    [this]() { open_file_dialog(); },
-    [this]() { open_pak_dialog(); },
-    [this]() { open_folder_dialog(); },
-    [this]() { close(); });
-  tabs_->addTab(welcome_tab_, "Welcome");
+  WorkspaceTab::Callbacks workspace_callbacks;
+  workspace_callbacks.new_archive = [this]() { create_new_pak(); };
+  workspace_callbacks.open_file = [this]() { open_file_dialog(); };
+  workspace_callbacks.open_archive = [this]() { open_pak_dialog(); };
+  workspace_callbacks.open_folder = [this]() { open_folder_dialog(); };
+  workspace_callbacks.manage_installations = [this]() { open_game_set_manager(); };
+  workspace_callbacks.refresh = [this]() { update_workspace_tab(); };
+  workspace_callbacks.focus_archive = [this](const QString& path) {
+    if (path.isEmpty()) {
+      return;
+    }
+    if (!focus_tab_by_path(path)) {
+      open_pak(path);
+    }
+  };
+  workspace_callbacks.search = [this](const QString& query) { run_workspace_search(query); };
+  workspace_tab_ = new WorkspaceTab(std::move(workspace_callbacks), tabs_);
+  tabs_->addTab(workspace_tab_, "Workspace");
   if (auto* bar = tabs_->tabBar()) {
     bar->setAcceptDrops(true);
     bar->installEventFilter(this);
-    auto* close_btn = make_tab_close_button(bar, [this]() {
-      if (!tabs_ || !welcome_tab_) {
-        return;
-      }
-      const int idx = tabs_->indexOf(welcome_tab_);
-      if (idx >= 0) {
-        close_tab(idx);
-      }
-    });
-    const int idx = tabs_->indexOf(welcome_tab_);
-    if (idx >= 0) {
-      bar->setTabButton(idx, QTabBar::RightSide, close_btn);
-    }
   }
 
   connect(tabs_, &QTabWidget::currentChanged, this, [this](int) {
@@ -1280,6 +1270,7 @@ void MainWindow::setup_central() {
     if (const PakTab* tab = current_pak_tab()) {
       auto_select_game_for_archive_path(tab->pak_path());
     }
+    update_workspace_tab();
   });
   connect(tabs_, &QTabWidget::tabCloseRequested, this, &MainWindow::close_tab);
 
@@ -1426,8 +1417,24 @@ void MainWindow::setup_menus() {
   preferences_action_->setShortcut(QKeySequence::Preferences);
   connect(preferences_action_, &QAction::triggered, this, &MainWindow::open_preferences);
 
+  auto* workspace_menu = menuBar()->addMenu("Workspace");
+  workspace_action_ = workspace_menu->addAction("Workspace Overview");
+  workspace_action_->setIcon(UiIcons::icon(UiIcons::Id::Details, style()));
+  workspace_action_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_1));
+  connect(workspace_action_, &QAction::triggered, this, &MainWindow::focus_workspace_tab);
+
+  auto* refresh_workspace = workspace_menu->addAction("Refresh Workspace");
+  refresh_workspace->setIcon(UiIcons::icon(UiIcons::Id::AutoDetect, style()));
+  refresh_workspace->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
+  connect(refresh_workspace, &QAction::triggered, this, &MainWindow::update_workspace_tab);
+
+  auto* manage_installations = workspace_menu->addAction("Manage Installations...");
+  manage_installations->setIcon(UiIcons::icon(UiIcons::Id::Configure, style()));
+  connect(manage_installations, &QAction::triggered, this, &MainWindow::open_game_set_manager);
+
   extensions_menu_ = menuBar()->addMenu("Extensions");
   connect(extensions_menu_, &QMenu::aboutToShow, this, &MainWindow::rebuild_extensions_menu);
+  rebuild_extensions_menu();
 
   auto* help_menu = menuBar()->addMenu("Help");
   auto* check_updates = help_menu->addAction("Check for Updates...");
@@ -1478,6 +1485,7 @@ void MainWindow::create_new_pak() {
   tab->set_pure_pak_protector(pure_pak_protector_enabled(), false);
   const int index = add_tab(title, tab);
   tabs_->setCurrentIndex(index);
+  update_workspace_tab();
 }
 
 void MainWindow::open_file_dialog() {
@@ -1874,6 +1882,7 @@ PakTab* MainWindow::open_pak_internal(const QString& path, bool allow_auto_selec
     if (add_recent) {
       add_recent_file(info.absoluteFilePath());
     }
+    update_workspace_tab();
     return current_pak_tab();
   }
 
@@ -1897,6 +1906,7 @@ PakTab* MainWindow::open_pak_internal(const QString& path, bool allow_auto_selec
   const int index = add_tab(title, tab);
   tabs_->setTabToolTip(index, info.absoluteFilePath());
   tabs_->setCurrentIndex(index);
+  update_workspace_tab();
   return tab;
 }
 
@@ -1946,6 +1956,7 @@ int MainWindow::add_tab(const QString& title, QWidget* tab) {
       update_tab_label(pak_tab);
       update_action_states();
       update_window_title();
+      update_workspace_tab();
     });
     if (QUndoStack* stack = pak_tab->undo_stack()) {
       connect(stack, &QUndoStack::canUndoChanged, this, [this](bool) { update_action_states(); });
@@ -1953,6 +1964,7 @@ int MainWindow::add_tab(const QString& title, QWidget* tab) {
     }
     update_tab_label(pak_tab);
   }
+  update_workspace_tab();
   return index;
 }
 
@@ -1961,6 +1973,125 @@ PakTab* MainWindow::current_pak_tab() const {
     return nullptr;
   }
   return qobject_cast<PakTab*>(tabs_->currentWidget());
+}
+
+void MainWindow::focus_workspace_tab() {
+  if (!tabs_ || !workspace_tab_) {
+    return;
+  }
+  const int idx = tabs_->indexOf(workspace_tab_);
+  if (idx >= 0) {
+    tabs_->setCurrentIndex(idx);
+  }
+}
+
+QStringList MainWindow::recent_files_for_current_install() const {
+  QSettings settings;
+  return normalize_recent_paths(settings.value(recent_files_key_for_game_set_uid(game_set_.uid)).toStringList());
+}
+
+QVector<WorkspaceTab::SearchResult> MainWindow::search_workspace_tabs(const QString& query) const {
+  QVector<WorkspaceTab::SearchResult> results;
+  if (!tabs_ || query.trimmed().isEmpty()) {
+    return results;
+  }
+
+  constexpr int kMaxWorkspaceSearchResults = 500;
+  for (int i = 0; i < tabs_->count() && results.size() < kMaxWorkspaceSearchResults; ++i) {
+    auto* pak_tab = qobject_cast<PakTab*>(tabs_->widget(i));
+    if (!pak_tab) {
+      continue;
+    }
+    const int remaining = kMaxWorkspaceSearchResults - results.size();
+    const QVector<ArchiveSearchIndex::Item> matches = pak_tab->search_workspace(query, remaining);
+    const QString title = tab_base_title(pak_tab).isEmpty() ? QFileInfo(pak_tab->pak_path()).fileName() : tab_base_title(pak_tab);
+    for (const ArchiveSearchIndex::Item& item : matches) {
+      WorkspaceTab::SearchResult result;
+      result.archive_title = title;
+      result.archive_path = pak_tab->pak_path();
+      result.item_path = item.path;
+      result.scope = item.scope_label;
+      result.size = item.size;
+      result.is_dir = item.is_dir;
+      result.is_added = item.is_added;
+      result.is_overridden = item.is_overridden;
+      results.push_back(std::move(result));
+    }
+  }
+  return results;
+}
+
+void MainWindow::run_workspace_search(const QString& query) {
+  if (!workspace_tab_) {
+    return;
+  }
+  workspace_tab_->set_search_results(search_workspace_tabs(query));
+}
+
+void MainWindow::update_workspace_tab() {
+  if (!workspace_tab_) {
+    return;
+  }
+
+  WorkspaceTab::State state;
+  state.active_install = game_set_;
+  state.installations = game_sets_.sets;
+  state.recent_files = recent_files_for_current_install();
+  state.capabilities = build_workspace_capabilities(extension_commands_.size(), extension_warnings_);
+
+  if (game_sets_.sets.isEmpty()) {
+    state.validation_issues.push_back("No installations are configured.");
+  }
+  if (!game_set_.root_dir.isEmpty() && !QFileInfo::exists(game_set_.root_dir)) {
+    state.validation_issues.push_back(QString("Active installation root is missing: %1").arg(QDir::toNativeSeparators(game_set_.root_dir)));
+  }
+  if (!game_set_.default_dir.isEmpty() && !QFileInfo::exists(game_set_.default_dir)) {
+    state.validation_issues.push_back(QString("Active installation default folder is missing: %1").arg(QDir::toNativeSeparators(game_set_.default_dir)));
+  }
+  for (const QString& warning : extension_warnings_) {
+    state.validation_issues.push_back(QString("Extension manifest: %1").arg(warning));
+  }
+
+  if (tabs_) {
+    for (int i = 0; i < tabs_->count(); ++i) {
+      auto* pak_tab = qobject_cast<PakTab*>(tabs_->widget(i));
+      if (!pak_tab) {
+        continue;
+      }
+
+      WorkspaceTab::ArchiveSummary summary;
+      summary.title = tab_base_title(pak_tab);
+      if (summary.title.isEmpty()) {
+        summary.title = pak_tab->pak_path().isEmpty() ? QStringLiteral("Untitled") : QFileInfo(pak_tab->pak_path()).fileName();
+      }
+      summary.archive_path = pak_tab->pak_path();
+      summary.format = archive_format_display_name(pak_tab->archive_format());
+      summary.current_prefix = pak_tab->current_prefix();
+      summary.entry_count = pak_tab->archive_entry_count();
+      summary.added_count = pak_tab->added_file_count();
+      summary.deleted_count = pak_tab->deleted_file_count() + pak_tab->deleted_dir_count();
+      summary.loaded = pak_tab->is_loaded();
+      summary.dirty = pak_tab->is_dirty();
+      summary.protected_archive = pak_tab->is_pure_protected();
+      state.archives.push_back(std::move(summary));
+
+      for (const QString& issue : pak_tab->workspace_validation_issues()) {
+        state.validation_issues.push_back(issue);
+      }
+
+      const QString title = state.archives.back().title;
+      for (const QString& note : pak_tab->workspace_dependency_hints(48)) {
+        state.dependency_notes.push_back(QString("%1: %2").arg(title, note));
+        if (state.dependency_notes.size() >= 200) {
+          break;
+        }
+      }
+    }
+  }
+
+  state.dependency_notes.removeDuplicates();
+  workspace_tab_->set_state(state);
+  run_workspace_search(workspace_tab_->search_query());
 }
 
 void MainWindow::update_action_states() {
@@ -2018,10 +2149,12 @@ void MainWindow::open_pak(const QString& path) {
   const QFileInfo info(resolved);
   if (info.exists() && info.isFile() && !is_supported_archive_extension(info.absoluteFilePath())) {
     (void)open_file_in_viewer(info.absoluteFilePath(), !restoring_workspace_, !restoring_workspace_);
+    update_workspace_tab();
     return;
   }
 
   (void)open_pak_internal(resolved, !restoring_workspace_, !restoring_workspace_);
+  update_workspace_tab();
 }
 
 void MainWindow::load_game_sets() {
@@ -2137,6 +2270,7 @@ void MainWindow::apply_game_set(const QString& uid, bool persist_selection) {
   if (changed) {
     restore_workspace_for_install(uid);
   }
+  update_workspace_tab();
 }
 
 void MainWindow::open_game_set_manager() {
@@ -2146,6 +2280,7 @@ void MainWindow::open_game_set_manager() {
   // Reload after closing: the dialog can add/update/delete sets.
   load_game_sets();
   rebuild_game_combo();
+  update_workspace_tab();
 
   if (r != QDialog::Accepted) {
     return;
@@ -2263,8 +2398,12 @@ void MainWindow::rebuild_extensions_menu() {
 
   QString load_err;
   if (!load_extension_commands(default_extension_search_dirs(), &extension_commands_, &extension_warnings_, &load_err)) {
+    if (!load_err.isEmpty()) {
+      extension_warnings_.push_back(load_err);
+    }
     QAction* action = extensions_menu_->addAction(load_err.isEmpty() ? "Unable to load extensions" : load_err);
     action->setEnabled(false);
+    update_workspace_tab();
     return;
   }
 
@@ -2280,6 +2419,10 @@ void MainWindow::rebuild_extensions_menu() {
         tooltip_lines.push_back(command.command_description);
       }
       tooltip_lines.push_back(QString("Ref: %1").arg(extension_command_ref(command)));
+      tooltip_lines.push_back(QString("Manifest: %1").arg(command.manifest_path));
+      if (!command.argv.isEmpty()) {
+        tooltip_lines.push_back(QString("Command: %1").arg(command.argv.join(' ')));
+      }
       if (!command.capabilities.isEmpty()) {
         tooltip_lines.push_back(QString("Capabilities: %1").arg(command.capabilities.join(", ")));
       }
@@ -2310,6 +2453,7 @@ void MainWindow::rebuild_extensions_menu() {
     warning_action->setToolTip(extension_warnings_.join("\n"));
     warning_action->setStatusTip(extension_warnings_.join(" | "));
   }
+  update_workspace_tab();
 }
 
 void MainWindow::run_extension_command_action(const ExtensionCommand& command) {
@@ -2325,6 +2469,9 @@ void MainWindow::run_extension_command_action(const ExtensionCommand& command) {
       this,
       "Run Extension",
       availability_error.isEmpty() ? "The current selection is not valid for this extension." : availability_error);
+    return;
+  }
+  if (!confirm_extension_run(this, command)) {
     return;
   }
 
@@ -2393,48 +2540,34 @@ void MainWindow::open_preferences() {
   }
 
   preferences_tab_ = new PreferencesTab(this);
-  connect(preferences_tab_, &PreferencesTab::model_texture_smoothing_changed, this, [this](bool enabled) {
+  connect(preferences_tab_, &PreferencesTab::preview_preferences_changed, this, [this]() {
     if (!tabs_) {
       return;
     }
     for (int i = 0; i < tabs_->count(); ++i) {
       if (auto* pak_tab = qobject_cast<PakTab*>(tabs_->widget(i))) {
-        pak_tab->set_model_texture_smoothing(enabled);
+        pak_tab->apply_preferences_from_settings();
       }
     }
-  });
-  connect(preferences_tab_, &PreferencesTab::image_texture_smoothing_changed, this, [this](bool enabled) {
-    if (!tabs_) {
-      return;
+    if (image_viewer_window_) {
+      image_viewer_window_->apply_preferences_from_settings();
     }
-    for (int i = 0; i < tabs_->count(); ++i) {
-      if (auto* pak_tab = qobject_cast<PakTab*>(tabs_->widget(i))) {
-        pak_tab->set_image_texture_smoothing(enabled);
-      }
+    if (video_viewer_window_) {
+      video_viewer_window_->apply_preferences_from_settings();
     }
-  });
-  connect(preferences_tab_, &PreferencesTab::preview_fov_changed, this, [this](int degrees) {
-    if (!tabs_) {
-      return;
+    if (audio_viewer_window_) {
+      audio_viewer_window_->apply_preferences_from_settings();
     }
-    for (int i = 0; i < tabs_->count(); ++i) {
-      if (auto* pak_tab = qobject_cast<PakTab*>(tabs_->widget(i))) {
-        pak_tab->set_3d_fov_degrees(degrees);
-      }
-    }
-  });
-  connect(preferences_tab_, &PreferencesTab::preview_renderer_changed, this, [this](PreviewRenderer renderer) {
-    if (!tabs_) {
-      return;
-    }
-    for (int i = 0; i < tabs_->count(); ++i) {
-      if (auto* pak_tab = qobject_cast<PakTab*>(tabs_->widget(i))) {
-        pak_tab->set_preview_renderer(renderer);
-      }
+    if (model_viewer_window_) {
+      model_viewer_window_->apply_preferences_from_settings();
     }
   });
   connect(preferences_tab_, &PreferencesTab::pure_pak_protector_changed, this, [this](bool) {
     update_pure_pak_protector_for_tabs();
+  });
+  connect(preferences_tab_, &PreferencesTab::recent_file_limit_changed, this, [this](int) {
+    rebuild_recent_files_menu();
+    update_workspace_tab();
   });
   const int idx = add_tab("Preferences", preferences_tab_);
   tabs_->setCurrentIndex(idx);
@@ -2460,6 +2593,10 @@ void MainWindow::close_tab(int index) {
   }
 
   QWidget* w = tabs_->widget(index);
+  if (w == workspace_tab_) {
+    tabs_->setCurrentIndex(index);
+    return;
+  }
   if (auto* pak_tab = qobject_cast<PakTab*>(w)) {
     if (!maybe_save_tab(pak_tab)) {
       return;
@@ -2475,9 +2612,6 @@ void MainWindow::close_tab(int index) {
     }
   }
   tabs_->removeTab(index);
-  if (w == welcome_tab_) {
-    welcome_tab_ = nullptr;
-  }
   if (w == preferences_tab_) {
     preferences_tab_ = nullptr;
   }
@@ -2485,6 +2619,9 @@ void MainWindow::close_tab(int index) {
     w->deleteLater();
   }
   // Keep the app open even if all tabs are closed (blank workspace).
+  update_window_title();
+  update_action_states();
+  update_workspace_tab();
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
@@ -2686,6 +2823,7 @@ bool MainWindow::save_tab(PakTab* tab) {
 
   update_tab_label(tab);
   update_action_states();
+  update_workspace_tab();
   return true;
 }
 
@@ -2835,6 +2973,7 @@ bool MainWindow::save_tab_as(PakTab* tab) {
 
   update_window_title();
   update_action_states();
+  update_workspace_tab();
   return true;
 }
 
@@ -2854,12 +2993,14 @@ void MainWindow::add_recent_file(const QString& path) {
     }
   }
   files.prepend(normalized);
-  while (files.size() > kMaxRecentFiles) {
+  const int max_recent_files = max_recent_files_from_settings();
+  while (files.size() > max_recent_files) {
     files.removeLast();
   }
 
   settings.setValue(key, files);
   rebuild_recent_files_menu();
+  update_workspace_tab();
 }
 
 void MainWindow::remove_recent_file(const QString& path) {
@@ -2881,6 +3022,7 @@ void MainWindow::remove_recent_file(const QString& path) {
   if (changed) {
     settings.setValue(key, files);
     rebuild_recent_files_menu();
+    update_workspace_tab();
   }
 }
 
@@ -2889,6 +3031,7 @@ void MainWindow::clear_recent_files() {
   const QString key = recent_files_key_for_game_set_uid(game_set_.uid);
   settings.remove(key);
   rebuild_recent_files_menu();
+  update_workspace_tab();
 }
 
 void MainWindow::rebuild_recent_files_menu() {
@@ -2954,7 +3097,8 @@ void MainWindow::rebuild_recent_files_menu() {
 
     for (auto it = by_uid.begin(); it != by_uid.end(); ++it) {
       QStringList list = normalize_recent_paths(it.value());
-      while (list.size() > kMaxRecentFiles) {
+      const int max_recent_files = max_recent_files_from_settings();
+      while (list.size() > max_recent_files) {
         list.removeLast();
       }
       settings.setValue(recent_files_key_for_game_set_uid(it.key()), list);

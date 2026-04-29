@@ -9,12 +9,18 @@ and extension-contract code that does not depend on the desktop UI layer.
 
 `pakfu_core` includes:
 - archive loading, extraction, and selective rebuild helpers
+- archive-session state for primary and mounted archive layers
 - PAK/WAD/ZIP/resources backends
 - archive search indexing
-- image/model/cinematic/BSP parsing helpers
-- idTech metadata and idTech4 map/proc inspection helpers
+- image/model/cinematic/BSP/font parsing helpers
+- idTech metadata plus idTech4 map/proc inspection, `.proc` mesh loading, and `.mtr` material parsing helpers
 - game profile and auto-detect helpers
 - manifest-driven extension command loading/execution, capability negotiation, and import-manifest validation
+
+PakFu's headless CLI automation is built on this same non-UI surface. The CLI
+now exposes archive validation, content comparison, asset graph export, package
+hash manifests, extension reports, and platform diagnostics without depending on
+the Qt Widgets layer.
 
 `pakfu_core` does not include:
 - Qt Widgets or viewer windows

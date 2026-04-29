@@ -192,6 +192,12 @@ QString VideoViewerWindow::current_video_path() const {
 	return video_paths_[current_index_];
 }
 
+void VideoViewerWindow::apply_preferences_from_settings() {
+	if (preview_) {
+		preview_->apply_preferences_from_settings();
+	}
+}
+
 void VideoViewerWindow::rebuild_video_list_for(const QString& file_path) {
 	video_paths_.clear();
 	current_index_ = -1;

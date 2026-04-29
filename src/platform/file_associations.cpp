@@ -119,6 +119,7 @@ const QVector<AssociationSpec>& association_specs() {
 	  {"json", "JSON File", QColor("#5C6BC0"), AssociationCategory::Asset},
 	  {"ttf", "TrueType Font", QColor("#00897B"), AssociationCategory::Asset},
 	  {"otf", "OpenType Font", QColor("#00ACC1"), AssociationCategory::Asset},
+	  {"fontdat", "FONTDAT Bitmap Font", QColor("#00796B"), AssociationCategory::Asset},
 	  {"spr", "SPR Sprite", QColor("#D81B60"), AssociationCategory::Asset},
 	  {"sp2", "SP2 Sprite", QColor("#C2185B"), AssociationCategory::Asset},
 	  {"spr2", "SPR2 Sprite", QColor("#AD1457"), AssociationCategory::Asset},

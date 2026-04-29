@@ -5,6 +5,7 @@
 #include <QImage>
 #include <QList>
 #include <QPoint>
+#include <QPointer>
 #include <QScopedPointer>
 #include <QSet>
 #include <QVector>
@@ -18,8 +19,11 @@
 #include <vector>
 
 #include "archive/archive.h"
+#include "archive/archive_session.h"
 #include "archive/archive_search_index.h"
 #include "game/game_set.h"
+#include "ui/background_task_coordinator.h"
+#include "ui/preview_io_cache.h"
 
 class BreadcrumbBar;
 class QAction;
@@ -81,6 +85,7 @@ public:
   void set_image_texture_smoothing(bool enabled);
   void set_preview_renderer(PreviewRenderer renderer);
   void set_3d_fov_degrees(int degrees);
+  void apply_preferences_from_settings();
   void set_game_id(GameId id);
   void set_pure_pak_protector(bool enabled, bool is_official);
   bool is_editable() const;
@@ -91,6 +96,13 @@ public:
   Archive::Format archive_format() const { return archive_.format(); }
   QString load_error() const { return load_error_; }
   bool is_dirty() const { return dirty_; }
+  int archive_entry_count() const;
+  int added_file_count() const { return added_files_.size(); }
+  int deleted_file_count() const { return deleted_files_.size(); }
+  int deleted_dir_count() const { return deleted_dir_prefixes_.size(); }
+  QVector<ArchiveSearchIndex::Item> search_workspace(const QString& query, int max_results = 1000) const;
+  QStringList workspace_dependency_hints(int max_items = 64) const;
+  QStringList workspace_validation_issues() const;
   bool save(QString* error);
   QString current_prefix() const;
   QString selected_pak_path(bool* is_dir) const;
@@ -156,12 +168,13 @@ private:
 	void select_adjacent_video(int delta);
   bool mount_wad_from_selected_file(const QString& pak_path, QString* error);
   void unmount_wad();
-  [[nodiscard]] bool is_wad_mounted() const { return !mounted_archives_.empty(); }
+  using MountedArchiveLayer = ArchiveSession::MountedArchiveLayer;
+  [[nodiscard]] bool is_wad_mounted() const { return archive_session_.has_mounted_archive(); }
   [[nodiscard]] const Archive& view_archive() const {
-    return (is_wad_mounted() && mounted_archives_.back().archive) ? *mounted_archives_.back().archive : archive_;
+    return archive_session_.current_archive();
   }
   [[nodiscard]] Archive& view_archive_mut() {
-    return (is_wad_mounted() && mounted_archives_.back().archive) ? *mounted_archives_.back().archive : archive_;
+    return archive_session_.current_archive();
   }
   bool ensure_quake1_palette(QString* error);
   bool ensure_quake2_palette(QString* error);
@@ -169,6 +182,10 @@ private:
   bool write_archive_file(const QString& dest_path, const SaveOptions& options, QString* error);
 
   void setup_actions();
+  void toggle_preview_detached();
+  void detach_preview();
+  void dock_preview();
+  void update_preview_detach_action();
   void show_context_menu(QWidget* view, const QPoint& pos);
   void add_files();
   void add_folder();
@@ -244,6 +261,14 @@ private:
                                   bool* cache_hit = nullptr);
   QString preview_export_cache_key(const QString& pak_path, bool is_dir) const;
   void clear_preview_temp_cache();
+  QString preview_cache_scope() const;
+  bool read_entry_bytes_cached(const QString& pak_path,
+                               qint64 size,
+                               qint64 mtime_utc_secs,
+                               qint64 max_bytes,
+                               QByteArray* out,
+                               QString* error,
+                               bool* cache_hit = nullptr);
   bool export_dir_prefix_to_fs(const QString& dir_prefix, const QString& dest_dir, QString* error);
   bool open_entry_with_associated_app(const QString& pak_path, const QString& display_name);
   void activate_entry(const QString& item_name, bool is_dir, const QString& pak_path);
@@ -280,6 +305,9 @@ private:
   QTreeWidget* details_view_ = nullptr;
   QListWidget* icon_view_ = nullptr;
   PreviewPane* preview_ = nullptr;
+  QWidget* preview_placeholder_ = nullptr;
+  QPointer<QWidget> detached_preview_window_;
+  QAction* detach_preview_action_ = nullptr;
   QHash<QString, QListWidgetItem*> icon_items_by_path_;
   QHash<QString, QTreeWidgetItem*> detail_items_by_path_;
   struct SpriteIconAnimation {
@@ -292,27 +320,15 @@ private:
   QHash<QString, SpriteIconAnimation> sprite_icon_animations_;
   QTimer* sprite_icon_timer_ = nullptr;
   QThreadPool thumbnail_pool_;
-  quint64 thumbnail_generation_ = 0;
+  BackgroundTaskCoordinator thumbnail_tasks_;
   QUndoStack* undo_stack_ = nullptr;
   QScopedPointer<QTemporaryDir> export_temp_dir_;
   int export_seq_ = 1;
-  struct PreviewTempExport {
-    QString fs_path;
-    QString source_path;
-    qint64 size = -1;
-    qint64 mtime_utc_secs = -1;
-    bool is_dir = false;
-  };
-  QHash<QString, PreviewTempExport> preview_temp_exports_;
+  PreviewIoCache preview_io_cache_;
   QStringList current_dir_;
-  Archive archive_;
-  struct MountedArchiveLayer {
-    std::unique_ptr<Archive> archive;
-    QString mount_name;
-    QString mount_fs_path;
-    QStringList outer_dir_before_mount;
-  };
-  std::vector<MountedArchiveLayer> mounted_archives_;
+  ArchiveSession archive_session_;
+  Archive& archive_;
+  std::vector<MountedArchiveLayer>& mounted_archives_;
   QVector<AddedFile> added_files_;
   QHash<QString, int> added_index_by_name_;
   QSet<QString> virtual_dirs_;

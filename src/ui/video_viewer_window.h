@@ -19,6 +19,7 @@ public:
 
 	bool open_video(const QString& file_path);
 	[[nodiscard]] QString current_video_path() const;
+	void apply_preferences_from_settings();
 
 protected:
 	bool eventFilter(QObject* watched, QEvent* event) override;
@@ -50,4 +51,3 @@ private:
 	QStringList video_paths_;
 	int current_index_ = -1;
 };
-

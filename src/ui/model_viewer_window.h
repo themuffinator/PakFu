@@ -20,6 +20,7 @@ public:
 
 	bool open_model(const QString& file_path);
 	[[nodiscard]] QString current_model_path() const;
+	void apply_preferences_from_settings();
 
 protected:
 	bool eventFilter(QObject* watched, QEvent* event) override;

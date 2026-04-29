@@ -1,6 +1,7 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QFileOpenEvent>
 #include <QIcon>
@@ -42,6 +43,7 @@
 #endif
 
 #include "cli/cli.h"
+#include "foundation/performance_metrics.h"
 #include "formats/idtech_asset_loader.h"
 #include "formats/idtech4_map.h"
 #include "game/game_set.h"
@@ -468,6 +470,9 @@ private:
 }  // namespace
 
 int main(int argc, char** argv) {
+  QElapsedTimer startup_timer;
+  startup_timer.start();
+
   if (wants_cli(argc, argv)) {
     const bool needs_gui = cli_requires_gui(argc, argv);
     if (!needs_gui) {
@@ -732,6 +737,7 @@ int main(int argc, char** argv) {
       splash = nullptr;
     }
     app.setQuitOnLastWindowClosed(true);
+    PakFu::Metrics::record_timing("startup", "show_main_window", startup_timer.elapsed());
     run_tab_smoke_test(window);
   };
 

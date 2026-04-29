@@ -4,10 +4,12 @@
 #include <QStringList>
 
 #include "archive/archive.h"
+#include "archive/archive_session.h"
 #include "archive/archive_search_index.h"
 #include "extensions/extension_plugin.h"
 #include "formats/bsp_preview.h"
 #include "formats/cinematic.h"
+#include "formats/fontdat_font.h"
 #include "formats/idtech_asset_loader.h"
 #include "formats/idtech4_map.h"
 #include "formats/idwav_audio.h"
@@ -41,6 +43,7 @@ inline constexpr const char* kApiStability = "provisional-source";
 		QStringLiteral("archive.load"),
 		QStringLiteral("archive.extract"),
 		QStringLiteral("archive.search"),
+		QStringLiteral("archive.session"),
 		QStringLiteral("archive.write.pak"),
 		QStringLiteral("archive.write.wad2"),
 		QStringLiteral("archive.write.zip"),
@@ -49,8 +52,12 @@ inline constexpr const char* kApiStability = "provisional-source";
 		QStringLiteral("format.model.load"),
 		QStringLiteral("format.bsp.preview"),
 		QStringLiteral("format.cinematic.decode"),
+		QStringLiteral("format.fontdat.decode"),
+		QStringLiteral("format.fontdat.render"),
 		QStringLiteral("format.idtech.inspect"),
 		QStringLiteral("format.idtech4.map.inspect"),
+		QStringLiteral("format.idtech4.proc.mesh"),
+		QStringLiteral("format.idtech4.material.parse"),
 		QStringLiteral("game.profile.detect"),
 		QStringLiteral("extension.command"),
 		QStringLiteral("extension.import"),

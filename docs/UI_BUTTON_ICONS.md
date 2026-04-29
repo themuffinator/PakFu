@@ -5,13 +5,13 @@ This table maps the current button/action controls to their visual representatio
 | Button/Action | Location | Visual representation | SVG |
 | --- | --- | --- | --- |
 | `Tab Close` | Archive tabs | Red tile with white close `X` | `assets/icons/ui/tab-close.svg` |
-| `Create PAK` / `New PAK` | Welcome, File menu | Package box with plus | `assets/icons/ui/new-pak.svg` |
-| `Open File...` | Welcome menu, File menu | Archive box with download arrow | `assets/icons/ui/open-archive.svg` |
-| `Open Archive...` | Welcome menu, File menu, updater release-page open | Archive box with download arrow | `assets/icons/ui/open-archive.svg` |
-| `Open Folder...` | Welcome menu, File menu | Folder with down arrow | `assets/icons/ui/open-folder.svg` |
+| `Create PAK` / `New PAK` | Workspace, File menu | Package box with plus | `assets/icons/ui/new-pak.svg` |
+| `Open File...` | Workspace, File menu | Archive box with download arrow | `assets/icons/ui/open-archive.svg` |
+| `Open Archive...` | Workspace, File menu, updater release-page open | Archive box with download arrow | `assets/icons/ui/open-archive.svg` |
+| `Open Folder...` | Workspace, File menu | Folder with down arrow | `assets/icons/ui/open-folder.svg` |
 | `Save` | File menu, unsaved prompt | Floppy disk | `assets/icons/ui/save.svg` |
 | `Save As...` | File menu | Floppy disk with pen mark | `assets/icons/ui/save-as.svg` |
-| `Close` / `Exit` / `Cancel` | Welcome, File menu, dialog cancels | Exit arrow from panel | `assets/icons/ui/exit.svg` |
+| `Close` / `Exit` / `Cancel` | File menu, dialog cancels | Exit arrow from panel | `assets/icons/ui/exit.svg` |
 | `Undo` | Edit menu | Curved back arrow | `assets/icons/ui/undo.svg` |
 | `Redo` | Edit menu | Curved forward arrow | `assets/icons/ui/redo.svg` |
 | `Cut` | Edit/context menus | Scissors | `assets/icons/ui/cut.svg` |
@@ -42,8 +42,8 @@ This table maps the current button/action controls to their visual representatio
 | `Lightmaps` | BSP 3D controls | Light bulb | `assets/icons/ui/lightmaps.svg` |
 | `Textured` | 3D controls | Checker texture tile | `assets/icons/ui/textured.svg` |
 | `Wireframe` | 3D controls | Wireframe cube | `assets/icons/ui/wireframe.svg` |
-| `Fullscreen` | 3D controls | Expand corner brackets | `assets/icons/ui/fullscreen-enter.svg` |
-| `Exit Fullscreen` | 3D controls | Contract corner brackets | `assets/icons/ui/fullscreen-exit.svg` |
+| `Fullscreen` / `Detach Preview` | 3D controls, Pak toolbar | Expand corner brackets | `assets/icons/ui/fullscreen-enter.svg` |
+| `Exit Fullscreen` / `Dock Preview` | 3D controls, Pak toolbar | Contract corner brackets | `assets/icons/ui/fullscreen-exit.svg` |
 | `Configure...` / `Configure Installations…` / editor OK | Game Set UI | Slider controls | `assets/icons/ui/configure.svg` |
 | `Auto-detect` | Game Set dialog | Radar sweep arcs | `assets/icons/ui/auto-detect.svg` |
 | `Browse...` | Game Set editor rows | Folder + magnifier | `assets/icons/ui/browse.svg` |

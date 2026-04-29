@@ -247,6 +247,12 @@ QString ImageViewerWindow::current_image_path() const {
 	return image_paths_[current_index_];
 }
 
+void ImageViewerWindow::apply_preferences_from_settings() {
+	if (preview_) {
+		preview_->apply_preferences_from_settings();
+	}
+}
+
 void ImageViewerWindow::rebuild_image_list_for(const QString& file_path) {
 	image_paths_.clear();
 	current_index_ = -1;

@@ -47,11 +47,11 @@ repository does not need copyrighted game assets to verify the core contract.
 | Built-in cinematics | `cin`, `roq` | Supported | Implementation-backed built-in decoders |
 | Backend video playback | `bik`, `ogv`, `mp4`, `mkv`, `avi`, `webm` | Supported when codecs are available | Backend-dependent Qt Multimedia playback |
 | Models | `mdl`, `md2`, `fm`, `md3`, `mdc`, `md4`, `mdr`, `skb`, `skd`, `mdm`, `glm`, `iqm`, `md5mesh`, `tan`, `obj`, `lwo` | Supported | FM is fixture-backed; other loaders are implementation-backed; FM resolves Heretic II `.m8`/`.m32` skins |
-| BSP/map preview | `bsp` | Supported | Heretic II native `IBSP` and converted `QBSP` BSPs are fixture-backed; Quake/Quake II/Quake III-family loaders are implementation-backed |
-| idTech4 map inspection | `map`, `proc` | Text/metadata inspection supported; no 3D idTech4 renderer is claimed | Fixture-backed synthetic `.map` source and `.proc` render-description summaries |
+| BSP/map preview | `bsp`, `proc` | Supported | Heretic II native `IBSP` and converted `QBSP` BSPs are fixture-backed; Quake/Quake II/Quake III-family loaders are implementation-backed; idTech4 `.proc` render geometry is fixture-backed and uses companion `.mtr` material hints when available |
+| idTech4 map inspection | `map`, `proc` | Supported | Fixture-backed synthetic `.map` source summaries and `.proc` render-description summaries; `.map` source remains text/metadata inspection |
 | idTech sprite/assets | `spr`, `sp2`, `spr2`, `bk`, `os` | Supported | BK/OS are fixture-backed; SPR/SP2 are implementation-backed animated previews and metadata views |
-| idTech inspectors | `dm2`, `aas`, `qvm`, `progs.dat`, `tag`, `mdx`, `mds`, `skc`, `ska`, `ttf`, `otf` | Supported | Implementation-backed metadata/insight views |
-| Text and script assets | `cfg`, `config`, `rc`, `arena`, `bot`, `skin`, `shader`, `menu`, `def`, `mtr`, `map`, `proc`, `ent`, `qc`, and similar plain text | Supported | Implementation-backed text preview with syntax highlighting for common script/config families; `.map`/`.proc` add map-scope summaries |
+| idTech inspectors | `dm2`, `aas`, `qvm`, `progs.dat`, `tag`, `mdx`, `mds`, `skc`, `ska`, `ttf`, `otf`, `fontdat` | Supported | `.fontdat` parser/rendering is fixture-backed; remaining metadata/insight views are implementation-backed |
+| Text and script assets | `cfg`, `config`, `rc`, `arena`, `bot`, `skin`, `shader`, `menu`, `def`, `mtr`, `map`, `proc`, `ent`, `qc`, and similar plain text | Supported | Implementation-backed text preview with syntax highlighting for common script/config families; `.map` adds source-map summaries and `.proc` adds render-geometry summaries |
 
 ## Game Installation Profiles
 

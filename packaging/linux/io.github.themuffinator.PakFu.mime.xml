@@ -53,6 +53,7 @@
   <mime-type type="application/x-idtech-aas"><comment>idTech AAS navigation data</comment><glob pattern="*.aas"/></mime-type>
   <mime-type type="application/x-qvm"><comment>Quake virtual machine bytecode</comment><glob pattern="*.qvm"/></mime-type>
   <mime-type type="application/x-idtech-crc"><comment>idTech CRC manifest</comment><glob pattern="*.crc"/></mime-type>
+  <mime-type type="application/x-idtech-fontdat"><comment>idTech FONTDAT bitmap font</comment><glob pattern="*.fontdat"/></mime-type>
   <mime-type type="model/x-idtech-tag"><comment>idTech tag model data</comment><glob pattern="*.tag"/></mime-type>
   <mime-type type="model/x-raven-mdx"><comment>Raven MDX model data</comment><glob pattern="*.mdx"/></mime-type>
   <mime-type type="model/x-raven-mds"><comment>Raven MDS model data</comment><glob pattern="*.mds"/></mime-type>

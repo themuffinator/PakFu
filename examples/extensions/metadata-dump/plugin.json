@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "pakfu.example.metadata",
+  "name": "PakFu Metadata Example",
+  "description": "Minimal C++ extension command for inspecting the PakFu extension payload.",
+  "commands": [
+    {
+      "id": "dump-selection",
+      "name": "Dump Selection Metadata",
+      "description": "Print archive and selected-entry metadata from the host JSON payload.",
+      "command": [
+        "./metadata-dump"
+      ],
+      "working_directory": ".",
+      "capabilities": [
+        "archive.read",
+        "entries.read"
+      ],
+      "requires_entries": false,
+      "allow_multiple": true
+    }
+  ]
+}

@@ -73,6 +73,7 @@ aligned without carrying build instructions or repository maintenance notes.
 ## Highlights
 - Archive and folder support in both GUI and CLI.
 - Dedicated standalone viewer windows for image, video, audio, and model files.
+- Persistent Workspace tab for installations, open archives, recent files, global search, changed assets, dependency hints, validation, and runtime capability status.
 - Nested container mounting (open archives inside archives).
 - One-click `Extract Selected` and `Extract All` workflows for the active archive tab.
 - Batch conversion tool for selected assets with category tabs (images, video, archives, models, sound, maps, text, other).
@@ -80,7 +81,10 @@ aligned without carrying build instructions or repository maintenance notes.
 - An installable `pakfu_core` static library with public headers and pkg-config metadata for non-UI archive, format, search, game-profile, and extension code.
 - Image batch conversion supports input from all supported image preview formats, including Heretic II `m8` and `m32` textures, and output to all supported image-writer formats (`png`, `jpg`, `jpeg`, `bmp`, `gif`, `tga`, `tif`, `tiff`, `pcx`, `wal`, `swl`, `mip`, `lmp`, `ftx`, `dds`) with format-aware settings (quality, compression, palette source, dithering, alpha threshold, embedded palette where applicable).
 - Preview overviews surface asset context such as palette provenance, model companion files, shader texture dependency resolution, active 3D renderer state, and preview fallback notes.
+- Bitmap `.fontdat` previews resolve sibling atlas images and render the full 256-character set as an atlas-backed specimen.
+- Archive previews can be detached into a separate window and docked back into the archive tab.
 - Heavy previews report timing profiles, reuse cached temp exports for repeated media/model previews, and cap BSP texture resolution work for very large maps.
+- Headless automation covers validation, package comparison/diffing, asset graph export, reproducibility manifests, extension diagnostics, and platform integration reports.
 - Modern platform-native open/save/folder dialogs with standard breadcrumbs/bookmarks and robust cross-platform behavior.
 - 3D preview renderer selection with Vulkan/OpenGL behavior and fallback.
 - Fly camera controls for 3D preview (`Right Mouse + WASD`, `Q/E`, mouse wheel speed, `Shift` faster, `Ctrl` slower, `F` frame, `R`/`Home` reset).
@@ -120,7 +124,10 @@ quick reference.
 - Models:
   - `mdl`, `md2`, `fm`, `md3`, `mdc`, `md4`, `mdr`, `skb`, `skd`, `mdm`, `glm`, `iqm`, `md5mesh`, `tan`, `obj`, `lwo`
 - idTech inspectors and metadata views:
-  - `spr`, `sp2`/`spr2`, `bk`, `os`, `dm2`, `aas`, `qvm`, `progs.dat`, `tag`, `mdx`, `mds`, `skc`, `ska`, `ttf`, `otf`
+  - `spr`, `sp2`/`spr2`, `bk`, `os`, `dm2`, `aas`, `qvm`, `progs.dat`, `tag`, `mdx`, `mds`, `skc`, `ska`, `ttf`, `otf`, `fontdat`
+- idTech4 maps:
+  - `.proc` compiled render descriptions load as 3D geometry previews with `.mtr` material-to-texture resolution where companion material/image files are present.
+  - `.map` source files open as text/metadata inspections.
 - Text and script assets:
   - Core: `cfg` and similar plain-text config/script files
   - Includes many common idTech-family script formats (`shader`, `menu`, `def`, `mtr`, `map`, `proc`, `ent`, `qc`, and others)
@@ -130,8 +137,9 @@ Notes:
 - `cin` and `roq` are also handled by built-in cinematic decoders.
 - Some indexed formats (`wal`, `mip`, selected `lmp` cases) use game palettes when required; Heretic II `m8` textures carry an embedded palette, while Heretic II `m32` textures store RGBA pixels.
 - Heretic II `bk` book sprites composite referenced `.m8` tiles, while `os` dynamic scripts are binary bytecode and open as metadata/opcode previews.
+- `.fontdat` bitmap fonts parse 256 glyph metrics and resolve sibling atlas images such as `.png` or `.tga` for full character-set previews and CLI preview export.
 - BSP inspector/preview supports Heretic II `IBSP`/converted `QBSP` maps with `.m32`/`.m8` texture resolution, plus Quake 3-derived families including FAKK variants used by Heavy Metal: F.A.K.K.2 and American McGee's Alice (`FAKK` v42 checksum-header BSPs).
-- idTech4 `.map` source files and `.proc` compiled render descriptions open as text/metadata inspections. 3D map rendering is currently scoped to Quake-family `.bsp` files; idTech4 `.proc`/collision map rendering is not claimed.
+- idTech4 `.proc` compiled render descriptions render geometry in the 3D preview and scan `.mtr` declarations for texture resolution; `.map` source files remain text/metadata inspections, and collision-map rendering is not claimed.
 
 ## Build and Run
 
@@ -199,16 +207,22 @@ Core actions:
 - `-i, --info` : show archive summary.
 - `-x, --extract` : extract entries (`-o, --output <dir>` optional).
 - `--save-as <archive>` : rebuild selected entries into a new archive.
+- `--validate` : validate archive paths, duplicate names, readability, dependency hints, and known idTech4 material/PROC relationships.
+- `--compare <archive-or-folder>` : compare selected content against another package; returns `1` when content differs and `2` on errors.
+- `--asset-graph <text|json|dot>` : export a dependency graph with archive hints, `.mtr` material declarations, and `.proc` material/texture relationships.
+- `--package-manifest <text|json>` : export a reproducibility manifest with sorted entry paths, sizes, mtimes, and SHA-256 hashes.
 - `--convert <format>` : convert selected images to a supported image-writer output (`png`, `jpg`, `bmp`, `gif`, `tga`, `tiff`, `pcx`, `wal`, `swl`, `mip`, `lmp`, `ftx`, `dds`) or IDWAV audio to `wav`.
-- `--preview-export <entry>` : export the CLI preview rendition of one entry; images write an image file, text and binary entries write bytes.
+- `--preview-export <entry>` : export the CLI preview rendition of one entry; images and `.fontdat` character charts write image files, text and binary entries write bytes.
 - `--list-plugins` : list discovered extension commands.
+- `--plugin-report` : print extension search roots, trust scope, manifest warnings, and per-command capability notes.
 - `--run-plugin <plugin[:command]>` : run one extension command against the loaded archive.
+- `--platform-report` : print platform paths, Qt/runtime metadata, extension state, installation profiles, and shell-integration expectations.
 - `--check-updates` : query GitHub Releases.
 - `--qa-practical` : run practical archive-ops smoke QA (selection/marquee/modifier checks).
 
 Archive selection and mounting:
-- `--entry <path>` : limit `--list`, `--extract`, `--save-as`, `--convert`, or `--run-plugin` to an exact archive entry. Repeat for multiple entries.
-- `--prefix <dir>` : limit `--list`, `--extract`, `--save-as`, `--convert`, or `--run-plugin` to entries under a directory prefix. Repeat for multiple prefixes.
+- `--entry <path>` : limit archive actions to an exact archive entry. Repeat for multiple entries.
+- `--prefix <dir>` : limit archive actions to entries under a directory prefix. Repeat for multiple prefixes.
 - `--mount <entry>` : mount a nested archive entry first, then run the requested action against the mounted archive.
 - `--plugin-dir <dir>` : add an extension search directory (repeat for more than one).
 
@@ -236,12 +250,18 @@ Examples:
 ./builddir/src/pakfu --cli --list path/to/archive.wad
 ./builddir/src/pakfu --cli --extract -o out_dir path/to/archive.resources
 ./builddir/src/pakfu --cli --extract --prefix maps -o maps_out path/to/archive.pk3
+./builddir/src/pakfu --cli --validate path/to/archive.pk4
+./builddir/src/pakfu --cli --compare rebuilt.pk3 path/to/source.pk3
+./builddir/src/pakfu --cli --asset-graph json -o graph.json path/to/archive.pk4
+./builddir/src/pakfu --cli --package-manifest json -o manifest.json path/to/archive.pk3
 ./builddir/src/pakfu --cli --save-as mod_subset.pk3 --format pk3 --prefix textures path/to/archive.pk3
 ./builddir/src/pakfu --cli --convert png --prefix textures -o converted_textures path/to/archive.pk3
 ./builddir/src/pakfu --cli --preview-export gfx/conback.lmp -o previews path/to/pak0.pak
 ./builddir/src/pakfu --cli --mount nested/maps.pk3 --list path/to/archive.pk3
 ./builddir/src/pakfu --cli --list-plugins
+./builddir/src/pakfu --cli --plugin-report --plugin-dir examples/extensions/metadata-dump
 ./builddir/src/pakfu --cli --run-plugin example:inspect-cfg --entry scripts/autoexec.cfg path/to/archive.pk3
+./builddir/src/pakfu --cli --platform-report
 ./builddir/src/pakfu --cli --check-updates
 ./builddir/src/pakfu --cli --qa-practical
 ./builddir/src/pakfu --cli --list-game-installs
@@ -259,9 +279,14 @@ Examples:
 - Opening behavior:
   - Opening a supported media/model file can launch its dedicated viewer window.
   - Opening an archive prompts: open directly, install a copy then open, or move to installation then open.
+  - Preferences can keep that archive-open prompt enabled or choose a default open/copy/move action.
 - Navigation:
   - In standalone viewers, mouse wheel and arrow keys cycle sibling files in the same folder.
   - Fullscreen toggles with `F11`, middle mouse, or platform fullscreen shortcut.
+- Preferences:
+  - The tabbed Preferences page groups appearance, workspace/archive behavior, 3D preview defaults, image/text preview defaults, and update checks.
+  - Preview preferences include renderer, FOV, grid/background, wireframe/textured defaults, BSP lightmaps, model smoothing, animation playback, image transparency/background, image layout, and text wrapping.
+  - Preview changes apply to open archive tabs and standalone viewer windows without restarting PakFu.
 - Archive operations:
   - Drag-and-drop import/export across directories and tabs, plus file/folder drops from external applications.
   - Drag modifier keys: hold `Shift` to request move; hold `Ctrl/Cmd` (or `Option` on macOS) to force copy. Cross-application drops are copy.
@@ -337,6 +362,7 @@ For full policy details, see `docs/RELEASES.md`.
 - `docs/CORE_LIBRARY.md` : `pakfu_core` public headers, API metadata, install contract, and sample consumer code.
 - `docs/DEPENDENCIES.md` : dependency baseline and optional libraries.
 - `docs/EXTENSIONS.md` : manifest schema, JSON payload contract, and CLI/GUI extension workflow.
+- `examples/extensions/` : source-first extension examples for local development and plugin-report smoke checks.
 - `docs/QA_ARCHIVE_FILE_OPS.md` : practical QA checklist for selection, drag/drop, cut/copy/paste, and modifiers.
 - `docs/RELEASES.md` : versioning, release rules, and asset contract.
 - `docs/UI_BUTTON_ICONS.md` : UI action icon inventory.

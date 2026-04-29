@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <limits>
+#include <utility>
 
 #include <QApplication>
 #include <QAction>
@@ -11,6 +13,7 @@
 #include <QAbstractScrollArea>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QCloseEvent>
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QDateTime>
@@ -80,8 +83,10 @@
 
 #include "archive/path_safety.h"
 #include "extensions/extension_plugin.h"
+#include "foundation/performance_metrics.h"
 #include "formats/bsp_preview.h"
 #include "formats/cinematic.h"
+#include "formats/fontdat_font.h"
 #include "formats/idtech_asset_loader.h"
 #include "formats/idtech4_map.h"
 #include "formats/idwav_audio.h"
@@ -127,6 +132,28 @@ QString child_display_label(const ChildListing& child) {
   return child.name.endsWith('/') ? child.name : (child.name + "/");
 }
 
+class PreviewDetachWindow final : public QWidget {
+public:
+  explicit PreviewDetachWindow(std::function<void()> on_close, QWidget* parent = nullptr)
+      : QWidget(parent), on_close_(std::move(on_close)) {}
+
+  void clear_close_callback() { on_close_ = {}; }
+
+protected:
+  void closeEvent(QCloseEvent* event) override {
+    if (on_close_) {
+      const std::function<void()> callback = on_close_;
+      callback();
+      event->ignore();
+      return;
+    }
+    QWidget::closeEvent(event);
+  }
+
+private:
+  std::function<void()> on_close_;
+};
+
 QString normalize_pak_path(QString path);
 bool pak_path_starts_with(const QString& path, const QString& prefix);
 QString normalize_dir_prefix_path(const QString& path_in);
@@ -136,21 +163,12 @@ bool is_mountable_archive_file_name(const QString& name);
 bool copy_file_stream(const QString& src_path, const QString& dest_path, QString* error);
 QString archive_format_label(const Archive& archive);
 
-QString elapsed_label(qint64 ms) {
-  return ms <= 0 ? QString("<1 ms") : QString("%1 ms").arg(ms);
-}
-
 void add_preview_profile_step(QStringList* steps, const QString& label, qint64 elapsed_ms, bool cache_hit = false) {
-  if (!steps || label.isEmpty()) {
-    return;
-  }
-  steps->push_back(QString("%1 %2%3").arg(label, elapsed_label(elapsed_ms), cache_hit ? QString(" (cached)") : QString()));
+  PakFu::Metrics::add_profile_step(steps, label, elapsed_ms, cache_hit);
 }
 
 QString preview_profile_text(QStringList steps, qint64 total_ms) {
-  steps.removeAll({});
-  add_preview_profile_step(&steps, "total", total_ms);
-  return steps.join("; ");
+  return PakFu::Metrics::profile_text(std::move(steps), total_ms);
 }
 
 QString format_size(quint32 size) {
@@ -1414,7 +1432,7 @@ bool is_bsp_file_name(const QString& name) {
 
 bool is_font_file_name(const QString& name) {
   const QString ext = file_ext_lower(name);
-  return (ext == "ttf" || ext == "otf");
+  return (ext == "ttf" || ext == "otf" || ext == "fontdat");
 }
 
 bool is_cfg_like_text_ext(const QString& ext) {
@@ -2883,7 +2901,7 @@ QString map_summary_text(const QByteArray& bytes, const QString& file_name) {
     if (inspected.ok()) {
       return inspected.summary;
     }
-    return QString("File: %1\nType: idTech4/source map artifact\nScope: text/metadata inspection only; 3D rendering is currently limited to Quake-family .bsp maps.\nInspect error: %2\n")
+    return QString("File: %1\nType: idTech4/source map artifact\nScope: .proc files can render 3D geometry; .map source files remain text/metadata inspection.\nInspect error: %2\n")
       .arg(file_name, inspected.error.isEmpty() ? QString("Unable to inspect map artifact.") : inspected.error);
   }
   return QString("File: %1\nType: Map\nInspect error: unsupported map artifact.\n").arg(file_name);
@@ -3218,7 +3236,11 @@ private:
 };
 
 PakTab::PakTab(Mode mode, const QString& pak_path, QWidget* parent)
-    : QWidget(parent), mode_(mode), pak_path_(pak_path) {
+    : QWidget(parent),
+      mode_(mode),
+      pak_path_(pak_path),
+      archive_(archive_session_.primary_archive()),
+      mounted_archives_(archive_session_.mounted_archives()) {
   setAcceptDrops(true);
   drag_source_uid_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
   register_drag_source_tab(drag_source_uid_, this);
@@ -3239,6 +3261,7 @@ PakTab::PakTab(Mode mode, const QString& pak_path, QWidget* parent)
 }
 
 PakTab::~PakTab() {
+  dock_preview();
   unregister_drag_source_tab(drag_source_uid_, this);
   stop_thumbnail_generation();
   thumbnail_pool_.waitForDone();
@@ -3272,6 +3295,19 @@ void PakTab::set_preview_renderer(PreviewRenderer renderer) {
 void PakTab::set_3d_fov_degrees(int degrees) {
   if (preview_) {
     preview_->set_3d_fov_degrees(degrees);
+  }
+}
+
+void PakTab::apply_preferences_from_settings() {
+  QSettings settings;
+  const bool image_smoothing = settings.value("preview/image/textureSmoothing", false).toBool();
+  const bool refresh_thumbnails = image_texture_smoothing_ != image_smoothing;
+  image_texture_smoothing_ = image_smoothing;
+  if (preview_) {
+    preview_->apply_preferences_from_settings();
+  }
+  if (refresh_thumbnails) {
+    refresh_listing();
   }
 }
 
@@ -3320,6 +3356,106 @@ bool PakTab::can_extract_all() const {
   }
   const Archive::Format fmt = view_archive().format();
   return fmt != Archive::Format::Unknown && fmt != Archive::Format::Directory;
+}
+
+int PakTab::archive_entry_count() const {
+  if (!loaded_ || !view_archive().is_loaded()) {
+    return 0;
+  }
+  return view_archive().entries().size();
+}
+
+QVector<ArchiveSearchIndex::Item> PakTab::search_workspace(const QString& query, int max_results) const {
+  if (!loaded_ || search_index_.is_empty()) {
+    return {};
+  }
+  return search_index_.search(query, max_results);
+}
+
+QStringList PakTab::workspace_dependency_hints(int max_items) const {
+  if (!loaded_ || search_index_.is_empty() || max_items == 0) {
+    return {};
+  }
+
+  QStringList out;
+  QSet<QString> seen;
+  for (const ArchiveSearchIndex::Item& item : search_index_.items()) {
+    if (item.dependency_hints.isEmpty()) {
+      continue;
+    }
+    QStringList hints = item.dependency_hints;
+    hints.removeDuplicates();
+    for (const QString& hint : hints) {
+      if (hint.isEmpty()) {
+        continue;
+      }
+      const QString note = QString("%1 -> %2").arg(item.path, hint);
+      if (seen.contains(note)) {
+        continue;
+      }
+      seen.insert(note);
+      out.push_back(note);
+      if (max_items > 0 && out.size() >= max_items) {
+        return out;
+      }
+    }
+  }
+  return out;
+}
+
+QStringList PakTab::workspace_validation_issues() const {
+  QStringList issues;
+  const QString title = pak_path_.isEmpty() ? QStringLiteral("Untitled archive") : QDir::toNativeSeparators(pak_path_);
+  if (!loaded_) {
+    issues.push_back(load_error_.isEmpty()
+      ? QString("%1 is not loaded.").arg(title)
+      : QString("%1: %2").arg(title, load_error_));
+  }
+  if (is_pure_protected()) {
+    issues.push_back(QString("%1 is protected by the pure PAK guard.").arg(title));
+  }
+  if (is_wad_mounted()) {
+    issues.push_back(QString("%1 has a mounted archive layer; edits are disabled while mounted.").arg(title));
+  }
+  if (dirty_) {
+    issues.push_back(QString("%1 has unsaved workspace changes.").arg(title));
+  }
+  if (view_archive().is_loaded()) {
+    QHash<QString, int> archive_name_counts;
+    archive_name_counts.reserve(view_archive().entries().size());
+    for (const ArchiveEntry& entry : view_archive().entries()) {
+      const QString normalized = normalize_pak_path(entry.name).toLower();
+      if (!normalized.isEmpty()) {
+        archive_name_counts[normalized] += 1;
+      }
+    }
+
+    int duplicate_count = 0;
+    for (auto it = archive_name_counts.cbegin(); it != archive_name_counts.cend(); ++it) {
+      if (it.value() > 1) {
+        ++duplicate_count;
+      }
+    }
+    if (duplicate_count > 0) {
+      issues.push_back(QString("%1 contains %2 duplicate archive path(s); first-match load semantics will be used.")
+                         .arg(title)
+                         .arg(duplicate_count));
+    }
+
+    int override_count = 0;
+    for (const AddedFile& added : added_files_) {
+      const QString normalized = normalize_pak_path(added.pak_name).toLower();
+      if (!normalized.isEmpty() && archive_name_counts.contains(normalized)) {
+        ++override_count;
+      }
+    }
+    if (override_count > 0) {
+      issues.push_back(QString("%1 has %2 pending added file(s) overriding existing archive entries.")
+                         .arg(title)
+                         .arg(override_count));
+    }
+  }
+  return issues;
 }
 
 void PakTab::cut() {
@@ -4519,7 +4655,7 @@ bool PakTab::save_as(const QString& dest_path, const SaveOptions& options, QStri
     return false;
   }
 
-  mounted_archives_.clear();
+  archive_session_.clear_mounted_archives();
   mode_ = Mode::ExistingPak;
   pak_path_ = abs;
   added_files_.clear();
@@ -4579,6 +4715,23 @@ void PakTab::build_ui() {
   preview_->setMinimumWidth(320);
   preview_->set_glow_enabled(is_quake2_game(game_id_));
   splitter_->addWidget(preview_);
+  preview_placeholder_ = new QWidget(this);
+  auto* placeholder_layout = new QVBoxLayout(preview_placeholder_);
+  placeholder_layout->setContentsMargins(18, 18, 18, 18);
+  placeholder_layout->setSpacing(10);
+  placeholder_layout->addStretch(1);
+  auto* placeholder_title = new QLabel("Preview Detached", preview_placeholder_);
+  QFont placeholder_font = placeholder_title->font();
+  placeholder_font.setWeight(QFont::DemiBold);
+  placeholder_title->setFont(placeholder_font);
+  placeholder_title->setAlignment(Qt::AlignCenter);
+  placeholder_layout->addWidget(placeholder_title);
+  auto* dock_button = new QPushButton("Dock Preview", preview_placeholder_);
+  dock_button->setIcon(UiIcons::icon(UiIcons::Id::FullscreenExit, style()));
+  placeholder_layout->addWidget(dock_button, 0, Qt::AlignCenter);
+  placeholder_layout->addStretch(1);
+  preview_placeholder_->hide();
+  connect(dock_button, &QPushButton::clicked, this, &PakTab::dock_preview);
   splitter_->setStretchFactor(0, 3);
   splitter_->setStretchFactor(1, 2);
 	connect(preview_, &PreviewPane::request_previous_audio, this, [this]() { select_adjacent_audio(-1); });
@@ -4784,6 +4937,11 @@ void PakTab::setup_actions() {
 
   toolbar_->addSeparator();
 
+  detach_preview_action_ =
+    toolbar_->addAction(UiIcons::icon(UiIcons::Id::FullscreenEnter, style()), "Detach Preview");
+  detach_preview_action_->setToolTip("Detach preview into a separate window");
+  connect(detach_preview_action_, &QAction::triggered, this, &PakTab::toggle_preview_detached);
+
   search_edit_ = new QLineEdit(toolbar_);
   search_edit_->setClearButtonEnabled(true);
   search_edit_->setPlaceholderText("Search paths");
@@ -4795,6 +4953,95 @@ void PakTab::setup_actions() {
     search_query_ = text;
     refresh_listing();
   });
+}
+
+void PakTab::toggle_preview_detached() {
+  if (detached_preview_window_) {
+    dock_preview();
+  } else {
+    detach_preview();
+  }
+}
+
+void PakTab::detach_preview() {
+  if (!preview_ || !splitter_ || detached_preview_window_) {
+    return;
+  }
+
+  const int preview_index = splitter_->indexOf(preview_);
+  QList<int> sizes = splitter_->sizes();
+  if (preview_index < 0) {
+    return;
+  }
+
+  QWidget* parent_window = window();
+  auto* host = new PreviewDetachWindow([this]() { dock_preview(); }, parent_window);
+  host->setAttribute(Qt::WA_DeleteOnClose, false);
+  host->setWindowTitle(QString("%1 Preview").arg(pak_path_.isEmpty() ? QStringLiteral("Untitled") : QFileInfo(pak_path_).fileName()));
+  host->resize(560, 720);
+  auto* layout = new QVBoxLayout(host);
+  layout->setContentsMargins(0, 0, 0, 0);
+
+  preview_->setParent(host);
+  layout->addWidget(preview_);
+
+  if (preview_placeholder_) {
+    splitter_->insertWidget(preview_index, preview_placeholder_);
+    preview_placeholder_->show();
+  }
+  if (!sizes.isEmpty()) {
+    splitter_->setSizes(sizes);
+  }
+
+  detached_preview_window_ = host;
+  update_preview_detach_action();
+  host->show();
+  host->raise();
+  host->activateWindow();
+}
+
+void PakTab::dock_preview() {
+  if (!preview_ || !splitter_ || !detached_preview_window_) {
+    update_preview_detach_action();
+    return;
+  }
+
+  QWidget* window = detached_preview_window_;
+  detached_preview_window_ = nullptr;
+
+  if (auto* detached = dynamic_cast<PreviewDetachWindow*>(window)) {
+    detached->clear_close_callback();
+  }
+
+  QList<int> sizes = splitter_->sizes();
+  const int placeholder_index = preview_placeholder_ ? splitter_->indexOf(preview_placeholder_) : -1;
+  if (preview_placeholder_) {
+    preview_placeholder_->hide();
+    preview_placeholder_->setParent(this);
+  }
+
+  if (QLayout* layout = window->layout()) {
+    layout->removeWidget(preview_);
+  }
+  splitter_->insertWidget(placeholder_index >= 0 ? placeholder_index : 1, preview_);
+  preview_->show();
+  if (!sizes.isEmpty()) {
+    splitter_->setSizes(sizes);
+  }
+
+  window->hide();
+  window->deleteLater();
+  update_preview_detach_action();
+}
+
+void PakTab::update_preview_detach_action() {
+  if (!detach_preview_action_) {
+    return;
+  }
+  const bool detached = detached_preview_window_ != nullptr;
+  detach_preview_action_->setText(detached ? "Dock Preview" : "Detach Preview");
+  detach_preview_action_->setToolTip(detached ? "Dock preview in this archive tab" : "Detach preview into a separate window");
+  detach_preview_action_->setIcon(UiIcons::icon(detached ? UiIcons::Id::FullscreenExit : UiIcons::Id::FullscreenEnter, style()));
 }
 
 void PakTab::show_context_menu(QWidget* view, const QPoint& pos) {
@@ -5040,11 +5287,10 @@ void PakTab::update_drag_drop_interaction_state() {
 }
 
 void PakTab::stop_thumbnail_generation() {
-  ++thumbnail_generation_;
+  thumbnail_tasks_.cancel_and_clear(thumbnail_pool_);
   icon_items_by_path_.clear();
   detail_items_by_path_.clear();
   clear_sprite_icon_animations();
-  thumbnail_pool_.clear();
 }
 
 void PakTab::register_sprite_icon_animation(const QString& pak_path,
@@ -5207,7 +5453,7 @@ void PakTab::queue_thumbnail(const QString& pak_path,
   }
 
   // Capture state for this thumbnail generation.
-  const quint64 gen = thumbnail_generation_;
+  const quint64 gen = thumbnail_tasks_.generation();
   PakTab* self = this;
   const QVector<QRgb> quake1_palette = quake1_palette_;
   const QVector<QRgb> quake2_palette = quake2_palette_;
@@ -5239,7 +5485,7 @@ void PakTab::queue_thumbnail(const QString& pak_path,
         constexpr qint64 kMaxThumbBytes = 32LL * 1024 * 1024;
         QByteArray bytes;
         QString err;
-        if (self->view_archive().read_entry_bytes(pak_path, &bytes, &err, kMaxThumbBytes)) {
+        if (self->read_entry_bytes_cached(pak_path, size, -1, kMaxThumbBytes, &bytes, &err)) {
           decoded = decode_image_bytes(bytes, leaf, options);
         }
       }
@@ -5259,7 +5505,7 @@ void PakTab::queue_thumbnail(const QString& pak_path,
       } else {
         constexpr qint64 kMaxSpriteBytes = 64LL * 1024 * 1024;
         const qint64 max_bytes = (size > 0) ? std::min(size, kMaxSpriteBytes) : kMaxSpriteBytes;
-        (void)self->view_archive().read_entry_bytes(pak_path, &sprite_bytes, &err, max_bytes);
+        (void)self->read_entry_bytes_cached(pak_path, size, -1, max_bytes, &sprite_bytes, &err);
       }
 
       if (!sprite_bytes.isEmpty()) {
@@ -5368,7 +5614,7 @@ void PakTab::queue_thumbnail(const QString& pak_path,
               }
               QByteArray frame_bytes;
               QString read_err;
-              if (!self->view_archive().read_entry_bytes(found, &frame_bytes, &read_err, kMaxFrameBytes)) {
+              if (!self->read_entry_bytes_cached(found, -1, -1, kMaxFrameBytes, &frame_bytes, &read_err)) {
                 continue;
               }
               const ImageDecodeResult decoded = decode_bytes(frame_bytes, QFileInfo(found).fileName());
@@ -5412,7 +5658,7 @@ void PakTab::queue_thumbnail(const QString& pak_path,
         const qint64 max_bytes = (size > 0) ? std::min(size, kMaxCinematicBytes) : kMaxCinematicBytes;
 
         QByteArray bytes;
-        if (self->view_archive().read_entry_bytes(pak_path, &bytes, &err, max_bytes)) {
+        if (self->read_entry_bytes_cached(pak_path, size, -1, max_bytes, &bytes, &err)) {
           QTemporaryFile tmp(QDir(QDir::tempPath()).filePath(QString("pakfu-thumb-XXXXXX.%1").arg(ext)));
           tmp.setAutoRemove(true);
           if (tmp.open()) {
@@ -5438,7 +5684,7 @@ void PakTab::queue_thumbnail(const QString& pak_path,
         constexpr qint64 kMaxModelBytes = 128LL * 1024 * 1024;
         const qint64 max_bytes = (size > 0) ? std::min(size, kMaxModelBytes) : kMaxModelBytes;
         QByteArray bytes;
-        if (self->view_archive().read_entry_bytes(pak_path, &bytes, &err, max_bytes)) {
+        if (self->read_entry_bytes_cached(pak_path, size, -1, max_bytes, &bytes, &err)) {
           tmp.setAutoRemove(true);
           tmp.setFileTemplate(QDir(QDir::tempPath()).filePath(QString("pakfu-thumb-XXXXXX.%1").arg(ext)));
           if (tmp.open()) {
@@ -5466,7 +5712,7 @@ void PakTab::queue_thumbnail(const QString& pak_path,
         const qint64 max_bytes = (size > 0) ? std::min(size, kMaxBspBytes) : kMaxBspBytes;
         QByteArray bytes;
         QString err;
-        if (self->view_archive().read_entry_bytes(pak_path, &bytes, &err, max_bytes)) {
+        if (self->read_entry_bytes_cached(pak_path, size, -1, max_bytes, &bytes, &err)) {
           preview = render_bsp_preview_bytes(bytes, leaf, BspPreviewStyle::Silhouette, qMax(icon_size.width(), icon_size.height()));
         }
       }
@@ -5492,7 +5738,7 @@ void PakTab::queue_thumbnail(const QString& pak_path,
                                image = std::move(image),
                                sprite_frames = std::move(sprite_frames),
                                sprite_frame_durations_ms = std::move(sprite_frame_durations_ms)]() mutable {
-      if (!self || self->thumbnail_generation_ != gen) {
+      if (!self || !self->thumbnail_tasks_.is_current(gen)) {
         return;
       }
       const QIcon icon(QPixmap::fromImage(image));
@@ -6315,6 +6561,10 @@ bool PakTab::export_path_to_temp(const QString& pak_path_in, bool is_dir, QStrin
 }
 
 QString PakTab::preview_export_cache_key(const QString& pak_path, bool is_dir) const {
+  return PreviewIoCache::make_key(preview_cache_scope(), normalize_pak_path(pak_path), is_dir);
+}
+
+QString PakTab::preview_cache_scope() const {
   QString scope = QFileInfo(pak_path_).absoluteFilePath();
   if (scope.isEmpty()) {
     scope = "archive";
@@ -6324,11 +6574,97 @@ QString PakTab::preview_export_cache_key(const QString& pak_path, bool is_dir) c
       scope += QString("|mounted:%1:%2").arg(layer.mount_name, layer.mount_fs_path);
     }
   }
-  return QString("%1|%2|%3").arg(scope, is_dir ? QString("dir") : QString("file"), normalize_pak_path(pak_path));
+  return scope;
 }
 
 void PakTab::clear_preview_temp_cache() {
-  preview_temp_exports_.clear();
+  preview_io_cache_.clear();
+}
+
+bool PakTab::read_entry_bytes_cached(const QString& pak_path_in,
+                                     qint64 size,
+                                     qint64 mtime_utc_secs,
+                                     qint64 max_bytes,
+                                     QByteArray* out,
+                                     QString* error,
+                                     bool* cache_hit) {
+  if (cache_hit) {
+    *cache_hit = false;
+  }
+  if (out) {
+    out->clear();
+  }
+  if (error) {
+    error->clear();
+  }
+
+  const QString pak_path = normalize_pak_path(pak_path_in);
+  if (pak_path.isEmpty()) {
+    if (error) {
+      *error = "Entry path is empty.";
+    }
+    return false;
+  }
+
+  const int added_idx = added_index_by_name_.value(pak_path, -1);
+  const QString source_path = (!is_wad_mounted() && added_idx >= 0 && added_idx < added_files_.size())
+                                ? added_files_[added_idx].source_path
+                                : QString();
+
+  PreviewIoCache::EntryStamp stamp;
+  stamp.source_path = source_path;
+  stamp.size = size;
+  stamp.mtime_utc_secs = mtime_utc_secs;
+  stamp.max_bytes = max_bytes;
+  stamp.is_dir = false;
+
+  const QString key = PreviewIoCache::make_key(preview_cache_scope(), pak_path, false, max_bytes);
+  if (preview_io_cache_.lookup_bytes(key, stamp, out, cache_hit)) {
+    return true;
+  }
+
+  QByteArray bytes;
+  if (!source_path.isEmpty()) {
+    QFile file(source_path);
+    if (!file.open(QIODevice::ReadOnly)) {
+      if (error) {
+        *error = QString("Unable to open source file: %1").arg(source_path);
+      }
+      return false;
+    }
+    const qint64 source_size = file.size();
+    if (source_size < 0) {
+      if (error) {
+        *error = QString("Unable to determine source file size: %1").arg(source_path);
+      }
+      return false;
+    }
+    qint64 to_read = source_size;
+    if (max_bytes >= 0 && to_read > max_bytes) {
+      to_read = max_bytes;
+    }
+    bytes = file.read(to_read);
+    if (bytes.size() != to_read) {
+      if (error) {
+        *error = QString("Unable to read source file: %1").arg(source_path);
+      }
+      return false;
+    }
+  } else {
+    QString err;
+    if (!view_archive().read_entry_bytes(pak_path, &bytes, &err, max_bytes)) {
+      if (error) {
+        *error = err;
+      }
+      return false;
+    }
+  }
+
+  preview_io_cache_.store_bytes(key, stamp, bytes);
+  if (out) {
+    *out = std::move(bytes);
+  }
+  return true;
 }
 
 bool PakTab::export_path_to_temp_cached(const QString& pak_path_in,
@@ -6351,40 +6687,25 @@ bool PakTab::export_path_to_temp_cached(const QString& pak_path_in,
                                 ? added_files_[added_idx].source_path
                                 : QString();
   const QString key = preview_export_cache_key(pak_path, is_dir);
-  const PreviewTempExport cached = preview_temp_exports_.value(key);
-  if (!cached.fs_path.isEmpty() && cached.is_dir == is_dir && cached.size == size &&
-      cached.mtime_utc_secs == mtime_utc_secs && cached.source_path == source_path) {
-    const QFileInfo cached_info(cached.fs_path);
-    const bool exists = is_dir ? cached_info.isDir() : cached_info.isFile();
-    if (exists) {
-      if (out_fs_path) {
-        *out_fs_path = cached.fs_path;
-      }
-      if (cache_hit) {
-        *cache_hit = true;
-      }
-      return true;
-    }
+
+  PreviewIoCache::EntryStamp stamp;
+  stamp.source_path = source_path;
+  stamp.size = size;
+  stamp.mtime_utc_secs = mtime_utc_secs;
+  stamp.max_bytes = -1;
+  stamp.is_dir = is_dir;
+
+  if (preview_io_cache_.lookup_export(key, stamp, out_fs_path, cache_hit)) {
+    return true;
   }
 
   QString exported;
   if (!export_path_to_temp(pak_path, is_dir, &exported, error)) {
-    preview_temp_exports_.remove(key);
+    preview_io_cache_.remove_export(key);
     return false;
   }
 
-  PreviewTempExport entry;
-  entry.fs_path = exported;
-  entry.source_path = source_path;
-  entry.size = size;
-  entry.mtime_utc_secs = mtime_utc_secs;
-  entry.is_dir = is_dir;
-  preview_temp_exports_.insert(key, entry);
-
-  constexpr int kMaxPreviewTempExports = 16;
-  while (preview_temp_exports_.size() > kMaxPreviewTempExports) {
-    preview_temp_exports_.erase(preview_temp_exports_.begin());
-  }
+  preview_io_cache_.store_export(key, stamp, exported);
 
   if (out_fs_path) {
     *out_fs_path = exported;
@@ -8522,8 +8843,9 @@ bool PakTab::write_zip_file(const QString& dest_path, bool quakelive_encrypt_pk3
 }
 
 void PakTab::load_archive() {
+  PakFu::Metrics::ScopedTimer load_scope("archive", "tab_load", QFileInfo(pak_path_).fileName());
   // Leaving any mounted container view when (re)loading the outer archive.
-  mounted_archives_.clear();
+  archive_session_.clear_mounted_archives();
 
   QString err;
   if (!archive_.load(pak_path_, &err)) {
@@ -9313,7 +9635,7 @@ bool PakTab::mount_wad_from_selected_file(const QString& pak_path_in, QString* e
   layer.mount_name = leaf;
   layer.mount_fs_path = mounted_fs_path;
   layer.outer_dir_before_mount = current_dir_;
-  mounted_archives_.push_back(std::move(layer));
+  archive_session_.push_mounted_archive(std::move(layer));
 
   set_current_dir({});
   return true;
@@ -9325,7 +9647,7 @@ void PakTab::unmount_wad() {
   }
 
   const QStringList restore = mounted_archives_.back().outer_dir_before_mount;
-  mounted_archives_.pop_back();
+  archive_session_.pop_mounted_archive();
   set_current_dir(restore);
 }
 
@@ -9655,6 +9977,7 @@ Update the preview pane based on the current selection.
 =============
 */
 void PakTab::update_preview() {
+  PakFu::Metrics::ScopedTimer preview_scope("preview", "update");
   if (!preview_) {
     return;
   }
@@ -9718,6 +10041,7 @@ void PakTab::update_preview() {
   preview_->clear_asset_context();
 
   const QString leaf = pak_leaf_name(pak_path);
+  preview_scope.set_detail(leaf.isEmpty() ? pak_path : leaf);
   const QString subtitle = (!is_dir && size >= 0)
                              ? QString("Size: %1  •  Modified: %2")
                                   .arg(format_size(static_cast<quint32>(qMin<qint64>(size, std::numeric_limits<quint32>::max()))),
@@ -9774,6 +10098,7 @@ void PakTab::update_preview() {
   const bool is_video = is_video_file_name(leaf);
   const bool is_model = is_model_file_name(leaf);
   const bool is_bsp = is_bsp_file_name(leaf);
+  const bool is_idtech4_proc = (ext == "proc");
 
   QString source_path;
   const int added_idx = added_index_by_name_.value(normalize_pak_path(pak_path), -1);
@@ -9869,7 +10194,7 @@ void PakTab::update_preview() {
     QByteArray bytes;
     QString err;
     constexpr qint64 kMaxImageBytes = 32LL * 1024 * 1024;
-    if (!view_archive().read_entry_bytes(pak_path, &bytes, &err, kMaxImageBytes)) {
+    if (!read_entry_bytes_cached(pak_path, size, mtime, kMaxImageBytes, &bytes, &err)) {
       preview_->show_message(leaf, err.isEmpty() ? "Unable to read image from PAK." : err);
       return;
     }
@@ -9914,7 +10239,7 @@ void PakTab::update_preview() {
             QByteArray glow_bytes;
             QString glow_err;
             constexpr qint64 kMaxGlowBytes = 32LL * 1024 * 1024;
-            if (view_archive().read_entry_bytes(found, &glow_bytes, &glow_err, kMaxGlowBytes)) {
+            if (read_entry_bytes_cached(found, -1, -1, kMaxGlowBytes, &glow_bytes, &glow_err)) {
               const ImageDecodeResult glow_decoded = decode_image_bytes(glow_bytes, QFileInfo(found).fileName(), ImageDecodeOptions{});
               if (glow_decoded.ok()) {
                 image = apply_glow_overlay(image, glow_decoded.image);
@@ -10709,6 +11034,261 @@ void PakTab::update_preview() {
     return;
   }
 
+  if (is_idtech4_proc) {
+    QElapsedTimer preview_timer;
+    preview_timer.start();
+    QStringList profile_steps;
+    PreviewAssetContext asset_context;
+    QByteArray proc_bytes;
+    QString err;
+
+    constexpr qint64 kMaxProcBytes = 128LL * 1024 * 1024;
+    if (!source_path.isEmpty()) {
+      QElapsedTimer read_timer;
+      read_timer.start();
+      QFile f(source_path);
+      if (!f.open(QIODevice::ReadOnly)) {
+        preview_->show_message(leaf, "Unable to open PROC file.");
+        return;
+      }
+      const qint64 size_on_disk = f.size();
+      if (size_on_disk > kMaxProcBytes) {
+        asset_context.preview_fallback = QString("PROC preview is capped at %1; selected file is %2.")
+                                           .arg(format_size(static_cast<quint32>(kMaxProcBytes)),
+                                                format_size(static_cast<quint32>(qMin<qint64>(size_on_disk, std::numeric_limits<quint32>::max()))));
+        preview_->set_asset_context(asset_context);
+        preview_->show_message(leaf, "PROC file is too large to preview.");
+        return;
+      }
+      proc_bytes = f.readAll();
+      add_preview_profile_step(&profile_steps, "read", read_timer.elapsed());
+    } else {
+      QElapsedTimer read_timer;
+      read_timer.start();
+      const qint64 max_bytes = (size > 0) ? std::min(size, kMaxProcBytes) : kMaxProcBytes;
+      if (!read_entry_bytes_cached(pak_path, size, mtime, max_bytes, &proc_bytes, &err)) {
+        preview_->show_message(leaf, err.isEmpty() ? "Unable to read PROC from archive." : err);
+        return;
+      }
+      add_preview_profile_step(&profile_steps, "read", read_timer.elapsed());
+    }
+
+    QElapsedTimer mesh_timer;
+    mesh_timer.start();
+    IdTech4ProcLoadResult proc = load_idtech4_proc_mesh_bytes(proc_bytes, leaf);
+    add_preview_profile_step(&profile_steps, "proc mesh", mesh_timer.elapsed());
+    if (!proc.ok()) {
+      const IdTech4MapInspectResult inspected = inspect_idtech4_map_bytes(proc_bytes, leaf);
+      asset_context.preview_fallback = proc.error.isEmpty() ? "Unable to build renderable PROC geometry." : proc.error;
+      asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+      preview_->set_asset_context(asset_context);
+      preview_->show_txt(leaf,
+                         subtitle,
+                         (inspected.ok() ? inspected.summary : QString("PROC inspect error: %1\n").arg(inspected.error)) +
+                           "\nSource preview:\n\n" + QString::fromUtf8(proc_bytes.left(512 * 1024)));
+      return;
+    }
+
+    QHash<QString, QString> by_lower;
+    if (view_archive().is_loaded()) {
+      by_lower.reserve(view_archive().entries().size() + (is_wad_mounted() ? 0 : added_files_.size()));
+      for (const ArchiveEntry& e : view_archive().entries()) {
+        const QString n = normalize_pak_path(e.name);
+        if (!n.isEmpty()) {
+          by_lower.insert(n.toLower(), e.name);
+        }
+      }
+      if (!is_wad_mounted()) {
+        for (const AddedFile& f : added_files_) {
+          const QString n = normalize_pak_path(f.pak_name);
+          if (!n.isEmpty()) {
+            by_lower.insert(n.toLower(), f.pak_name);
+          }
+        }
+      }
+    }
+
+    auto find_entry_ci = [&](const QString& want) -> QString {
+      const QString key = normalize_pak_path(want).toLower();
+      return key.isEmpty() ? QString() : by_lower.value(key);
+    };
+
+    QHash<QString, QStringList> material_images_by_key;
+    int material_files_read = 0;
+    int material_decl_count = 0;
+    constexpr int kMaxMtrFiles = 96;
+    constexpr qint64 kMaxMtrBytes = 4LL * 1024 * 1024;
+    if (view_archive().is_loaded()) {
+      for (const ArchiveEntry& e : view_archive().entries()) {
+        if (material_files_read >= kMaxMtrFiles) {
+          break;
+        }
+        const QString entry_name = normalize_pak_path(e.name);
+        if (!entry_name.endsWith(".mtr", Qt::CaseInsensitive)) {
+          continue;
+        }
+        QByteArray mtr_bytes;
+        QString mtr_err;
+        if (!read_entry_bytes_cached(entry_name, e.size, e.mtime_utc_secs, kMaxMtrBytes, &mtr_bytes, &mtr_err)) {
+          continue;
+        }
+        ++material_files_read;
+        const IdTech4MaterialParseResult parsed = parse_idtech4_material_bytes(mtr_bytes, entry_name);
+        if (!parsed.ok()) {
+          continue;
+        }
+        for (const IdTech4MaterialDecl& decl : parsed.materials) {
+          if (decl.name.isEmpty()) {
+            continue;
+          }
+          QStringList refs;
+          if (!decl.preferred_image.isEmpty()) {
+            refs.push_back(decl.preferred_image);
+          }
+          for (const QString& ref : decl.image_refs) {
+            if (!refs.contains(ref, Qt::CaseInsensitive)) {
+              refs.push_back(ref);
+            }
+          }
+          if (!refs.isEmpty()) {
+            material_images_by_key.insert(decl.name.toLower(), refs);
+          }
+          ++material_decl_count;
+        }
+      }
+    }
+
+    QHash<QString, QImage> textures;
+    QElapsedTimer texture_timer;
+    texture_timer.start();
+    int resolved_materials = 0;
+    int attempted_materials = 0;
+    QStringList unresolved_materials;
+    const QStringList idtech4_image_exts = {"dds", "tga", "png", "jpg", "jpeg", "ftx"};
+
+    auto add_texture_aliases = [&](const QString& key, const QString& found, const QImage& image) {
+      if (image.isNull()) {
+        return;
+      }
+      auto insert_alias = [&](QString alias) {
+        alias = normalize_pak_path(alias).toLower();
+        if (!alias.isEmpty()) {
+          textures.insert(alias, image);
+        }
+      };
+      insert_alias(key);
+      insert_alias(found);
+      const QFileInfo info(found);
+      insert_alias(info.fileName());
+      insert_alias(info.completeBaseName());
+    };
+
+    auto texture_candidates_for_ref = [&](const QString& ref_in) -> QVector<QString> {
+      QString ref = normalize_pak_path(ref_in);
+      QVector<QString> candidates;
+      if (ref.isEmpty()) {
+        return candidates;
+      }
+      const QFileInfo info(ref);
+      const QString suffix = info.suffix().toLower();
+      const bool known_ext = idtech4_image_exts.contains(suffix);
+      auto add = [&](const QString& c) {
+        const QString normalized = normalize_pak_path(c);
+        if (!normalized.isEmpty() && !candidates.contains(normalized)) {
+          candidates.push_back(normalized);
+        }
+      };
+
+      if (known_ext) {
+        add(ref);
+      } else {
+        for (const QString& image_ext : idtech4_image_exts) {
+          add(QString("%1.%2").arg(ref, image_ext));
+        }
+      }
+      if (!ref.startsWith("textures/", Qt::CaseInsensitive)) {
+        if (known_ext) {
+          add(QString("textures/%1").arg(ref));
+        } else {
+          for (const QString& image_ext : idtech4_image_exts) {
+            add(QString("textures/%1.%2").arg(ref, image_ext));
+          }
+        }
+      }
+      return candidates;
+    };
+
+    for (const QString& material : proc.material_refs) {
+      ++attempted_materials;
+      QStringList refs = material_images_by_key.value(material.toLower());
+      if (refs.isEmpty()) {
+        refs.push_back(material);
+      }
+      bool resolved = false;
+      for (const QString& ref : refs) {
+        for (const QString& candidate : texture_candidates_for_ref(ref)) {
+          const QString found = find_entry_ci(candidate);
+          if (found.isEmpty()) {
+            continue;
+          }
+          QByteArray tex_bytes;
+          QString tex_err;
+          constexpr qint64 kMaxProcTextureBytes = 64LL * 1024 * 1024;
+          if (!read_entry_bytes_cached(found, -1, -1, kMaxProcTextureBytes, &tex_bytes, &tex_err)) {
+            continue;
+          }
+          ImageDecodeResult decoded = decode_image_bytes(tex_bytes, QFileInfo(found).fileName(), ImageDecodeOptions{});
+          if (!decoded.ok()) {
+            continue;
+          }
+          add_texture_aliases(material, found, decoded.image);
+          ++resolved_materials;
+          resolved = true;
+          break;
+        }
+        if (resolved) {
+          break;
+        }
+      }
+      if (!resolved) {
+        unresolved_materials.push_back(material);
+      }
+    }
+    add_preview_profile_step(&profile_steps, "materials", texture_timer.elapsed());
+
+    asset_context.texture_dependencies =
+      QString("%1 PROC material refs, %2 attempted, %3 material declarations, %4 textures resolved")
+        .arg(proc.material_refs.size())
+        .arg(attempted_materials)
+        .arg(material_decl_count)
+        .arg(resolved_materials);
+    asset_context.companion_resolution =
+      material_files_read > 0
+        ? QString("%1 .mtr file(s) scanned for idTech4 material declarations").arg(material_files_read)
+        : QString("No .mtr material files found in the current workspace.");
+    if (!unresolved_materials.isEmpty()) {
+      const int preview_count = std::min(static_cast<int>(unresolved_materials.size()), 12);
+      QStringList preview = unresolved_materials.mid(0, preview_count);
+      if (unresolved_materials.size() > preview_count) {
+        preview.push_back(QString("... (%1 more)").arg(unresolved_materials.size() - preview_count));
+      }
+      asset_context.preview_fallback = QString("Unresolved materials:\n%1").arg(preview.join('\n'));
+    }
+    asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+    preview_->set_asset_context(asset_context);
+
+    QElapsedTimer show_timer;
+    show_timer.start();
+    preview_->show_bsp(leaf,
+                       subtitle + QString("  (idTech4 PROC: %1 surfaces, %2 materials)").arg(proc.surface_count).arg(proc.material_refs.size()),
+                       std::move(proc.mesh),
+                       std::move(textures));
+    add_preview_profile_step(&profile_steps, "viewer setup", show_timer.elapsed());
+    asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
+    preview_->set_asset_context(asset_context);
+    return;
+  }
+
   if (is_bsp) {
     QElapsedTimer preview_timer;
     preview_timer.start();
@@ -10760,7 +11340,7 @@ void PakTab::update_preview() {
       QElapsedTimer read_timer;
       read_timer.start();
       const qint64 max_bytes = (size > 0) ? std::min(size, kMaxBspBytes) : kMaxBspBytes;
-      if (!view_archive().read_entry_bytes(pak_path, &bsp_bytes, &err, max_bytes)) {
+      if (!read_entry_bytes_cached(pak_path, size, mtime, max_bytes, &bsp_bytes, &err)) {
         add_preview_profile_step(&profile_steps, "read", read_timer.elapsed());
         asset_context.performance_profile = preview_profile_text(profile_steps, preview_timer.elapsed());
         preview_->set_asset_context(asset_context);
@@ -10936,7 +11516,7 @@ void PakTab::update_preview() {
             }
             QByteArray bytes;
             QString tex_err;
-            if (!view_archive().read_entry_bytes(found, &bytes, &tex_err, kMaxTexBytes)) {
+            if (!read_entry_bytes_cached(found, -1, -1, kMaxTexBytes, &bytes, &tex_err)) {
               continue;
             }
             const ImageDecodeResult decoded = decode_texture(bytes, QFileInfo(found).fileName());
@@ -10991,7 +11571,7 @@ void PakTab::update_preview() {
       bytes = f.readAll();
     } else {
       const qint64 max_bytes = (size > 0) ? std::min(size, kMaxAssetBytes) : kMaxAssetBytes;
-      if (!view_archive().read_entry_bytes(pak_path, &bytes, &err, max_bytes)) {
+      if (!read_entry_bytes_cached(pak_path, size, mtime, max_bytes, &bytes, &err)) {
         preview_->show_message(leaf, err.isEmpty() ? "Unable to read asset from archive." : err);
         return;
       }
@@ -11142,7 +11722,7 @@ void PakTab::update_preview() {
 
             QByteArray frame_bytes;
             QString frame_err;
-            if (!view_archive().read_entry_bytes(found, &frame_bytes, &frame_err, kMaxFrameBytes)) {
+            if (!read_entry_bytes_cached(found, -1, -1, kMaxFrameBytes, &frame_bytes, &frame_err)) {
               continue;
             }
             const ImageDecodeResult decoded = decode_image_from_bytes(frame_bytes, QFileInfo(found).fileName());
@@ -11195,7 +11775,7 @@ void PakTab::update_preview() {
   }
 
   if (is_font_file_name(leaf)) {
-    constexpr qint64 kMaxFontBytes = 64LL * 1024 * 1024;
+    const qint64 kMaxFontBytes = (ext == "fontdat") ? (1LL * 1024 * 1024) : (64LL * 1024 * 1024);
     QByteArray bytes;
     QString err;
 
@@ -11213,10 +11793,108 @@ void PakTab::update_preview() {
       bytes = f.readAll();
     } else {
       const qint64 max_bytes = (size > 0) ? std::min(size, kMaxFontBytes) : kMaxFontBytes;
-      if (!view_archive().read_entry_bytes(pak_path, &bytes, &err, max_bytes)) {
+      if (!read_entry_bytes_cached(pak_path, size, mtime, max_bytes, &bytes, &err)) {
         preview_->show_message(leaf, err.isEmpty() ? "Unable to read font from archive." : err);
         return;
       }
+    }
+
+    if (ext == "fontdat") {
+      QImage atlas;
+      QString atlas_name;
+      QStringList attempts;
+
+      const auto decode_atlas_bytes = [&](const QByteArray& atlas_bytes, const QString& name) -> bool {
+        const ImageDecodeResult decoded = decode_image_bytes(atlas_bytes, QFileInfo(name).fileName(), ImageDecodeOptions{});
+        if (!decoded.ok() || decoded.image.isNull()) {
+          attempts.push_back(QString("%1: %2").arg(name, decoded.error.isEmpty() ? QString("unable to decode atlas") : decoded.error));
+          return false;
+        }
+        atlas = decoded.image;
+        atlas_name = name;
+        return true;
+      };
+
+      const auto try_atlas_file = [&](const QString& path) -> bool {
+        if (!QFileInfo::exists(path)) {
+          return false;
+        }
+        const ImageDecodeResult decoded = decode_image_file(path, ImageDecodeOptions{});
+        if (!decoded.ok() || decoded.image.isNull()) {
+          attempts.push_back(QString("%1: %2").arg(path, decoded.error.isEmpty() ? QString("unable to decode atlas") : decoded.error));
+          return false;
+        }
+        atlas = decoded.image;
+        atlas_name = QFileInfo(path).fileName();
+        return true;
+      };
+
+      if (!source_path.isEmpty()) {
+        for (const QString& candidate : fontdat_atlas_candidates_for_path(source_path)) {
+          if (try_atlas_file(candidate)) {
+            break;
+          }
+        }
+      }
+
+      if (atlas.isNull()) {
+        QHash<QString, QString> by_lower;
+        by_lower.reserve(view_archive().entries().size() + (is_wad_mounted() ? 0 : added_files_.size()));
+        for (const ArchiveEntry& e : view_archive().entries()) {
+          const QString n = normalize_pak_path(e.name);
+          if (!n.isEmpty()) {
+            by_lower.insert(n.toLower(), e.name);
+          }
+        }
+        if (!is_wad_mounted()) {
+          for (const AddedFile& f : added_files_) {
+            const QString n = normalize_pak_path(f.pak_name);
+            if (!n.isEmpty()) {
+              by_lower.insert(n.toLower(), f.pak_name);
+            }
+          }
+        }
+
+        for (const QString& candidate : fontdat_atlas_candidates_for_path(pak_path)) {
+          const QString found = by_lower.value(normalize_pak_path(candidate).toLower());
+          if (found.isEmpty()) {
+            attempts.push_back(QString("%1: not found").arg(candidate));
+            continue;
+          }
+
+          const int atlas_added_idx = added_index_by_name_.value(normalize_pak_path(found), -1);
+          if (atlas_added_idx >= 0 && atlas_added_idx < added_files_.size()) {
+            if (try_atlas_file(added_files_[atlas_added_idx].source_path)) {
+              atlas_name = found;
+              break;
+            }
+            continue;
+          }
+
+          QByteArray atlas_bytes;
+          QString atlas_err;
+          constexpr qint64 kMaxFontAtlasBytes = 64LL * 1024 * 1024;
+          if (!read_entry_bytes_cached(found, -1, -1, kMaxFontAtlasBytes, &atlas_bytes, &atlas_err)) {
+            attempts.push_back(QString("%1: %2").arg(found, atlas_err.isEmpty() ? QString("unable to read atlas") : atlas_err));
+            continue;
+          }
+          if (decode_atlas_bytes(atlas_bytes, found)) {
+            break;
+          }
+        }
+      }
+
+      PreviewAssetContext asset_context;
+      asset_context.companion_resolution = atlas.isNull()
+                                             ? QString("No companion atlas resolved")
+                                             : QString("Resolved %1").arg(atlas_name);
+      if (atlas.isNull() && !attempts.isEmpty()) {
+        asset_context.preview_fallback = QString("FONTDAT preview needs a sibling atlas image. Tried:\n- %1")
+                                           .arg(attempts.join("\n- "));
+      }
+      preview_->set_asset_context(asset_context);
+      preview_->show_fontdat_from_bytes(leaf, subtitle, bytes, atlas, atlas_name);
+      return;
     }
 
     preview_->show_font_from_bytes(leaf, subtitle, bytes);
@@ -11239,7 +11917,7 @@ void PakTab::update_preview() {
         err = "Unable to open source file for preview.";
       }
     } else {
-      if (!view_archive().read_entry_bytes(pak_path, &bytes, &err, text_limit)) {
+      if (!read_entry_bytes_cached(pak_path, size, mtime, text_limit, &bytes, &err)) {
         // handled below
       }
     }
@@ -11257,7 +11935,7 @@ void PakTab::update_preview() {
     if (is_idtech4_map_text_file(leaf)) {
       PreviewAssetContext asset_context;
       asset_context.preview_fallback =
-        "idTech4 map/proc preview is text and metadata inspection; native 3D rendering is limited to Quake-family BSP.";
+        "idTech4 .map source files are inspected as text/metadata; compiled .proc files render in the 3D preview.";
       preview_->set_asset_context(asset_context);
       const IdTech4MapInspectResult inspected = inspect_idtech4_map_bytes(bytes, leaf);
       if (inspected.ok()) {
@@ -11266,7 +11944,7 @@ void PakTab::update_preview() {
         preview_->show_txt(leaf,
                            sub,
                            QString("Type: idTech4/source map artifact\n"
-                                   "Scope: text/metadata inspection only; 3D rendering is currently limited to Quake-family .bsp maps.\n"
+                                   "Scope: .proc files can render 3D geometry; .map source files remain text/metadata inspection.\n"
                                    "Inspect error: %1\n\n"
                                    "Source preview:\n\n%2")
                              .arg(inspected.error.isEmpty() ? QString("Unable to inspect map artifact.") : inspected.error, text));
@@ -11534,7 +12212,7 @@ void PakTab::update_preview() {
 
             QByteArray tex_bytes;
             QString tex_err;
-            if (!view_archive().read_entry_bytes(found, &tex_bytes, &tex_err, kMaxShaderTexBytes)) {
+            if (!read_entry_bytes_cached(found, -1, -1, kMaxShaderTexBytes, &tex_bytes, &tex_err)) {
               continue;
             }
             const ImageDecodeResult decoded = decode_texture_from_bytes(tex_bytes, QFileInfo(found).fileName());
@@ -11568,7 +12246,7 @@ void PakTab::update_preview() {
       err = "Unable to open source file for preview.";
     }
   } else {
-    view_archive().read_entry_bytes(pak_path, &bytes, &err, kMaxBinBytes);
+    read_entry_bytes_cached(pak_path, size, mtime, kMaxBinBytes, &bytes, &err);
   }
   if (!err.isEmpty()) {
     preview_->show_message(leaf, err);
@@ -11628,7 +12306,7 @@ void PakTab::activate_crumb(int index) {
 
   if (index <= mounted_depth) {
     while (static_cast<int>(mounted_archives_.size()) > index) {
-      mounted_archives_.pop_back();
+      archive_session_.pop_mounted_archive();
     }
     set_current_dir({});
     return;

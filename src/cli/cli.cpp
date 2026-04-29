@@ -7,18 +7,29 @@
 
 #include <QCommandLineParser>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QLibraryInfo>
 #include <QSaveFile>
 #include <QSet>
+#include <QStandardPaths>
+#include <QSysInfo>
 #include <QTemporaryDir>
 #include <QTextStream>
 #include <QUuid>
 
 #include "archive/archive.h"
+#include "archive/archive_search_index.h"
 #include "archive/path_safety.h"
 #include "extensions/extension_plugin.h"
+#include "formats/fontdat_font.h"
+#include "formats/idtech4_map.h"
 #include "formats/idwav_audio.h"
 #include "formats/image_loader.h"
 #include "formats/image_writer.h"
@@ -905,6 +916,89 @@ int run_preview_export_cli(const Archive& archive,
   }
 
   const QString ext = file_ext_lower(name);
+  if (ext == "fontdat") {
+    const FontDatDecodeResult font = decode_fontdat_bytes(bytes);
+    if (!font.ok()) {
+      err << (font.error.isEmpty() ? "Unable to parse FONTDAT preview.\n" : font.error + "\n");
+      return 2;
+    }
+
+    QHash<QString, QString> by_lower;
+    by_lower.reserve(archive.entries().size());
+    for (const ArchiveEntry& entry : archive.entries()) {
+      const QString normalized = normalize_archive_entry_name(entry.name);
+      if (!normalized.isEmpty()) {
+        by_lower.insert(normalized.toLower(), entry.name);
+      }
+    }
+
+    QImage atlas;
+    QString atlas_name;
+    QStringList attempts;
+    for (const QString& candidate : fontdat_atlas_candidates_for_path(name)) {
+      const QString found = by_lower.value(normalize_archive_entry_name(candidate).toLower());
+      if (found.isEmpty()) {
+        attempts.push_back(QString("%1: not found").arg(candidate));
+        continue;
+      }
+
+      QByteArray atlas_bytes;
+      QString atlas_err;
+      if (!archive.read_entry_bytes(found, &atlas_bytes, &atlas_err, 64LL * 1024 * 1024)) {
+        attempts.push_back(QString("%1: %2").arg(found, atlas_err.isEmpty() ? QString("unable to read atlas") : atlas_err));
+        continue;
+      }
+      const ImageDecodeResult decoded = decode_image_bytes(atlas_bytes, QFileInfo(found).fileName(), ImageDecodeOptions{});
+      if (!decoded.ok() || decoded.image.isNull()) {
+        attempts.push_back(QString("%1: %2").arg(found, decoded.error.isEmpty() ? QString("unable to decode atlas") : decoded.error));
+        continue;
+      }
+      atlas = decoded.image;
+      atlas_name = found;
+      break;
+    }
+
+    if (atlas.isNull()) {
+      err << "Unable to resolve FONTDAT atlas image.\n";
+      if (!attempts.isEmpty()) {
+        err << "Tried:\n- " << attempts.join("\n- ") << "\n";
+      }
+      return 2;
+    }
+
+    FontDatRenderOptions render_options;
+    render_options.glyph_scale = (font.font.max_glyph_height() >= 32) ? 1 : 2;
+    const FontDatRenderResult rendered = render_fontdat_preview(font.font, atlas, render_options);
+    if (!rendered.ok()) {
+      err << (rendered.error.isEmpty() ? "Unable to render FONTDAT preview.\n" : rendered.error + "\n");
+      return 2;
+    }
+
+    QString format = "png";
+    if (output_option_denotes_file(options.output_dir)) {
+      format = normalize_image_write_format(file_ext_lower(options.output_dir));
+      if (format.isEmpty() || !supported_image_write_formats().contains(format)) {
+        err << "Unsupported preview image output format: " << file_ext_lower(options.output_dir) << "\n";
+        return 2;
+      }
+    }
+
+    const QString dest = preview_output_path(options.output_dir, name, format);
+    ImageWriteOptions write_opts;
+    write_opts.format = format;
+    write_opts.texture_name = QFileInfo(name).completeBaseName();
+    QString write_err;
+    if (!write_image_file(rendered.image, dest, write_opts, &write_err)) {
+      err << (write_err.isEmpty() ? QString("Unable to write FONTDAT preview export: %1\n").arg(dest) : write_err + "\n");
+      return 2;
+    }
+    out << "Preview exported: " << dest << "\n";
+    if (!atlas_name.isEmpty()) {
+      out << "FONTDAT atlas: " << atlas_name << "\n";
+    }
+    return 0;
+  }
+
   if (is_decodable_image_ext(ext)) {
     const ImageDecodeResult decoded = decode_image_bytes(bytes, name, {});
     if (!decoded.ok()) {
@@ -941,6 +1035,1084 @@ int run_preview_export_cli(const Archive& archive,
     return 2;
   }
   out << "Preview exported: " << dest << "\n";
+  return 0;
+}
+
+struct ValidationSummary {
+  QStringList errors;
+  QStringList warnings;
+  int selected_entries = 0;
+  int selected_files = 0;
+  int selected_dirs = 0;
+  int readable_files = 0;
+  int dependency_hints = 0;
+  int material_files = 0;
+  int material_decls = 0;
+  int proc_files = 0;
+  int proc_material_refs = 0;
+};
+
+struct CompareEntry {
+  QString path;
+  QString sha256;
+  quint32 size = 0;
+};
+
+struct AssetGraphEdge {
+  QString source;
+  QString target;
+  QString kind;
+  bool resolved = false;
+};
+
+struct AssetGraphReport {
+  QVector<AssetGraphEdge> edges;
+  QStringList warnings;
+  int entries_scanned = 0;
+  int material_files = 0;
+  int material_decls = 0;
+  int proc_files = 0;
+};
+
+struct PackageManifestItem {
+  QString path;
+  QString sha256;
+  quint32 size = 0;
+  qint64 mtime_utc_secs = -1;
+};
+
+QString hash_bytes_sha256(const QByteArray& bytes) {
+  return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+}
+
+QString normalize_asset_reference(QString ref) {
+  ref = ref.trimmed();
+  ref.replace('\\', '/');
+  const bool had_trailing_slash = ref.endsWith('/');
+  while (ref.startsWith('/')) {
+    ref.remove(0, 1);
+  }
+  ref = QDir::cleanPath(ref);
+  ref.replace('\\', '/');
+  if (ref == ".") {
+    ref.clear();
+  }
+  if (had_trailing_slash && !ref.isEmpty() && !ref.endsWith('/')) {
+    ref += '/';
+  }
+  return ref;
+}
+
+QString dot_quote(QString text) {
+  text.replace('\\', "\\\\");
+  text.replace('"', "\\\"");
+  text.replace('\n', "\\n");
+  text.replace('\r', "\\r");
+  return QString("\"") + text + "\"";
+}
+
+bool path_key_starts_with(const QString& path_key, const QString& prefix_key) {
+  if (path_key.isEmpty() || prefix_key.isEmpty()) {
+    return false;
+  }
+  return path_key.startsWith(prefix_key, Qt::CaseInsensitive);
+}
+
+bool output_path_for_report(const QString& raw, QString* path, QString* error) {
+  if (path) {
+    path->clear();
+  }
+  if (error) {
+    error->clear();
+  }
+  const QString trimmed = raw.trimmed();
+  if (trimmed.isEmpty()) {
+    return false;
+  }
+  if (trimmed.endsWith('/') || trimmed.endsWith('\\')) {
+    if (error) {
+      *error = QString("Report output must be a file path, not a directory: %1").arg(trimmed);
+    }
+    return false;
+  }
+  const QFileInfo info(trimmed);
+  if (info.exists() && info.isDir()) {
+    if (error) {
+      *error = QString("Report output must be a file path, not a directory: %1").arg(trimmed);
+    }
+    return false;
+  }
+  if (path) {
+    *path = info.absoluteFilePath();
+  }
+  return true;
+}
+
+int emit_report(const QString& content,
+                const CliOptions& options,
+                const QString& label,
+                QTextStream& out,
+                QTextStream& err) {
+  QString output_path;
+  QString output_err;
+  const bool has_output = output_path_for_report(options.output_dir, &output_path, &output_err);
+  if (!output_err.isEmpty()) {
+    err << output_err << "\n";
+    return 2;
+  }
+  if (!has_output) {
+    out << content;
+    if (!content.endsWith('\n')) {
+      out << "\n";
+    }
+    return 0;
+  }
+
+  QString write_err;
+  if (!write_bytes_file(output_path, content.toUtf8(), &write_err)) {
+    err << (write_err.isEmpty() ? QString("Unable to write %1 report: %2\n").arg(label, output_path)
+                                : write_err + "\n");
+    return 2;
+  }
+  out << label << " written: " << output_path << "\n";
+  return 0;
+}
+
+QHash<QString, QString> archive_path_lookup(const QVector<ArchiveEntry>& entries) {
+  QHash<QString, QString> out;
+  out.reserve(entries.size());
+  for (const ArchiveEntry& entry : entries) {
+    const QString name = normalize_archive_entry_name(entry.name);
+    if (name.isEmpty() || !is_safe_archive_entry_name(name)) {
+      continue;
+    }
+    out.insert(name.toLower(), name);
+  }
+  return out;
+}
+
+bool archive_ref_exists(const QHash<QString, QString>& path_by_key, const QString& ref, QString* resolved_path) {
+  if (resolved_path) {
+    resolved_path->clear();
+  }
+  QString normalized = normalize_asset_reference(ref);
+  if (normalized.isEmpty()) {
+    return false;
+  }
+
+  const QString lower = normalized.toLower();
+  if (normalized.endsWith('/')) {
+    for (auto it = path_by_key.constBegin(); it != path_by_key.constEnd(); ++it) {
+      if (path_key_starts_with(it.key(), lower)) {
+        if (resolved_path) {
+          *resolved_path = normalized;
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
+  if (path_by_key.contains(lower)) {
+    if (resolved_path) {
+      *resolved_path = path_by_key.value(lower);
+    }
+    return true;
+  }
+
+  if (file_ext_lower(normalized).isEmpty()) {
+    static const QStringList kTextureExts = {"dds", "tga", "png", "jpg", "jpeg", "ftx", "wal", "m8", "m32"};
+    for (const QString& ext : kTextureExts) {
+      const QString candidate = normalized + '.' + ext;
+      const QString key = candidate.toLower();
+      if (path_by_key.contains(key)) {
+        if (resolved_path) {
+          *resolved_path = path_by_key.value(key);
+        }
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+void add_graph_edge(AssetGraphReport* report,
+                    QSet<QString>* seen,
+                    const QString& source,
+                    const QString& target,
+                    const QString& kind,
+                    bool resolved) {
+  if (!report || !seen || source.trimmed().isEmpty() || target.trimmed().isEmpty()) {
+    return;
+  }
+  const QString key = source + QChar(0x1f) + target + QChar(0x1f) + kind;
+  if (seen->contains(key)) {
+    return;
+  }
+  seen->insert(key);
+  AssetGraphEdge edge;
+  edge.source = source;
+  edge.target = target;
+  edge.kind = kind;
+  edge.resolved = resolved;
+  report->edges.push_back(std::move(edge));
+}
+
+QString format_asset_graph_text(const AssetGraphReport& report, const QString& archive_path) {
+  QString text;
+  QTextStream s(&text);
+  s << "Asset graph: " << QFileInfo(archive_path).absoluteFilePath() << "\n";
+  s << "Entries scanned: " << report.entries_scanned << "\n";
+  s << "Material files: " << report.material_files << "\n";
+  s << "Material declarations: " << report.material_decls << "\n";
+  s << "PROC files: " << report.proc_files << "\n";
+  s << "Edges: " << report.edges.size() << "\n";
+  for (const AssetGraphEdge& edge : report.edges) {
+    s << edge.source << " -> " << edge.target << " [" << edge.kind
+      << (edge.resolved ? ", resolved" : ", unresolved") << "]\n";
+  }
+  if (!report.warnings.isEmpty()) {
+    s << "Warnings:\n";
+    for (const QString& warning : report.warnings) {
+      s << "  " << warning << "\n";
+    }
+  }
+  return text;
+}
+
+QString format_asset_graph_json(const AssetGraphReport& report, const QString& archive_path) {
+  QJsonObject root;
+  root.insert("schema", "pakfu-asset-graph/v1");
+  root.insert("archive", QFileInfo(archive_path).absoluteFilePath());
+  QJsonObject counts;
+  counts.insert("entries_scanned", report.entries_scanned);
+  counts.insert("material_files", report.material_files);
+  counts.insert("material_declarations", report.material_decls);
+  counts.insert("proc_files", report.proc_files);
+  counts.insert("edges", report.edges.size());
+  root.insert("counts", counts);
+
+  QJsonArray edges;
+  for (const AssetGraphEdge& edge : report.edges) {
+    QJsonObject obj;
+    obj.insert("source", edge.source);
+    obj.insert("target", edge.target);
+    obj.insert("kind", edge.kind);
+    obj.insert("resolved", edge.resolved);
+    edges.append(obj);
+  }
+  root.insert("edges", edges);
+
+  QJsonArray warnings;
+  for (const QString& warning : report.warnings) {
+    warnings.append(warning);
+  }
+  root.insert("warnings", warnings);
+  return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented));
+}
+
+QString format_asset_graph_dot(const AssetGraphReport& report, const QString& archive_path) {
+  QString text;
+  QTextStream s(&text);
+  s << "digraph PakFuAssetGraph {\n";
+  s << "  graph [label=" << dot_quote(QFileInfo(archive_path).fileName()) << ", labelloc=t];\n";
+  s << "  node [shape=box, fontname=" << dot_quote("sans-serif") << "];\n";
+  for (const AssetGraphEdge& edge : report.edges) {
+    s << "  " << dot_quote(edge.source) << " -> " << dot_quote(edge.target)
+      << " [label=" << dot_quote(edge.kind)
+      << ", color=" << dot_quote(edge.resolved ? "#2e7d32" : "#b71c1c") << "];\n";
+  }
+  s << "}\n";
+  return text;
+}
+
+bool build_asset_graph_report(const Archive& archive,
+                              const QVector<const ArchiveEntry*>& selected,
+                              AssetGraphReport* report,
+                              QString* error) {
+  if (error) {
+    error->clear();
+  }
+  if (!report) {
+    if (error) {
+      *error = "Internal error: missing graph report.";
+    }
+    return false;
+  }
+  *report = {};
+
+  const QHash<QString, QString> paths = archive_path_lookup(archive.entries());
+  QSet<QString> selected_keys;
+  selected_keys.reserve(selected.size());
+  for (const ArchiveEntry* entry : selected) {
+    if (!entry) {
+      continue;
+    }
+    const QString name = normalize_archive_entry_name(entry->name);
+    if (!name.isEmpty()) {
+      selected_keys.insert(name.toLower());
+    }
+  }
+
+  QHash<QString, QStringList> material_images_by_name;
+  QHash<QString, QString> material_decl_file_by_name;
+  QSet<QString> seen_edges;
+
+  const qint64 kMaxMaterialBytes = 8 * 1024 * 1024;
+  const qint64 kMaxProcBytes = 96 * 1024 * 1024;
+
+  for (const ArchiveEntry& entry : archive.entries()) {
+    const QString name = normalize_archive_entry_name(entry.name);
+    if (name.isEmpty() || name.endsWith('/') || !is_safe_archive_entry_name(name)) {
+      continue;
+    }
+    if (file_ext_lower(name) != "mtr") {
+      continue;
+    }
+    if (entry.size > kMaxMaterialBytes) {
+      report->warnings.push_back(QString("Skipped large material file: %1").arg(name));
+      continue;
+    }
+
+    QByteArray bytes;
+    QString read_err;
+    if (!archive.read_entry_bytes(name, &bytes, &read_err)) {
+      report->warnings.push_back(read_err.isEmpty() ? QString("Unable to read material file: %1").arg(name)
+                                                    : read_err);
+      continue;
+    }
+    ++report->material_files;
+    const IdTech4MaterialParseResult parsed = parse_idtech4_material_bytes(bytes, name);
+    if (!parsed.ok()) {
+      report->warnings.push_back(parsed.error.isEmpty() ? QString("Unable to parse material file: %1").arg(name)
+                                                       : parsed.error);
+      continue;
+    }
+    for (const IdTech4MaterialDecl& decl : parsed.materials) {
+      if (decl.name.isEmpty()) {
+        continue;
+      }
+      const QString key = decl.name.toLower();
+      material_images_by_name.insert(key, decl.image_refs);
+      material_decl_file_by_name.insert(key, name);
+      ++report->material_decls;
+      if (selected_keys.contains(name.toLower())) {
+        const QString material_node = "material:" + decl.name;
+        add_graph_edge(report, &seen_edges, name, material_node, "declares-material", true);
+        for (const QString& image_ref : decl.image_refs) {
+          QString resolved;
+          const bool exists = archive_ref_exists(paths, image_ref, &resolved);
+          add_graph_edge(report,
+                         &seen_edges,
+                         material_node,
+                         exists ? resolved : normalize_asset_reference(image_ref),
+                         "uses-texture",
+                         exists);
+        }
+      }
+    }
+  }
+
+  ArchiveSearchIndex index;
+  ArchiveSearchIndex::BuildInput input;
+  input.archive_entries = archive.entries();
+  input.scope_label = QFileInfo(archive.path()).fileName();
+  index.rebuild(input);
+  QHash<QString, ArchiveSearchIndex::Item> items_by_key;
+  for (const ArchiveSearchIndex::Item& item : index.items()) {
+    items_by_key.insert(item.path.toLower(), item);
+  }
+
+  for (const ArchiveEntry* entry : selected) {
+    if (!entry) {
+      continue;
+    }
+    const QString name = normalize_archive_entry_name(entry->name);
+    if (name.isEmpty() || name.endsWith('/') || !is_safe_archive_entry_name(name)) {
+      continue;
+    }
+    ++report->entries_scanned;
+
+    const ArchiveSearchIndex::Item item = items_by_key.value(name.toLower());
+    for (const QString& hint : item.dependency_hints) {
+      QString resolved;
+      const bool exists = archive_ref_exists(paths, hint, &resolved);
+      add_graph_edge(report, &seen_edges, name, exists ? resolved : hint, "dependency-hint", exists);
+    }
+
+    if (file_ext_lower(name) != "proc") {
+      continue;
+    }
+    ++report->proc_files;
+    if (entry->size > kMaxProcBytes) {
+      report->warnings.push_back(QString("Skipped large PROC file: %1").arg(name));
+      continue;
+    }
+
+    QByteArray bytes;
+    QString read_err;
+    if (!archive.read_entry_bytes(name, &bytes, &read_err)) {
+      report->warnings.push_back(read_err.isEmpty() ? QString("Unable to read PROC file: %1").arg(name) : read_err);
+      continue;
+    }
+    const IdTech4ProcLoadResult proc = load_idtech4_proc_mesh_bytes(bytes, name);
+    if (!proc.error.isEmpty()) {
+      report->warnings.push_back(proc.error);
+      continue;
+    }
+    for (const QString& material : proc.material_refs) {
+      const QString material_node = "material:" + material;
+      add_graph_edge(report, &seen_edges, name, material_node, "uses-material", true);
+      const QString material_key = material.toLower();
+      if (material_decl_file_by_name.contains(material_key)) {
+        add_graph_edge(report,
+                       &seen_edges,
+                       material_decl_file_by_name.value(material_key),
+                       material_node,
+                       "declares-material",
+                       true);
+      }
+      const QStringList images = material_images_by_name.value(material_key);
+      if (images.isEmpty()) {
+        add_graph_edge(report, &seen_edges, material_node, material, "unresolved-texture", false);
+        continue;
+      }
+      for (const QString& image_ref : images) {
+        QString resolved;
+        const bool exists = archive_ref_exists(paths, image_ref, &resolved);
+        add_graph_edge(report,
+                       &seen_edges,
+                       material_node,
+                       exists ? resolved : normalize_asset_reference(image_ref),
+                       "uses-texture",
+                       exists);
+      }
+    }
+  }
+
+  std::sort(report->edges.begin(), report->edges.end(), [](const AssetGraphEdge& a, const AssetGraphEdge& b) {
+    const int by_source = a.source.compare(b.source, Qt::CaseInsensitive);
+    if (by_source != 0) {
+      return by_source < 0;
+    }
+    const int by_target = a.target.compare(b.target, Qt::CaseInsensitive);
+    if (by_target != 0) {
+      return by_target < 0;
+    }
+    return a.kind.compare(b.kind, Qt::CaseInsensitive) < 0;
+  });
+  report->warnings.removeDuplicates();
+  return true;
+}
+
+int run_asset_graph_cli(const Archive& archive,
+                        const CliOptions& options,
+                        const QStringList& entry_filters,
+                        const QStringList& prefix_filters,
+                        QTextStream& out,
+                        QTextStream& err) {
+  QString format = options.asset_graph_format.trimmed().toLower();
+  if (format.isEmpty()) {
+    format = "text";
+  }
+  if (format != "text" && format != "json" && format != "dot") {
+    err << "Unsupported --asset-graph format: " << options.asset_graph_format << "\n";
+    err << "Supported formats: text, json, dot\n";
+    return 2;
+  }
+
+  const QVector<const ArchiveEntry*> selected = select_entries(archive.entries(), entry_filters, prefix_filters, false);
+  if (selected.isEmpty()) {
+    err << "No file entries matched the asset graph selection.\n";
+    return 2;
+  }
+
+  AssetGraphReport report;
+  QString graph_err;
+  if (!build_asset_graph_report(archive, selected, &report, &graph_err)) {
+    err << (graph_err.isEmpty() ? "Unable to build asset graph.\n" : graph_err + "\n");
+    return 2;
+  }
+
+  QString content;
+  if (format == "json") {
+    content = format_asset_graph_json(report, archive.path());
+  } else if (format == "dot") {
+    content = format_asset_graph_dot(report, archive.path());
+  } else {
+    content = format_asset_graph_text(report, archive.path());
+  }
+
+  for (const QString& warning : report.warnings) {
+    err << "Asset graph warning: " << warning << "\n";
+  }
+  return emit_report(content, options, "Asset graph", out, err);
+}
+
+QString format_package_manifest_text(const QVector<PackageManifestItem>& items,
+                                     const Archive& archive,
+                                     const QString& selection_label) {
+  QString text;
+  QTextStream s(&text);
+  s << "Package manifest: " << QFileInfo(archive.path()).absoluteFilePath() << "\n";
+  s << "Schema: pakfu-package-manifest/v1\n";
+  s << "Format: " << archive_format_label(archive) << "\n";
+  if (!selection_label.isEmpty()) {
+    s << "Selection: " << selection_label << "\n";
+  }
+  s << "Entries: " << items.size() << "\n";
+  s << "SHA256\tSize\tMTimeUtcSecs\tPath\n";
+  for (const PackageManifestItem& item : items) {
+    s << item.sha256 << "\t" << item.size << "\t" << item.mtime_utc_secs << "\t" << item.path << "\n";
+  }
+  return text;
+}
+
+QString format_package_manifest_json(const QVector<PackageManifestItem>& items,
+                                     const Archive& archive,
+                                     const QString& selection_label) {
+  QJsonObject root;
+  root.insert("schema", "pakfu-package-manifest/v1");
+  root.insert("archive", QFileInfo(archive.path()).absoluteFilePath());
+  root.insert("format", archive_format_label(archive));
+  if (!selection_label.isEmpty()) {
+    root.insert("selection", selection_label);
+  }
+  QJsonArray entries;
+  for (const PackageManifestItem& item : items) {
+    QJsonObject obj;
+    obj.insert("path", item.path);
+    obj.insert("size", static_cast<double>(item.size));
+    obj.insert("mtime_utc_secs", static_cast<double>(item.mtime_utc_secs));
+    obj.insert("sha256", item.sha256);
+    entries.append(obj);
+  }
+  root.insert("entries", entries);
+  return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented));
+}
+
+QString selection_label(const QStringList& entry_filters, const QStringList& prefix_filters) {
+  QStringList parts;
+  for (const QString& entry : entry_filters) {
+    parts.push_back("entry=" + entry);
+  }
+  for (const QString& prefix : prefix_filters) {
+    parts.push_back("prefix=" + prefix);
+  }
+  return parts.join(", ");
+}
+
+int run_package_manifest_cli(const Archive& archive,
+                             const CliOptions& options,
+                             const QStringList& entry_filters,
+                             const QStringList& prefix_filters,
+                             QTextStream& out,
+                             QTextStream& err) {
+  QString format = options.package_manifest_format.trimmed().toLower();
+  if (format.isEmpty()) {
+    format = "text";
+  }
+  if (format != "text" && format != "json") {
+    err << "Unsupported --package-manifest format: " << options.package_manifest_format << "\n";
+    err << "Supported formats: text, json\n";
+    return 2;
+  }
+
+  QVector<const ArchiveEntry*> selected = select_entries(archive.entries(), entry_filters, prefix_filters, false);
+  if (selected.isEmpty()) {
+    err << "No file entries matched the package manifest selection.\n";
+    return 2;
+  }
+  std::sort(selected.begin(), selected.end(), [](const ArchiveEntry* a, const ArchiveEntry* b) {
+    if (!a || !b) {
+      return a != nullptr;
+    }
+    return a->name.compare(b->name, Qt::CaseInsensitive) < 0;
+  });
+
+  QVector<PackageManifestItem> items;
+  items.reserve(selected.size());
+  for (const ArchiveEntry* entry : selected) {
+    if (!entry) {
+      continue;
+    }
+    const QString name = normalize_archive_entry_name(entry->name);
+    if (name.isEmpty() || name.endsWith('/') || !is_safe_archive_entry_name(name)) {
+      err << "Skipping unsafe manifest entry: " << entry->name << "\n";
+      continue;
+    }
+    QByteArray bytes;
+    QString read_err;
+    if (!archive.read_entry_bytes(name, &bytes, &read_err)) {
+      err << (read_err.isEmpty() ? QString("Unable to read entry for manifest: %1\n").arg(name) : read_err + "\n");
+      return 2;
+    }
+    PackageManifestItem item;
+    item.path = name;
+    item.size = entry->size;
+    item.mtime_utc_secs = entry->mtime_utc_secs;
+    item.sha256 = hash_bytes_sha256(bytes);
+    items.push_back(std::move(item));
+  }
+
+  const QString sel = selection_label(entry_filters, prefix_filters);
+  const QString content = format == "json" ? format_package_manifest_json(items, archive, sel)
+                                           : format_package_manifest_text(items, archive, sel);
+  return emit_report(content, options, "Package manifest", out, err);
+}
+
+int run_validate_cli(const Archive& archive,
+                     const QStringList& entry_filters,
+                     const QStringList& prefix_filters,
+                     QTextStream& out,
+                     QTextStream& err) {
+  ValidationSummary summary;
+  constexpr qint64 kMaxValidationMaterialBytes = 8 * 1024 * 1024;
+  constexpr qint64 kMaxValidationProcBytes = 96 * 1024 * 1024;
+  const QVector<const ArchiveEntry*> selected = select_entries(archive.entries(), entry_filters, prefix_filters, true);
+  if (selected.isEmpty()) {
+    err << "No entries matched the validation selection.\n";
+    return 2;
+  }
+  summary.selected_entries = selected.size();
+
+  QHash<QString, QString> first_path_by_key;
+  first_path_by_key.reserve(selected.size());
+  QVector<ArchiveEntry> selected_entries;
+  selected_entries.reserve(selected.size());
+  QSet<QString> material_names;
+
+  for (const ArchiveEntry* entry : selected) {
+    if (!entry) {
+      continue;
+    }
+    QString name = normalize_archive_entry_name(entry->name);
+    if (name.isEmpty()) {
+      summary.errors.push_back(QString("Empty or invalid entry name: %1").arg(entry->name));
+      continue;
+    }
+    if (name != entry->name) {
+      summary.warnings.push_back(QString("Entry name normalizes from \"%1\" to \"%2\".").arg(entry->name, name));
+    }
+    if (!is_safe_archive_entry_name(name)) {
+      summary.errors.push_back(QString("Unsafe entry name: %1").arg(entry->name));
+      continue;
+    }
+
+    const QString key = name.toLower();
+    if (first_path_by_key.contains(key)) {
+      summary.warnings.push_back(
+        QString("Duplicate normalized entry path: %1 (first seen as %2)").arg(name, first_path_by_key.value(key)));
+    } else {
+      first_path_by_key.insert(key, name);
+    }
+
+    ArchiveEntry normalized_entry = *entry;
+    normalized_entry.name = name;
+    selected_entries.push_back(normalized_entry);
+
+    if (name.endsWith('/')) {
+      ++summary.selected_dirs;
+      continue;
+    }
+    ++summary.selected_files;
+
+    QByteArray probe;
+    QString read_err;
+    if (!archive.read_entry_bytes(name, &probe, &read_err, 4096)) {
+      summary.errors.push_back(read_err.isEmpty() ? QString("Unable to read entry: %1").arg(name) : read_err);
+      continue;
+    }
+    ++summary.readable_files;
+
+    const QString ext = file_ext_lower(name);
+    if (ext == "mtr") {
+      if (entry->size > kMaxValidationMaterialBytes) {
+        summary.warnings.push_back(QString("Skipped large material file during validation: %1").arg(name));
+        continue;
+      }
+      QByteArray bytes;
+      if (!archive.read_entry_bytes(name, &bytes, &read_err)) {
+        summary.warnings.push_back(read_err.isEmpty() ? QString("Unable to read material file: %1").arg(name) : read_err);
+        continue;
+      }
+      ++summary.material_files;
+      const IdTech4MaterialParseResult parsed = parse_idtech4_material_bytes(bytes, name);
+      if (!parsed.ok()) {
+        summary.warnings.push_back(parsed.error.isEmpty() ? QString("Unable to parse material file: %1").arg(name)
+                                                         : parsed.error);
+        continue;
+      }
+      summary.material_decls += parsed.materials.size();
+      for (const IdTech4MaterialDecl& decl : parsed.materials) {
+        if (!decl.name.isEmpty()) {
+          material_names.insert(decl.name.toLower());
+        }
+      }
+    }
+  }
+
+  ArchiveSearchIndex index;
+  ArchiveSearchIndex::BuildInput input;
+  input.archive_entries = selected_entries;
+  input.scope_label = QFileInfo(archive.path()).fileName();
+  index.rebuild(input);
+  for (const ArchiveSearchIndex::Item& item : index.items()) {
+    if (!item.is_dir) {
+      summary.dependency_hints += item.dependency_hints.size();
+    }
+  }
+
+  for (const ArchiveEntry& entry : selected_entries) {
+    const QString name = normalize_archive_entry_name(entry.name);
+    if (name.isEmpty() || name.endsWith('/') || file_ext_lower(name) != "proc") {
+      continue;
+    }
+    ++summary.proc_files;
+    if (entry.size > kMaxValidationProcBytes) {
+      summary.warnings.push_back(QString("Skipped large PROC file during validation: %1").arg(name));
+      continue;
+    }
+    QByteArray bytes;
+    QString read_err;
+    if (!archive.read_entry_bytes(name, &bytes, &read_err)) {
+      summary.warnings.push_back(read_err.isEmpty() ? QString("Unable to read PROC file: %1").arg(name) : read_err);
+      continue;
+    }
+    const IdTech4ProcLoadResult proc = load_idtech4_proc_mesh_bytes(bytes, name);
+    if (!proc.error.isEmpty()) {
+      summary.warnings.push_back(proc.error);
+      continue;
+    }
+    summary.proc_material_refs += proc.material_refs.size();
+    if (material_names.isEmpty() && !proc.material_refs.isEmpty()) {
+      summary.warnings.push_back(QString("%1 references %2 material(s), but no .mtr declarations were found in the validation scope.")
+                                   .arg(name)
+                                   .arg(proc.material_refs.size()));
+      continue;
+    }
+    int missing = 0;
+    for (const QString& material : proc.material_refs) {
+      if (!material_names.contains(material.toLower())) {
+        ++missing;
+      }
+    }
+    if (missing > 0) {
+      summary.warnings.push_back(QString("%1 has %2 unresolved material declaration(s).").arg(name).arg(missing));
+    }
+  }
+
+  summary.warnings.removeDuplicates();
+  summary.errors.removeDuplicates();
+
+  out << "Validation: " << (summary.errors.isEmpty() ? "OK" : "FAILED") << "\n";
+  out << "Archive: " << QFileInfo(archive.path()).absoluteFilePath() << "\n";
+  out << "Entries checked: " << summary.selected_entries << "\n";
+  out << "Files checked: " << summary.selected_files << "\n";
+  out << "Directories checked: " << summary.selected_dirs << "\n";
+  out << "Readable files: " << summary.readable_files << "\n";
+  out << "Dependency hints: " << summary.dependency_hints << "\n";
+  out << "Material files/declarations: " << summary.material_files << "/" << summary.material_decls << "\n";
+  out << "PROC files/material refs: " << summary.proc_files << "/" << summary.proc_material_refs << "\n";
+  out << "Warnings: " << summary.warnings.size() << "\n";
+  out << "Errors: " << summary.errors.size() << "\n";
+  for (const QString& warning : summary.warnings) {
+    err << "Validation warning: " << warning << "\n";
+  }
+  for (const QString& error : summary.errors) {
+    err << "Validation error: " << error << "\n";
+  }
+  return summary.errors.isEmpty() ? 0 : 2;
+}
+
+bool build_compare_map(const Archive& archive,
+                       const QStringList& entry_filters,
+                       const QStringList& prefix_filters,
+                       QHash<QString, CompareEntry>* out_map,
+                       QStringList* warnings,
+                       QString* error) {
+  if (error) {
+    error->clear();
+  }
+  if (out_map) {
+    out_map->clear();
+  }
+  QVector<const ArchiveEntry*> selected = select_entries(archive.entries(), entry_filters, prefix_filters, false);
+  if (selected.isEmpty()) {
+    return true;
+  }
+  for (const ArchiveEntry* entry : selected) {
+    if (!entry) {
+      continue;
+    }
+    const QString name = normalize_archive_entry_name(entry->name);
+    if (name.isEmpty() || name.endsWith('/') || !is_safe_archive_entry_name(name)) {
+      if (warnings) {
+        warnings->push_back(QString("Skipping unsafe compare entry: %1").arg(entry->name));
+      }
+      continue;
+    }
+    QByteArray bytes;
+    QString read_err;
+    if (!archive.read_entry_bytes(name, &bytes, &read_err)) {
+      if (error) {
+        *error = read_err.isEmpty() ? QString("Unable to read entry for compare: %1").arg(name) : read_err;
+      }
+      return false;
+    }
+    CompareEntry item;
+    item.path = name;
+    item.size = entry->size;
+    item.sha256 = hash_bytes_sha256(bytes);
+    const QString key = name.toLower();
+    if (out_map && out_map->contains(key) && warnings) {
+      warnings->push_back(QString("Duplicate compare entry path: %1").arg(name));
+    }
+    if (out_map) {
+      out_map->insert(key, std::move(item));
+    }
+  }
+  return true;
+}
+
+void print_limited_path_list(QTextStream& out, const QString& label, QStringList paths) {
+  paths.sort(Qt::CaseInsensitive);
+  out << label << ": " << paths.size() << "\n";
+  const int limit = std::min(static_cast<int>(paths.size()), 80);
+  for (int i = 0; i < limit; ++i) {
+    out << "  " << paths[i] << "\n";
+  }
+  if (paths.size() > limit) {
+    out << "  ... (" << (paths.size() - limit) << " more)\n";
+  }
+}
+
+int run_compare_cli(const Archive& left,
+                    const CliOptions& options,
+                    const QStringList& entry_filters,
+                    const QStringList& prefix_filters,
+                    QTextStream& out,
+                    QTextStream& err) {
+  QFileInfo right_info(options.compare_path);
+  if (!right_info.exists()) {
+    err << "Compare target not found: " << options.compare_path << "\n";
+    return 2;
+  }
+
+  Archive right;
+  QString load_err;
+  if (!right.load(right_info.absoluteFilePath(), &load_err)) {
+    err << (load_err.isEmpty() ? "Unable to load compare target.\n" : load_err + "\n");
+    return 2;
+  }
+
+  QHash<QString, CompareEntry> left_entries;
+  QHash<QString, CompareEntry> right_entries;
+  QStringList warnings;
+  QString compare_err;
+  if (!build_compare_map(left, entry_filters, prefix_filters, &left_entries, &warnings, &compare_err) ||
+      !build_compare_map(right, entry_filters, prefix_filters, &right_entries, &warnings, &compare_err)) {
+    err << (compare_err.isEmpty() ? "Unable to prepare compare entries.\n" : compare_err + "\n");
+    return 2;
+  }
+
+  QStringList added;
+  QStringList removed;
+  QStringList changed;
+  int unchanged = 0;
+
+  for (auto it = left_entries.constBegin(); it != left_entries.constEnd(); ++it) {
+    const CompareEntry right_entry = right_entries.value(it.key());
+    if (right_entry.path.isEmpty()) {
+      removed.push_back(it.value().path);
+      continue;
+    }
+    if (it.value().size == right_entry.size && it.value().sha256 == right_entry.sha256) {
+      ++unchanged;
+    } else {
+      changed.push_back(it.value().path);
+    }
+  }
+  for (auto it = right_entries.constBegin(); it != right_entries.constEnd(); ++it) {
+    if (!left_entries.contains(it.key())) {
+      added.push_back(it.value().path);
+    }
+  }
+
+  const bool different = !added.isEmpty() || !removed.isEmpty() || !changed.isEmpty();
+  out << "Compare: " << (different ? "DIFFERENT" : "IDENTICAL") << "\n";
+  out << "Left: " << QFileInfo(left.path()).absoluteFilePath() << "\n";
+  out << "Right: " << right_info.absoluteFilePath() << "\n";
+  out << "Left entries: " << left_entries.size() << "\n";
+  out << "Right entries: " << right_entries.size() << "\n";
+  out << "Unchanged: " << unchanged << "\n";
+  print_limited_path_list(out, "Added in right", added);
+  print_limited_path_list(out, "Removed from right", removed);
+  print_limited_path_list(out, "Changed", changed);
+  for (const QString& warning : warnings) {
+    err << "Compare warning: " << warning << "\n";
+  }
+  return different ? 1 : 0;
+}
+
+bool path_is_under_directory(QString path, QString dir) {
+  path = QFileInfo(path).absoluteFilePath();
+  dir = QFileInfo(dir).absoluteFilePath();
+  path.replace('\\', '/');
+  dir.replace('\\', '/');
+  while (dir.endsWith('/')) {
+    dir.chop(1);
+  }
+  if (path.compare(dir, Qt::CaseInsensitive) == 0) {
+    return true;
+  }
+  return path.startsWith(dir + '/', Qt::CaseInsensitive);
+}
+
+QStringList capability_notes(const QStringList& capabilities) {
+  QStringList notes;
+  for (const QString& cap : capabilities) {
+    if (cap == "archive.read") {
+      notes.push_back("archive.read: receives archive metadata and paths.");
+    } else if (cap == "entries.read") {
+      notes.push_back("entries.read: receives selected entries materialized as temporary local files.");
+    } else if (cap == "entries.import") {
+      notes.push_back("entries.import: may request host-validated generated files for archive write-back.");
+    } else {
+      notes.push_back(cap + ": custom/unknown capability note.");
+    }
+  }
+  if (notes.isEmpty()) {
+    notes.push_back("none: no explicit capabilities requested.");
+  }
+  return notes;
+}
+
+QString extension_executable_display(const ExtensionCommand& command) {
+  if (command.argv.isEmpty()) {
+    return "(missing executable)";
+  }
+  const QString exe = command.argv.first();
+  if (QFileInfo(exe).isAbsolute() || command.working_directory.isEmpty()) {
+    return QDir::cleanPath(exe);
+  }
+  return QDir::cleanPath(QDir(command.working_directory).filePath(exe));
+}
+
+int run_plugin_report_cli(const CliOptions& options, QTextStream& out, QTextStream& err) {
+  QVector<ExtensionCommand> commands;
+  QStringList warnings;
+  QString load_err;
+  const QStringList search_dirs = extension_search_dirs_for_options(options);
+  if (!load_extension_commands(search_dirs, &commands, &warnings, &load_err)) {
+    err << (load_err.isEmpty() ? "Unable to load extension manifests.\n" : load_err + "\n");
+    return 2;
+  }
+
+  const QStringList default_dirs = default_extension_search_dirs();
+  out << "Extension report\n";
+  out << "Host capabilities: " << extension_host_capabilities().join(", ") << "\n";
+  out << "Search dirs:\n";
+  for (const QString& dir : search_dirs) {
+    const bool custom = std::none_of(default_dirs.cbegin(), default_dirs.cend(), [&](const QString& default_dir) {
+      return QFileInfo(dir).absoluteFilePath().compare(QFileInfo(default_dir).absoluteFilePath(), Qt::CaseInsensitive) == 0;
+    });
+    out << "  " << dir << (custom ? " (custom)" : "") << "\n";
+  }
+  out << "Commands: " << commands.size() << "\n";
+  for (const ExtensionCommand& command : commands) {
+    bool default_location = false;
+    for (const QString& dir : default_dirs) {
+      if (path_is_under_directory(command.manifest_path, dir)) {
+        default_location = true;
+        break;
+      }
+    }
+
+    out << "- " << extension_command_ref(command) << "  " << extension_command_display_name(command) << "\n";
+    if (!command.command_description.isEmpty()) {
+      out << "  Description: " << command.command_description << "\n";
+    }
+    out << "  Manifest: " << command.manifest_path << "\n";
+    out << "  Working directory: " << command.working_directory << "\n";
+    out << "  Executable: " << extension_executable_display(command) << "\n";
+    out << "  Trust scope: " << (default_location ? "default extension directory" : "custom or external directory") << "\n";
+    out << "  Entries: " << (command.requires_entries ? "required" : "optional")
+        << ", multiple: " << (command.allow_multiple ? "yes" : "no") << "\n";
+    if (!command.allowed_extensions.isEmpty()) {
+      out << "  Allowed extensions: " << command.allowed_extensions.join(", ") << "\n";
+    }
+    out << "  Capability notes:\n";
+    for (const QString& note : capability_notes(command.capabilities)) {
+      out << "    " << note << "\n";
+    }
+  }
+
+  out << "Manifest warnings: " << warnings.size() << "\n";
+  for (const QString& warning : warnings) {
+    err << "Extension warning: " << warning << "\n";
+  }
+  return 0;
+}
+
+int run_platform_report_cli(const CliOptions& options, QTextStream& out, QTextStream& err) {
+  Q_UNUSED(options);
+  out << "PakFu platform report\n";
+  out << "Version: " << PAKFU_VERSION << "\n";
+  out << "Qt: " << qVersion() << "\n";
+  out << "Qt plugins: " << QLibraryInfo::path(QLibraryInfo::PluginsPath) << "\n";
+  out << "OS: " << QSysInfo::prettyProductName() << "\n";
+  out << "Kernel: " << QSysInfo::kernelType() << ' ' << QSysInfo::kernelVersion() << "\n";
+  out << "CPU: current=" << QSysInfo::currentCpuArchitecture()
+      << ", build=" << QSysInfo::buildCpuArchitecture() << "\n";
+  out << "Application dir: " << QCoreApplication::applicationDirPath() << "\n";
+  out << "App data: " << QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) << "\n";
+  out << "App local data: " << QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) << "\n";
+  out << "App config: " << QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) << "\n";
+  out << "Documents: " << QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) << "\n";
+
+  out << "Extension dirs:\n";
+  for (const QString& dir : default_extension_search_dirs()) {
+    out << "  " << dir << (QFileInfo(dir).isDir() ? " (present)" : " (missing)") << "\n";
+  }
+
+  QVector<ExtensionCommand> commands;
+  QStringList extension_warnings;
+  QString extension_err;
+  if (load_extension_commands(default_extension_search_dirs(), &commands, &extension_warnings, &extension_err)) {
+    out << "Extension commands: " << commands.size() << "\n";
+    out << "Extension manifest warnings: " << extension_warnings.size() << "\n";
+  } else {
+    err << (extension_err.isEmpty() ? "Unable to load extension manifests.\n" : extension_err + "\n");
+  }
+
+  QString game_err;
+  const GameSetState state = load_game_set_state(&game_err);
+  if (!game_err.isEmpty()) {
+    err << game_err << "\n";
+  } else {
+    out << "Configured installations: " << state.sets.size() << "\n";
+    const GameSet* selected = find_game_set(state, state.selected_uid);
+    const QString selected_name =
+      selected ? (selected->name.isEmpty() ? game_display_name(selected->game) : selected->name) : QString();
+    out << "Selected installation: "
+        << (selected ? QString("%1 [%2]").arg(selected_name, game_id_key(selected->game))
+                     : QString("(none)"))
+        << "\n";
+  }
+
+  out << "Shell integration:\n";
+#if defined(Q_OS_WIN)
+  out << "  Windows: Open With registration is user-managed under HKCU via the File Associations dialog.\n";
+#elif defined(Q_OS_MACOS)
+  out << "  macOS: document types are declared in the app bundle Info.plist.\n";
+#elif defined(Q_OS_LINUX)
+  out << "  Linux: desktop entry, shared-mime-info, AppStream metadata, and hicolor icon are installed with packages.\n";
+#else
+  out << "  Platform: generic file-open support through Qt and explicit CLI paths.\n";
+#endif
+  out << "Release assets: installer and portable package per platform plus pakfu-<version>-release-manifest.json.\n";
   return 0;
 }
 
@@ -1178,8 +2350,10 @@ bool wants_cli(int argc, char** argv) {
         key == "--extract" || key == "-x" ||
         key == "--entry" || key == "--prefix" || key == "--mount" ||
         key == "--save-as" || key == "--format" || key == "--quakelive-encrypt-pk3" ||
-        key == "--convert" || key == "--preview-export" ||
+        key == "--validate" || key == "--compare" || key == "--asset-graph" ||
+        key == "--package-manifest" || key == "--convert" || key == "--preview-export" ||
         key == "--check-updates" || key == "--update-repo" || key == "--update-channel" ||
+        key == "--platform-report" || key == "--plugin-report" ||
         key == "--list-game-sets" || key == "--auto-detect-game-sets" || key == "--select-game-set" ||
         key == "--list-game-installs" || key == "--auto-detect-game-installs" || key == "--select-game-install" ||
         key == "--qa-practical" || key == "--output" || key == "-o" ||
@@ -1218,12 +2392,18 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   const QCommandLineOption save_as_option("save-as", "Write selected entries to a new archive.", "archive");
   const QCommandLineOption format_option("format", "Archive format for --save-as (pak, sin, zip, pk3, pk4, pkz, wad, wad2).", "format");
   const QCommandLineOption quakelive_encrypt_option("quakelive-encrypt-pk3", "Encrypt ZIP-family --save-as output as a Quake Live Beta PK3.");
+  const QCommandLineOption validate_option("validate", "Validate archive safety, readability, duplicates, and known asset relationships.");
+  const QCommandLineOption compare_option("compare", "Compare the loaded archive with another archive or folder (returns 1 when content differs).", "archive");
+  const QCommandLineOption asset_graph_option("asset-graph", "Export an asset dependency graph (text, json, dot).", "format");
+  const QCommandLineOption package_manifest_option("package-manifest", "Export a reproducibility manifest with entry sizes and SHA-256 hashes (text, json).", "format");
   const QCommandLineOption convert_option("convert", "Convert selected image entries to an output image format.", "format");
-  const QCommandLineOption preview_export_option("preview-export", "Export the preview rendition of one entry (images become image files; text/binary falls back to bytes).", "entry");
+  const QCommandLineOption preview_export_option("preview-export", "Export the preview rendition of one entry (images/FONTDAT become image files; text/binary falls back to bytes).", "entry");
   const QCommandLineOption list_plugins_option("list-plugins", "List discovered extension commands.");
+  const QCommandLineOption plugin_report_option("plugin-report", "Print extension discovery, trust, and capability diagnostics.");
   const QCommandLineOption run_plugin_option("run-plugin", "Run an extension command against the current archive.", "plugin[:command]");
   const QCommandLineOption plugin_dir_option("plugin-dir", "Add an extension search directory (repeatable).", "dir");
   const QCommandLineOption check_updates_option("check-updates", "Check GitHub for new releases.");
+  const QCommandLineOption platform_report_option("platform-report", "Print platform, install-path, extension, and shell-integration diagnostics.");
   const QCommandLineOption qa_practical_option(
     "qa-practical",
     "Run practical archive-ops UI QA checks (selection/marquee/modifier smoke tests).");
@@ -1253,7 +2433,7 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
     "channel");
   const QCommandLineOption output_option(
     {"o", "output"},
-    "Output directory for extraction/conversion/preview export, or output file for one preview export.",
+    "Output directory for extraction/conversion/preview export, or output file for reports and one preview export.",
     "path");
 
   parser.addOption(cli_option);
@@ -1266,12 +2446,18 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   parser.addOption(save_as_option);
   parser.addOption(format_option);
   parser.addOption(quakelive_encrypt_option);
+  parser.addOption(validate_option);
+  parser.addOption(compare_option);
+  parser.addOption(asset_graph_option);
+  parser.addOption(package_manifest_option);
   parser.addOption(convert_option);
   parser.addOption(preview_export_option);
   parser.addOption(list_plugins_option);
+  parser.addOption(plugin_report_option);
   parser.addOption(run_plugin_option);
   parser.addOption(plugin_dir_option);
   parser.addOption(check_updates_option);
+  parser.addOption(platform_report_option);
   parser.addOption(qa_practical_option);
   parser.addOption(list_game_sets_option);
   parser.addOption(list_game_installs_option);
@@ -1315,12 +2501,24 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   options.save_as_path = parser.value(save_as_option);
   options.save_format = parser.value(format_option);
   options.quakelive_encrypt_pk3 = parser.isSet(quakelive_encrypt_option);
+  options.validate = parser.isSet(validate_option);
+  options.compare_path = parser.value(compare_option);
+  options.asset_graph_format = parser.value(asset_graph_option);
+  if (parser.isSet(asset_graph_option) && options.asset_graph_format.trimmed().isEmpty()) {
+    options.asset_graph_format = "text";
+  }
+  options.package_manifest_format = parser.value(package_manifest_option);
+  if (parser.isSet(package_manifest_option) && options.package_manifest_format.trimmed().isEmpty()) {
+    options.package_manifest_format = "text";
+  }
   options.convert_format = parser.value(convert_option);
   options.preview_export_entry = parser.value(preview_export_option);
   options.list_plugins = parser.isSet(list_plugins_option);
+  options.plugin_report = parser.isSet(plugin_report_option);
   options.run_plugin = parser.value(run_plugin_option);
   options.plugin_dirs = parser.values(plugin_dir_option);
   options.check_updates = parser.isSet(check_updates_option);
+  options.platform_report = parser.isSet(platform_report_option);
   options.qa_practical = parser.isSet(qa_practical_option);
   options.list_game_sets = parser.isSet(list_game_sets_option) || parser.isSet(list_game_installs_option);
   options.auto_detect_game_sets = parser.isSet(auto_detect_game_sets_option) || parser.isSet(auto_detect_game_installs_option);
@@ -1338,9 +2536,13 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   }
 
   const bool any_archive_action = options.list || options.info || options.extract || options.save_as ||
+                                  options.validate || !options.compare_path.isEmpty() ||
+                                  !options.asset_graph_format.isEmpty() ||
+                                  !options.package_manifest_format.isEmpty() ||
                                   !options.convert_format.isEmpty() || !options.preview_export_entry.isEmpty() ||
                                   !options.run_plugin.isEmpty();
-  const bool any_action = any_archive_action || options.list_plugins || options.check_updates ||
+  const bool any_action = any_archive_action || options.list_plugins || options.plugin_report ||
+                          options.platform_report || options.check_updates ||
                           options.qa_practical ||
                           options.list_game_sets || options.auto_detect_game_sets ||
                           !options.select_game_set.isEmpty();
@@ -1355,10 +2557,7 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
     options.info = true;
   }
 
-  if ((options.list || options.info || options.extract || options.save_as ||
-       !options.convert_format.isEmpty() || !options.preview_export_entry.isEmpty() ||
-       !options.run_plugin.isEmpty()) &&
-      options.pak_path.isEmpty()) {
+  if (any_archive_action && options.pak_path.isEmpty()) {
     if (output) {
       *output = normalize_output("Missing archive path.") + '\n' + parser.helpText();
     }
@@ -1366,10 +2565,12 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
   }
 
   if ((parser.isSet(entry_option) || parser.isSet(prefix_option)) &&
-      !(options.list || options.extract || options.save_as || !options.convert_format.isEmpty() ||
+      !(options.list || options.extract || options.save_as || options.validate ||
+        !options.compare_path.isEmpty() || !options.asset_graph_format.isEmpty() ||
+        !options.package_manifest_format.isEmpty() || !options.convert_format.isEmpty() ||
         !options.run_plugin.isEmpty())) {
     if (output) {
-      *output = normalize_output("--entry/--prefix can be used with --list, --extract, --save-as, --convert, or --run-plugin.") +
+      *output = normalize_output("--entry/--prefix can be used with archive actions such as --list, --extract, --validate, --compare, --asset-graph, --package-manifest, --save-as, --convert, or --run-plugin.") +
                 '\n' + parser.helpText();
     }
     return CliParseResult::ExitError;
@@ -1382,9 +2583,17 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
     return CliParseResult::ExitError;
   }
 
-  if (!options.plugin_dirs.isEmpty() && !options.list_plugins && options.run_plugin.trimmed().isEmpty()) {
+  if (parser.isSet(compare_option) && options.compare_path.trimmed().isEmpty()) {
     if (output) {
-      *output = normalize_output("--plugin-dir can be used with --list-plugins or --run-plugin.") + '\n' + parser.helpText();
+      *output = normalize_output("--compare requires an archive or folder path.") + '\n' + parser.helpText();
+    }
+    return CliParseResult::ExitError;
+  }
+
+  if (!options.plugin_dirs.isEmpty() && !options.list_plugins && !options.plugin_report &&
+      options.run_plugin.trimmed().isEmpty()) {
+    if (output) {
+      *output = normalize_output("--plugin-dir can be used with --list-plugins, --plugin-report, or --run-plugin.") + '\n' + parser.helpText();
     }
     return CliParseResult::ExitError;
   }
@@ -1426,8 +2635,12 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
 
   if (options.qa_practical) {
     const bool has_conflict = options.list || options.info || options.extract || options.save_as ||
+                              options.validate || !options.compare_path.isEmpty() ||
+                              !options.asset_graph_format.isEmpty() ||
+                              !options.package_manifest_format.isEmpty() ||
                               !options.convert_format.isEmpty() || !options.preview_export_entry.isEmpty() ||
-                              options.list_plugins || !options.run_plugin.isEmpty() ||
+                              options.list_plugins || options.plugin_report || options.platform_report ||
+                              !options.run_plugin.isEmpty() ||
                               !options.mount_entry.isEmpty() || options.check_updates ||
                               options.list_game_sets || options.auto_detect_game_sets ||
                               !options.select_game_set.isEmpty() || !options.pak_path.isEmpty();
@@ -1445,11 +2658,27 @@ CliParseResult parse_cli(QCoreApplication& app, CliOptions& options, QString* ou
 int run_cli(const CliOptions& options) {
   QTextStream out(stdout);
   QTextStream err(stderr);
+  const bool has_archive_action = options.list || options.info || options.extract || options.save_as ||
+                                  options.validate || !options.compare_path.isEmpty() ||
+                                  !options.asset_graph_format.isEmpty() ||
+                                  !options.package_manifest_format.isEmpty() ||
+                                  !options.convert_format.isEmpty() ||
+                                  !options.preview_export_entry.isEmpty() ||
+                                  !options.run_plugin.isEmpty();
 
   if (options.qa_practical) {
     out << "Running practical archive-ops QA...\n";
     out.flush();
     return run_practical_archive_ops_qa();
+  }
+
+  if (options.platform_report) {
+    const int rc = run_platform_report_cli(options, out, err);
+    if (rc != 0 || (!has_archive_action && !options.list_plugins && !options.plugin_report &&
+                    !options.check_updates && !options.list_game_sets &&
+                    !options.auto_detect_game_sets && options.select_game_set.isEmpty())) {
+      return rc;
+    }
   }
 
   if (options.list_game_sets || options.auto_detect_game_sets || !options.select_game_set.isEmpty()) {
@@ -1551,6 +2780,13 @@ int run_cli(const CliOptions& options) {
 
   if (options.list_plugins) {
     const int rc = run_list_plugins_cli(options, out, err);
+    if (rc != 0 || (options.run_plugin.isEmpty() && !options.plugin_report)) {
+      return rc;
+    }
+  }
+
+  if (options.plugin_report) {
+    const int rc = run_plugin_report_cli(options, out, err);
     if (rc != 0 || options.run_plugin.isEmpty()) {
       return rc;
     }
@@ -1716,8 +2952,36 @@ int run_cli(const CliOptions& options) {
     }
   }
 
+  if (options.validate) {
+    const int rc = run_validate_cli(*active_archive, entry_filters, prefix_filters, out, err);
+    if (rc != 0) {
+      return rc;
+    }
+  }
+
+  if (!options.asset_graph_format.isEmpty()) {
+    const int rc = run_asset_graph_cli(*active_archive, options, entry_filters, prefix_filters, out, err);
+    if (rc != 0) {
+      return rc;
+    }
+  }
+
+  if (!options.package_manifest_format.isEmpty()) {
+    const int rc = run_package_manifest_cli(*active_archive, options, entry_filters, prefix_filters, out, err);
+    if (rc != 0) {
+      return rc;
+    }
+  }
+
   if (options.save_as) {
     const int rc = run_save_as_cli(*active_archive, options, entry_filters, prefix_filters, out, err);
+    if (rc != 0) {
+      return rc;
+    }
+  }
+
+  if (!options.compare_path.isEmpty()) {
+    const int rc = run_compare_cli(*active_archive, options, entry_filters, prefix_filters, out, err);
     if (rc != 0) {
       return rc;
     }

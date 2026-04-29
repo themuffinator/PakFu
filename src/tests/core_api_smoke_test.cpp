@@ -22,7 +22,11 @@ bool run_test(QString* error) {
 		return false;
 	}
 	if (!PakFu::Core::has_public_capability(QStringLiteral("archive.load")) ||
+	    !PakFu::Core::has_public_capability(QStringLiteral("archive.session")) ||
 	    !PakFu::Core::has_public_capability(QStringLiteral("format.image.decode")) ||
+	    !PakFu::Core::has_public_capability(QStringLiteral("format.fontdat.decode")) ||
+	    !PakFu::Core::has_public_capability(QStringLiteral("format.idtech4.proc.mesh")) ||
+	    !PakFu::Core::has_public_capability(QStringLiteral("format.idtech4.material.parse")) ||
 	    !PakFu::Core::has_public_capability(QStringLiteral("extension.import"))) {
 		if (error) {
 			*error = "PakFu core public capability metadata is incomplete.";

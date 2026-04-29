@@ -76,6 +76,23 @@ namespace {
 		hints << "textures/";
 		hints << "models/";
 	}
+	if (ext == "mtr") {
+		hints << "textures/";
+		hints << "materials/";
+	}
+	if (ext == "map") {
+		hints << dir + base + ".proc";
+		hints << dir + base + ".cm";
+		hints << "materials/";
+		hints << "textures/";
+	}
+	if (ext == "proc") {
+		hints << dir + base + ".map";
+		hints << dir + base + ".cm";
+		hints << dir + base + ".aas";
+		hints << "materials/";
+		hints << "textures/";
+	}
 	if (ext == "bsp") {
 		hints << "scripts/";
 		hints << "textures/";
@@ -84,6 +101,13 @@ namespace {
 		hints << dir + base + ".md3";
 		hints << dir + base + ".mdc";
 		hints << dir + base + ".mdr";
+	}
+	if (ext == "fontdat") {
+		hints << dir + base + ".png";
+		hints << dir + base + ".tga";
+		hints << dir + base + ".jpg";
+		hints << dir + base + ".jpeg";
+		hints << dir + base + ".dds";
 	}
 
 	hints.removeDuplicates();

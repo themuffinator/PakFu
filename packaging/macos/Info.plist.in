@@ -162,6 +162,7 @@
         <string>obj</string>
         <string>ttf</string>
         <string>otf</string>
+        <string>fontdat</string>
         <string>os</string>
         <string>dm2</string>
         <string>aas</string>

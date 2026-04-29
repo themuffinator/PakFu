@@ -12,6 +12,8 @@ The extension layer currently supports:
 - extension-generated imports/write-back through a host-validated manifest
 - GUI launch from the `Extensions` menu
 - CLI launch with `--list-plugins` and `--run-plugin`
+- CLI diagnostics with `--plugin-report`
+- a source-first examples pack under `examples/extensions`
 
 There is no binary plugin ABI yet. Extensions are ordinary external processes.
 
@@ -27,6 +29,17 @@ CLI callers can add more search roots with:
 ```text
 --plugin-dir <dir>
 ```
+
+For a full discovery and capability report, run:
+
+```text
+pakfu --cli --plugin-report
+pakfu --cli --plugin-report --plugin-dir path/to/extension-root
+```
+
+The report lists search roots, manifest warnings, resolved commands, executable
+paths, trust scope (default extension directory vs custom/external directory),
+selection rules, and capability notes.
 
 PakFu looks for either:
 - `plugin.json`
@@ -101,6 +114,23 @@ Known capabilities:
 - `entries.import` : receive a host-owned import directory and manifest path for generated archive entries
 
 Commands with unknown capabilities are skipped with a manifest warning.
+
+## Trust And Capability UX
+
+Extensions are ordinary external processes. Before the GUI launches a command,
+PakFu shows a confirmation dialog with the command ref, manifest path, working
+directory, argv, selection rules, and requested capabilities. This makes the
+same trust model visible in the desktop workflow that `--plugin-report` exposes
+for CLI and CI users.
+
+Capability implications:
+- `archive.read` exposes archive metadata and filesystem paths.
+- `entries.read` exposes selected archive entries as temporary local files.
+- `entries.import` lets the command request generated files for host-validated
+  import into an editable archive.
+
+Prefer the narrowest capability set that matches the command. Commands that only
+need archive metadata should not request selected entries or import access.
 
 ## Execution Contract
 
@@ -236,6 +266,13 @@ List discovered commands:
 pakfu --cli --list-plugins
 ```
 
+Inspect discovery, trust scope, and capability details:
+
+```text
+pakfu --cli --plugin-report
+pakfu --cli --plugin-report --plugin-dir examples/extensions/metadata-dump
+```
+
 Run a command against an archive:
 
 ```text
@@ -252,3 +289,18 @@ pakfu --cli --run-plugin example:inspect-cfg --prefix scripts path/to/archive.pk
 For commands with `entries.read`, `--entry` and `--prefix` pass matching files
 as materialized temp files to the extension command. Commands without
 `entries.read` receive an empty `entries` array.
+
+## Example Pack
+
+`examples/extensions/metadata-dump` contains a minimal C++ extension command and
+manifest. It demonstrates explicit capabilities, relative command resolution,
+stdin payload handling, and host-captured stdout/stderr without requesting
+write-back access.
+
+Build and inspect it locally:
+
+```sh
+cd examples/extensions/metadata-dump
+c++ -std=c++20 metadata_dump.cpp -o metadata-dump
+pakfu --cli --plugin-report --plugin-dir .
+```

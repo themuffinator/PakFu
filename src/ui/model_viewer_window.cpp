@@ -243,6 +243,12 @@ QString ModelViewerWindow::current_model_path() const {
 	return model_paths_[current_index_];
 }
 
+void ModelViewerWindow::apply_preferences_from_settings() {
+	if (preview_) {
+		preview_->apply_preferences_from_settings();
+	}
+}
+
 void ModelViewerWindow::rebuild_model_list_for(const QString& file_path) {
 	model_paths_.clear();
 	current_index_ = -1;

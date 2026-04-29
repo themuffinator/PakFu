@@ -76,7 +76,7 @@
 
 - BSP/map preview:
   - Heretic II: built-in Quake II-family BSP loader support for native `IBSP` maps and converted `QBSP` maps, including Heretic II texinfo flag detection, 64-byte converted texture names, and `.m32`/`.m8` texture lookup priority; format reference credited to [0lvin/heretic2](https://github.com/0lvin/heretic2)
-  - idTech4: `.map` source files and `.proc` compiled render descriptions are text/metadata-inspected with explicit scope notes; PakFu does not currently claim 3D idTech4 `.proc` or collision-map rendering
+  - idTech4: `.proc` compiled render descriptions are parsed into the shared 3D preview mesh path, with `.mtr` companion material declarations scanned for diffuse/editor texture references; `.map` source files remain text/metadata-inspected, and PakFu does not currently claim idTech4 collision-map rendering
 
 - Cinematics (built-in decoders; used for thumbnails + playback widget):
   - CIN: id Quake II cinematic (PAL8 + optional PCM audio)
@@ -97,6 +97,7 @@
 
 - Font inspectors:
   - TTF / OTF: built-in Insights specimen preview + family/style metadata (Qt font engine via in-memory font loading)
+  - FONTDAT: built-in parser for Raven/OpenJK-style 256-glyph bitmap font metrics with sibling atlas resolution (`.png`, `.tga`, `.jpg`, `.jpeg`, `.dds`) and full character-set preview/export rendering; layout reference cross-checked against [JACoders/OpenJK](https://github.com/JACoders/OpenJK/blob/407a56fbca21310ff158fabbb3207410e381bfc8/code/qcommon/qfiles.h) and atlas convention checked against the [Quake 4 SDK font notes](https://iddevnet.dhewm3.org/quake4/Font_Information.html)
 
 - Text/script preview:
   - Includes Quake/idTech script/config assets such as `cfg`, `config`, `rc`, `arena`, `bot`, `skin`, `shaderlist`, `shader`, `menu`, `vdf`, `tik`,

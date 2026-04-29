@@ -72,6 +72,7 @@ PakFu uses a per-extension icon set for managed archive, image, video, audio, mo
 | Asset | `.json` | `#5C6BC0` |
 | Asset | `.ttf` | `#00897B` |
 | Asset | `.otf` | `#00ACC1` |
+| Asset | `.fontdat` | `#00796B` |
 | Asset | `.spr` | `#D81B60` |
 | Asset | `.sp2` | `#C2185B` |
 | Asset | `.spr2` | `#AD1457` |

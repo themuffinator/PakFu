@@ -39,7 +39,10 @@ bool run_test(QString* error) {
 	input.scope_label = "fixture.pk3";
 	input.archive_entries = {
 		entry("maps/e1m1.bsp", 100),
+		entry("maps/game/test.proc", 120),
+		entry("materials/test.mtr", 80),
 		entry("models/player/lower.md3", 200),
+		entry("fonts/hud.fontdat", 40),
 		entry("textures/wall/stone.tga", 300),
 		entry("old.txt", 10),
 		entry("hidden/skip.txt", 20),
@@ -80,6 +83,24 @@ bool run_test(QString* error) {
 	if (!lower) {
 		if (error) {
 			*error = "Model dependency hint did not participate in search.";
+		}
+		return false;
+	}
+
+	const QVector<ArchiveSearchIndex::Item> proc_dependency_results = index.search("test.cm materials");
+	const ArchiveSearchIndex::Item* proc = find_path(proc_dependency_results, "maps/game/test.proc");
+	if (!proc) {
+		if (error) {
+			*error = "idTech4 PROC dependency hints did not participate in search.";
+		}
+		return false;
+	}
+
+	const QVector<ArchiveSearchIndex::Item> font_dependency_results = index.search("hud.png");
+	const ArchiveSearchIndex::Item* fontdat = find_path(font_dependency_results, "fonts/hud.fontdat");
+	if (!fontdat) {
+		if (error) {
+			*error = "FONTDAT atlas dependency hint did not participate in search.";
 		}
 		return false;
 	}

@@ -60,6 +60,20 @@ def main() -> int:
         print(err, file=sys.stderr)
         return 1
 
+    code, out, err = run_command([str(binary), "--cli", "--platform-report"])
+    if code != 0:
+        print("CLI platform report check failed.", file=sys.stderr)
+        print(out, file=sys.stderr)
+        print(err, file=sys.stderr)
+        return 1
+
+    code, out, err = run_command([str(binary), "--cli", "--plugin-report"])
+    if code != 0:
+        print("CLI plugin report check failed.", file=sys.stderr)
+        print(out, file=sys.stderr)
+        print(err, file=sys.stderr)
+        return 1
+
     if args.run_practical_qa:
         code, out, err = run_command([str(binary), "--cli", "--qa-practical"])
         if code != 0:

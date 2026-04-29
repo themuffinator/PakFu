@@ -3,6 +3,8 @@
 #include <QFileInfo>
 #include <QMutexLocker>
 
+#include "foundation/performance_metrics.h"
+
 namespace {
 QString file_ext_lower(const QString& name) {
 	const QString lower = name.toLower();
@@ -52,6 +54,7 @@ bool Archive::is_doom_wad() const {
 }
 
 bool Archive::load(const QString& path, QString* error) {
+	PakFu::Metrics::ScopedTimer load_timer("archive", "load", QFileInfo(path).fileName());
 	if (error) {
 		error->clear();
 	}

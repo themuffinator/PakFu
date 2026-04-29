@@ -104,13 +104,16 @@ endif
 
 core_sources = files(
   'archive/archive.cpp',
+  'archive/archive_session.cpp',
   'archive/dir_archive.cpp',
   'archive/archive_search_index.cpp',
+  'foundation/performance_metrics.cpp',
   'extensions/extension_plugin.cpp',
   'resources/resources_archive.cpp',
   'game/game_set.cpp',
   'game/game_auto_detect.cpp',
   'formats/dds_image.cpp',
+  'formats/fontdat_font.cpp',
   'formats/ftx_image.cpp',
   'formats/bsp_preview.cpp',
   'formats/idtech4_map.cpp',
@@ -146,6 +149,7 @@ pakfu_core_public_headers = files(
 pakfu_archive_public_headers = files(
   'archive/archive.h',
   'archive/archive_entry.h',
+  'archive/archive_session.h',
   'archive/archive_search_index.h',
   'archive/dir_archive.h',
   'archive/path_safety.h',
@@ -160,6 +164,7 @@ pakfu_formats_public_headers = files(
   'formats/cin_cinematic.h',
   'formats/cinematic.h',
   'formats/dds_image.h',
+  'formats/fontdat_font.h',
   'formats/ftx_image.h',
   'formats/idtech4_map.h',
   'formats/idtech_asset_loader.h',
@@ -206,6 +211,7 @@ pakfu_zip_public_headers = files(
 app_sources = files(
   'main.cpp',
   'cli/cli.cpp',
+  'ui/background_task_coordinator.cpp',
   'ui/splash_screen.cpp',
   'ui/about_dialog.cpp',
   'ui/main_window.cpp',
@@ -214,7 +220,11 @@ app_sources = files(
   'ui/game_set_dialog.cpp',
   'ui/game_set_editor_dialog.cpp',
   'ui/preferences_tab.cpp',
+  'ui/workspace_tab.cpp',
   'ui/preview_renderer.cpp',
+  'ui/preview_io_cache.cpp',
+  'ui/preview_scene.cpp',
+  'ui/preview_session.cpp',
   'ui/theme_manager.cpp',
   'ui/drag_drop_policy.cpp',
   'ui/practical_qa.cpp',
@@ -408,6 +418,16 @@ core_api_smoke_test = executable(
 )
 
 test('core-api-smoke', core_api_smoke_test)
+
+foundation_phase_test = executable(
+  'foundation_phase_test',
+  ['tests/foundation_phase_test.cpp', 'ui/preview_io_cache.cpp'],
+  include_directories: pakfu_includes,
+  dependencies: [pakfu_core_dep],
+  install: false,
+)
+
+test('foundation-phase', foundation_phase_test)
 
 game_auto_detect_test = executable(
   'game_auto_detect_test',

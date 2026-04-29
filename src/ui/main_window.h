@@ -6,6 +6,7 @@
 
 #include "extensions/extension_plugin.h"
 #include "game/game_set.h"
+#include "ui/workspace_tab.h"
 
 class QAction;
 class QComboBox;
@@ -87,6 +88,11 @@ private:
   int add_tab(const QString& title, QWidget* tab);
   bool focus_tab_by_path(const QString& path);
   PakTab* current_pak_tab() const;
+  void focus_workspace_tab();
+  QStringList recent_files_for_current_install() const;
+  void update_workspace_tab();
+  QVector<WorkspaceTab::SearchResult> search_workspace_tabs(const QString& query) const;
+  void run_workspace_search(const QString& query);
   void update_action_states();
   bool maybe_save_tab(PakTab* tab);
   bool save_tab(PakTab* tab);
@@ -113,7 +119,8 @@ private:
   bool updating_game_combo_ = false;
   UpdateService* updater_ = nullptr;
   QTabWidget* tabs_ = nullptr;
-  QWidget* welcome_tab_ = nullptr;
+  WorkspaceTab* workspace_tab_ = nullptr;
+  QAction* workspace_action_ = nullptr;
   PreferencesTab* preferences_tab_ = nullptr;
   QAction* new_action_ = nullptr;
   QAction* open_file_action_ = nullptr;

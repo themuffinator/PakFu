@@ -96,6 +96,11 @@ Validation tooling:
 - `scripts/release_manifest.py`
 - `scripts/build_user_guide.py`
 
+`scripts/validate_build.py` treats the CLI as a platform contract. In addition
+to version/help checks, it runs `--platform-report` and `--plugin-report` so
+packaged binaries prove their runtime paths, extension discovery, and
+integration diagnostics are available on every supported OS.
+
 ## Workflows
 Pull request gates:
 - Workflow: `.github/workflows/pr-ci.yml`
@@ -105,7 +110,7 @@ Pull request gates:
 2. `build-test-macos-latest`
 3. `build-test-ubuntu-latest`
 4. `sanitize-and-fuzz` from `.github/workflows/hardening.yml`
-- Coverage: each platform configures a non-packaging Meson build, compiles the app and core tests, runs the support-matrix fixture explicitly, runs the full Meson test suite, and validates the CLI binary. The hardening gate runs the sanitizer/libFuzzer smoke build where Clang support is available.
+- Coverage: each platform configures a non-packaging Meson build, compiles the app and core tests, runs the support-matrix fixture explicitly, runs the full Meson test suite, and validates the CLI binary including platform and extension diagnostics. The hardening gate runs the sanitizer/libFuzzer smoke build where Clang support is available.
 
 Nightly automation:
 - Workflow: `.github/workflows/nightly.yml`
@@ -113,7 +118,7 @@ Nightly automation:
 - Stages:
 1. `prepare`: compute nightly version + change gate
 2. `build`: compile on Windows/macOS/Linux
-3. `validate`: run CLI smoke checks on each platform build (and optionally `--run-practical-qa` for UI file-ops smoke checks)
+3. `validate`: run CLI smoke checks plus `--platform-report`/`--plugin-report` on each platform build (and optionally `--run-practical-qa` for UI file-ops smoke checks)
 4. `package`: build installer + portable assets per platform
 5. `release`: tag, validate completeness, publish nightly release with curated user-facing notes
 

@@ -15,6 +15,8 @@
 #include "formats/quake3_shader.h"
 #include "ui/preview_3d_options.h"
 #include "ui/preview_renderer.h"
+#include "ui/preview_scene.h"
+#include "ui/preview_session.h"
 
 class QLabel;
 class QPlainTextEdit;
@@ -37,16 +39,6 @@ class QSyntaxHighlighter;
 class QTextOption;
 class ShaderViewerWidget;
 
-struct PreviewAssetContext {
-	QString palette_provenance;
-	QString companion_resolution;
-	QString texture_dependencies;
-	QString shader_dependencies;
-	QString renderer_state;
-	QString preview_fallback;
-	QString performance_profile;
-};
-
 class PreviewPane : public QWidget {
 	Q_OBJECT
 
@@ -64,6 +56,7 @@ public:
 	explicit PreviewPane(QWidget* parent = nullptr);
 	~PreviewPane() override;
 
+	void apply_preferences_from_settings();
 	void set_preview_renderer(PreviewRenderer renderer);
 	void set_3d_fov_degrees(int degrees);
 	void set_model_texture_smoothing(bool enabled);
@@ -91,6 +84,11 @@ public:
 	                 const Quake3ShaderDocument& document,
 	                 QHash<QString, QImage> textures);
 	void show_font_from_bytes(const QString& title, const QString& subtitle, const QByteArray& bytes);
+	void show_fontdat_from_bytes(const QString& title,
+	                             const QString& subtitle,
+	                             const QByteArray& bytes,
+	                             const QImage& atlas,
+	                             const QString& atlas_name);
 	void show_binary(const QString& title, const QString& subtitle, const QByteArray& bytes, bool truncated);
 	void show_image(const QString& title, const QString& subtitle, const QImage& image);
 	void show_sprite(const QString& title,
@@ -209,10 +207,7 @@ private:
 		Tile,
 	};
 	ContentKind current_content_kind_ = ContentKind::None;
-	QString current_pak_path_;
-	qint64 current_file_size_ = -1;
-	qint64 current_mtime_utc_secs_ = -1;
-	PreviewAssetContext asset_context_;
+	PreviewSession preview_session_;
 
 	QWidget* placeholder_page_ = nullptr;
 	QLabel* placeholder_label_ = nullptr;
@@ -330,12 +325,8 @@ private:
 	bool model_texture_smoothing_ = false;
 	QVector<QRgb> model_palette_quake1_;
 	QVector<QRgb> model_palette_quake2_;
-	BspMesh cached_bsp_mesh_;
-	QHash<QString, QImage> cached_bsp_textures_;
-	bool has_cached_bsp_ = false;
-	QString cached_model_file_path_;
-	QString cached_model_skin_path_;
-	bool has_cached_model_ = false;
+	BspPreviewScene cached_bsp_scene_;
+	ModelPreviewScene cached_model_scene_;
 
 	PreviewRenderer renderer_requested_ = PreviewRenderer::Vulkan;
 	PreviewRenderer renderer_effective_ = PreviewRenderer::Vulkan;
