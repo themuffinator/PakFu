@@ -8,6 +8,7 @@
 #include <QAction>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -33,7 +34,7 @@
 #include "formats/lmp_image.h"
 #include "formats/pcx_image.h"
 #include "ui/preview_pane.h"
-#include "ui/ui_icons.h"
+#include "ui/viewer_chrome.h"
 
 namespace {
 constexpr qint64 kMaxPaletteBytes = 8LL * 1024 * 1024;
@@ -69,18 +70,6 @@ QVector<QString> parent_directories_for(const QString& file_path) {
 	return out;
 }
 
-bool should_ignore_navigation_event_target(QObject* watched) {
-	if (!watched) {
-		return false;
-	}
-	return qobject_cast<QComboBox*>(watched) != nullptr ||
-	       qobject_cast<QAbstractSpinBox*>(watched) != nullptr ||
-	       qobject_cast<QAbstractSlider*>(watched) != nullptr ||
-	       qobject_cast<QLineEdit*>(watched) != nullptr ||
-	       qobject_cast<QTextEdit*>(watched) != nullptr ||
-	       qobject_cast<QPlainTextEdit*>(watched) != nullptr;
-}
-
 bool try_load_archive_entry(const QString& archive_path,
                             const QString& entry_name,
                             QByteArray* out_bytes,
@@ -97,7 +86,10 @@ bool try_load_archive_entry(const QString& archive_path,
 	QString load_err;
 	if (!archive.load(archive_path, &load_err) || !archive.is_loaded()) {
 		if (attempts) {
-			attempts->push_back(QString("%1: %2").arg(label, load_err.isEmpty() ? "unable to load archive" : load_err));
+			attempts->push_back(QCoreApplication::translate("ImageViewerWindow", "%1: %2")
+			                        .arg(label, load_err.isEmpty()
+			                                        ? QCoreApplication::translate("ImageViewerWindow", "unable to load archive")
+			                                        : load_err));
 		}
 		return false;
 	}
@@ -106,7 +98,10 @@ bool try_load_archive_entry(const QString& archive_path,
 	if (!archive.read_entry_bytes(entry_name, out_bytes, &read_err, kMaxPaletteBytes)) {
 		if (attempts) {
 			attempts->push_back(
-				QString("%1: %2").arg(label, read_err.isEmpty() ? QString("%1 not found").arg(entry_name) : read_err));
+				QCoreApplication::translate("ImageViewerWindow", "%1: %2")
+					.arg(label, read_err.isEmpty()
+					                ? QCoreApplication::translate("ImageViewerWindow", "%1 not found").arg(entry_name)
+					                : read_err));
 		}
 		return false;
 	}
@@ -170,43 +165,31 @@ void ImageViewerWindow::build_ui() {
 		show_current_image();
 	});
 
-	auto* toolbar = addToolBar("Image Viewer");
-	toolbar->setMovable(false);
-	toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-
-	prev_action_ = toolbar->addAction(UiIcons::icon(UiIcons::Id::MediaPrevious, style()), "Previous");
-	next_action_ = toolbar->addAction(UiIcons::icon(UiIcons::Id::MediaNext, style()), "Next");
-	toolbar->addSeparator();
-	fullscreen_action_ = toolbar->addAction(UiIcons::icon(UiIcons::Id::FullscreenEnter, style()), "Fullscreen");
-
-	connect(prev_action_, &QAction::triggered, this, &ImageViewerWindow::show_previous_image);
-	connect(next_action_, &QAction::triggered, this, &ImageViewerWindow::show_next_image);
-	connect(fullscreen_action_, &QAction::triggered, this, &ImageViewerWindow::toggle_fullscreen);
-
-	auto* left_shortcut = new QShortcut(QKeySequence(Qt::Key_Left), this);
-	connect(left_shortcut, &QShortcut::activated, this, &ImageViewerWindow::show_previous_image);
-	auto* right_shortcut = new QShortcut(QKeySequence(Qt::Key_Right), this);
-	connect(right_shortcut, &QShortcut::activated, this, &ImageViewerWindow::show_next_image);
-	auto* f11_shortcut = new QShortcut(QKeySequence(Qt::Key_F11), this);
-	connect(f11_shortcut, &QShortcut::activated, this, &ImageViewerWindow::toggle_fullscreen);
-	auto* fullscreen_shortcut = new QShortcut(QKeySequence::FullScreen, this);
-	connect(fullscreen_shortcut, &QShortcut::activated, this, &ImageViewerWindow::toggle_fullscreen);
-	auto* esc_shortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
-	connect(esc_shortcut, &QShortcut::activated, this, [this]() {
-		if (isFullScreen()) {
-			showNormal();
-			update_fullscreen_action();
-		}
-	});
-
-	index_label_ = new QLabel(this);
-	path_label_ = new QLabel(this);
-	path_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-
-	if (statusBar()) {
-		statusBar()->addPermanentWidget(index_label_);
-		statusBar()->addWidget(path_label_, 1);
-	}
+	const ViewerChrome::Widgets chrome = ViewerChrome::setup(
+		this,
+		this,
+		ViewerChrome::Spec{tr("Image Viewer"),
+		                   tr("Image viewer actions"),
+		                   tr("Show the previous image in this folder."),
+		                   tr("Show the next image in this folder."),
+		                   tr("Toggle fullscreen image viewing."),
+		                   tr("Image position"),
+		                   tr("Image path"),
+		                   tr("Image viewer status")},
+		&ImageViewerWindow::show_previous_image,
+		&ImageViewerWindow::show_next_image,
+		&ImageViewerWindow::toggle_fullscreen,
+		[this]() {
+			if (isFullScreen()) {
+				showNormal();
+				update_fullscreen_action();
+			}
+		});
+	prev_action_ = chrome.previous_action;
+	next_action_ = chrome.next_action;
+	fullscreen_action_ = chrome.fullscreen_action;
+	index_label_ = chrome.index_label;
+	path_label_ = chrome.path_label;
 }
 
 void ImageViewerWindow::install_event_filters() {
@@ -295,7 +278,7 @@ void ImageViewerWindow::show_current_image() {
 	const QString image_path = current_image_path();
 	if (image_path.isEmpty()) {
 		preview_->set_current_file_info({}, -1, -1);
-		preview_->show_message("Image Viewer", "No supported images found in this folder.");
+		preview_->show_message(tr("Image Viewer"), tr("No supported images found in this folder."));
 		update_status();
 		update_window_title();
 		return;
@@ -304,7 +287,7 @@ void ImageViewerWindow::show_current_image() {
 	const QFileInfo info(image_path);
 	if (!info.exists() || !info.isFile()) {
 		preview_->set_current_file_info(info.absoluteFilePath(), -1, -1);
-		preview_->show_message("Image Viewer", "Image file not found.");
+		preview_->show_message(tr("Image Viewer"), tr("Image file not found."));
 		update_status();
 		update_window_title();
 		return;
@@ -325,42 +308,42 @@ void ImageViewerWindow::show_current_image() {
 	if (ext == "wal") {
 		QString pal_err;
 		if (!ensure_quake2_palette(image_path, &pal_err)) {
-			asset_context.palette_provenance = "Quake II pics/colormap.pcx not resolved.";
-			asset_context.preview_fallback = "WAL preview requires an external Quake II palette.";
+			asset_context.palette_provenance = tr("Quake II pics/colormap.pcx not resolved.");
+			asset_context.preview_fallback = tr("WAL preview requires an external Quake II palette.");
 			preview_->set_asset_context(asset_context);
 			preview_->show_message(info.fileName(),
-			                       pal_err.isEmpty() ? "Unable to locate Quake II palette required for WAL preview." : pal_err);
+			                       pal_err.isEmpty() ? tr("Unable to locate Quake II palette required for WAL preview.") : pal_err);
 			update_status();
 			update_window_title();
 			return;
 		}
 		options.palette = &quake2_palette_;
 		asset_context.palette_provenance =
-			quake2_palette_source_.isEmpty() ? QString("Quake II pics/colormap.pcx") : quake2_palette_source_;
+			quake2_palette_source_.isEmpty() ? tr("Quake II pics/colormap.pcx") : quake2_palette_source_;
 	} else if (ext == "lmp" || ext == "mip") {
 		QString pal_err;
 		if (ensure_quake1_palette(image_path, &pal_err)) {
 			options.palette = &quake1_palette_;
 			asset_context.palette_provenance =
-				quake1_palette_source_.isEmpty() ? QString("Quake gfx/palette.lmp") : quake1_palette_source_;
+				quake1_palette_source_.isEmpty() ? tr("Quake gfx/palette.lmp") : quake1_palette_source_;
 		} else {
 			asset_context.palette_provenance =
-				"Embedded palette when present; external Quake gfx/palette.lmp not resolved.";
+				tr("Embedded palette when present; external Quake gfx/palette.lmp not resolved.");
 			asset_context.preview_fallback =
 				(ext == "mip")
-					? QString("Raw MIP textures need an embedded palette or external Quake palette.")
-					: QString("Some LMP images need an embedded palette or external Quake palette.");
+					? tr("Raw MIP textures need an embedded palette or external Quake palette.")
+					: tr("Some LMP images need an embedded palette or external Quake palette.");
 		}
 	} else if (ext == "m8") {
-		asset_context.palette_provenance = "Embedded Heretic II M8 palette.";
+		asset_context.palette_provenance = tr("Embedded Heretic II M8 palette.");
 	} else if (ext == "m32") {
-		asset_context.palette_provenance = "Heretic II M32 RGBA texture.";
+		asset_context.palette_provenance = tr("Heretic II M32 RGBA texture.");
 	} else if (ext == "swl") {
-		asset_context.palette_provenance = "Embedded SWL palette.";
+		asset_context.palette_provenance = tr("Embedded SWL palette.");
 	} else if (ext == "pcx") {
-		asset_context.palette_provenance = "Embedded PCX palette when present.";
+		asset_context.palette_provenance = tr("Embedded PCX palette when present.");
 	} else if (ext == "tga") {
-		asset_context.palette_provenance = "Embedded TGA color map when indexed.";
+		asset_context.palette_provenance = tr("Embedded TGA color map when indexed.");
 	}
 	preview_->set_asset_context(asset_context);
 
@@ -371,7 +354,7 @@ void ImageViewerWindow::show_current_image() {
 
 	if (!decoded.ok()) {
 		preview_->show_message(info.fileName(),
-		                       decoded.error.isEmpty() ? "Unable to decode this image format." : decoded.error);
+		                       decoded.error.isEmpty() ? tr("Unable to decode this image format.") : decoded.error);
 		update_status();
 		update_window_title();
 		return;
@@ -427,46 +410,22 @@ void ImageViewerWindow::toggle_fullscreen() {
 }
 
 void ImageViewerWindow::update_fullscreen_action() {
-	if (!fullscreen_action_) {
-		return;
-	}
-	const bool full = isFullScreen();
-	fullscreen_action_->setText(full ? "Exit Fullscreen" : "Fullscreen");
-	fullscreen_action_->setIcon(
-		UiIcons::icon(full ? UiIcons::Id::FullscreenExit : UiIcons::Id::FullscreenEnter, style()));
+	ViewerChrome::update_fullscreen_action(fullscreen_action_, this);
 }
 
 void ImageViewerWindow::update_status() {
-	if (index_label_) {
-		if (image_paths_.isEmpty() || current_index_ < 0) {
-			index_label_->setText("Image 0/0");
-		} else {
-			index_label_->setText(QString("Image %1/%2").arg(current_index_ + 1).arg(image_paths_.size()));
-		}
-	}
-	if (path_label_) {
-		const QString path = current_image_path();
-		path_label_->setText(path.isEmpty() ? QString() : QDir::toNativeSeparators(path));
-		path_label_->setToolTip(path.isEmpty() ? QString() : QDir::toNativeSeparators(path));
-	}
-
-	const bool can_cycle = image_paths_.size() > 1;
-	if (prev_action_) {
-		prev_action_->setEnabled(can_cycle);
-	}
-	if (next_action_) {
-		next_action_->setEnabled(can_cycle);
-	}
+	ViewerChrome::update_status(
+		index_label_, path_label_, prev_action_, next_action_, tr("Image"), image_paths_, current_index_, current_image_path());
 }
 
 void ImageViewerWindow::update_window_title() {
 	const QString path = current_image_path();
 	if (path.isEmpty()) {
-		setWindowTitle("PakFu Image Viewer");
+		setWindowTitle(tr("PakFu Image Viewer"));
 		return;
 	}
 	const QFileInfo info(path);
-	setWindowTitle(QString("PakFu Image Viewer - %1").arg(info.fileName()));
+	setWindowTitle(tr("PakFu Image Viewer - %1").arg(info.fileName()));
 }
 
 bool ImageViewerWindow::eventFilter(QObject* watched, QEvent* event) {
@@ -485,7 +444,7 @@ bool ImageViewerWindow::eventFilter(QObject* watched, QEvent* event) {
 		}
 	}
 
-	if (should_ignore_navigation_event_target(watched)) {
+	if (ViewerChrome::should_ignore_navigation_event_target(watched)) {
 		return QMainWindow::eventFilter(watched, event);
 	}
 
@@ -572,7 +531,7 @@ bool ImageViewerWindow::ensure_quake1_palette(const QString& image_path, QString
 		QVector<QRgb> palette;
 		QString pal_err;
 		if (!extract_lmp_palette_256(lmp_bytes, &palette, &pal_err) || palette.size() != 256) {
-			attempts.push_back(QString("%1: %2").arg(where, pal_err.isEmpty() ? "invalid palette" : pal_err));
+			attempts.push_back(tr("%1: %2").arg(where, pal_err.isEmpty() ? tr("invalid palette") : pal_err));
 			return false;
 		}
 		quake1_palette_ = std::move(palette);
@@ -586,7 +545,7 @@ bool ImageViewerWindow::ensure_quake1_palette(const QString& image_path, QString
 		}
 		QFile file(path);
 		if (!file.open(QIODevice::ReadOnly)) {
-			attempts.push_back(QString("%1: unable to open file").arg(where));
+			attempts.push_back(tr("%1: unable to open file").arg(where));
 			return false;
 		}
 		return try_lmp_bytes(file.read(kMaxPaletteBytes), where);
@@ -614,7 +573,7 @@ bool ImageViewerWindow::ensure_quake1_palette(const QString& image_path, QString
 			}
 		}
 
-		attempts.push_back(QString("%1: no usable palette entries found").arg(where));
+		attempts.push_back(tr("%1: no usable palette entries found").arg(where));
 		return false;
 	};
 
@@ -644,8 +603,8 @@ bool ImageViewerWindow::ensure_quake1_palette(const QString& image_path, QString
 	}
 
 	quake1_palette_error_ = attempts.isEmpty()
-	                        ? "Unable to locate Quake palette (gfx/palette.lmp)."
-	                        : QString("Unable to locate Quake palette (gfx/palette.lmp).\nTried:\n- %1")
+	                        ? tr("Unable to locate Quake palette (gfx/palette.lmp).")
+	                        : tr("Unable to locate Quake palette (gfx/palette.lmp).\nTried:\n- %1")
 	                            .arg(attempts.join("\n- "));
 	if (error) {
 		*error = quake1_palette_error_;
@@ -679,7 +638,7 @@ bool ImageViewerWindow::ensure_quake2_palette(const QString& image_path, QString
 		QVector<QRgb> palette;
 		QString pal_err;
 		if (!extract_pcx_palette_256(pcx_bytes, &palette, &pal_err) || palette.size() != 256) {
-			attempts.push_back(QString("%1: %2").arg(where, pal_err.isEmpty() ? "invalid palette" : pal_err));
+			attempts.push_back(tr("%1: %2").arg(where, pal_err.isEmpty() ? tr("invalid palette") : pal_err));
 			return false;
 		}
 		quake2_palette_ = std::move(palette);
@@ -693,7 +652,7 @@ bool ImageViewerWindow::ensure_quake2_palette(const QString& image_path, QString
 		}
 		QFile file(path);
 		if (!file.open(QIODevice::ReadOnly)) {
-			attempts.push_back(QString("%1: unable to open file").arg(where));
+			attempts.push_back(tr("%1: unable to open file").arg(where));
 			return false;
 		}
 		return try_pcx_bytes(file.read(kMaxPaletteBytes), where);
@@ -734,8 +693,8 @@ bool ImageViewerWindow::ensure_quake2_palette(const QString& image_path, QString
 	}
 
 	quake2_palette_error_ = attempts.isEmpty()
-	                        ? "Unable to locate Quake II palette (pics/colormap.pcx)."
-	                        : QString("Unable to locate Quake II palette (pics/colormap.pcx).\nTried:\n- %1")
+	                        ? tr("Unable to locate Quake II palette (pics/colormap.pcx).")
+	                        : tr("Unable to locate Quake II palette (pics/colormap.pcx).\nTried:\n- %1")
 	                            .arg(attempts.join("\n- "));
 	if (error) {
 		*error = quake2_palette_error_;

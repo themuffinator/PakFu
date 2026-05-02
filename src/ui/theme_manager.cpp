@@ -1,5 +1,7 @@
 #include "theme_manager.h"
 
+#include "design_tokens.h"
+
 #include <QApplication>
 #include <QPalette>
 #include <QSettings>
@@ -11,7 +13,8 @@ constexpr char kThemeKey[] = "ui/theme";
 
 constexpr char kThemeQss[] = R"QSS(
 QMenuBar {
-  background: palette(window);
+  background: $surface;
+  color: $text-primary;
 }
 QMenuBar::item {
   background: transparent;
@@ -19,12 +22,16 @@ QMenuBar::item {
   border-radius: 6px;
 }
 QMenuBar::item:selected {
-  background: palette(light);
+  background: $surface-raised;
+}
+QMenuBar::item:focus {
+  border: 2px solid $focus;
 }
 
 QMenu {
-  background: palette(window);
-  border: 1px solid palette(mid);
+  background: $surface;
+  border: 1px solid $border;
+  color: $text-primary;
   padding: 6px;
 }
 QMenu::item {
@@ -32,83 +39,130 @@ QMenu::item {
   border-radius: 6px;
 }
 QMenu::item:selected {
-  background: palette(highlight);
-  color: palette(highlighted-text);
+  background: $selection;
+  color: $selection-text;
 }
 
 QTabWidget::pane {
-  border: 1px solid palette(mid);
+  border: 1px solid $border;
   top: -1px;
 }
 QTabBar::tab {
-  background: palette(button);
-  border: 1px solid palette(mid);
+  background: $surface-raised;
+  border: 1px solid $border;
   border-bottom: none;
+  color: $text-primary;
   padding: 8px 14px;
   margin-right: 2px;
   border-top-left-radius: 8px;
   border-top-right-radius: 8px;
 }
 QTabBar::tab:selected {
-  background: palette(window);
+  background: $surface;
 }
 QTabBar::tab:hover:!selected {
-  background: palette(light);
+  background: $surface-raised;
+}
+QTabBar::tab:focus {
+  border: 2px solid $focus;
+}
+
+QToolBar {
+  spacing: 4px;
+  border: none;
+  background: $surface;
 }
 
 QPushButton {
+  min-height: 28px;
   padding: 7px 14px;
   border-radius: 8px;
-  border: 1px solid palette(mid);
-  background: palette(button);
+  border: 1px solid $border;
+  background: $surface-raised;
+  color: $text-primary;
 }
 QPushButton:hover {
-  background: palette(light);
+  background: $surface;
 }
 QPushButton:pressed {
-  background: palette(midlight);
+  background: $border;
 }
 QPushButton:disabled {
-  background: palette(window);
-  color: palette(mid);
+  background: $surface-disabled;
+  color: $disabled-text;
+}
+QPushButton:focus {
+  border: 2px solid $focus;
+  padding: 6px 13px;
 }
 
 QToolButton {
-  border: none;
-  padding: 2px;
+  min-width: 28px;
+  min-height: 28px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 5px 8px;
+  background: transparent;
 }
 QToolButton:hover {
-  background: rgba(127, 127, 127, 40);
-  border-radius: 6px;
+  background: $surface-raised;
+}
+QToolButton:pressed {
+  background: $border;
+}
+QToolButton:checked {
+  background: $selection;
+  color: $selection-text;
+}
+QToolButton:focus {
+  border: 2px solid $focus;
+  padding: 4px 7px;
 }
 
 QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {
   padding: 6px 10px;
   border-radius: 8px;
-  border: 1px solid palette(mid);
-  background: palette(base);
+  border: 1px solid $border;
+  background: $surface;
+  color: $text-primary;
 }
 QComboBox::drop-down {
   border: none;
   width: 26px;
 }
 QComboBox QAbstractItemView {
-  background: palette(window);
-  border: 1px solid palette(mid);
-  selection-background-color: palette(highlight);
-  selection-color: palette(highlighted-text);
+  background: $surface;
+  border: 1px solid $border;
+  color: $text-primary;
+  selection-background-color: $selection;
+  selection-color: $selection-text;
+}
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus,
+QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {
+  border: 2px solid $focus;
+  padding: 5px 9px;
+}
+
+QCheckBox:focus, QRadioButton:focus {
+  border: 2px solid $focus;
+  border-radius: 4px;
 }
 
 QTreeView, QTreeWidget, QListView, QTableView {
-  border: 1px solid palette(mid);
-  background: palette(base);
+  border: 1px solid $border;
+  background: $surface;
   alternate-background-color: palette(alternate-base);
-  selection-background-color: palette(highlight);
-  selection-color: palette(highlighted-text);
+  color: $text-primary;
+  selection-background-color: $selection;
+  selection-color: $selection-text;
+}
+QTreeView:focus, QTreeWidget:focus, QListView:focus, QTableView:focus {
+  border: 2px solid $focus;
 }
 QHeaderView::section {
-  background: palette(button);
-  border: 1px solid palette(mid);
+  background: $surface-raised;
+  border: 1px solid $border;
+  color: $text-primary;
   padding: 6px 10px;
 }
 
@@ -457,7 +511,8 @@ void ThemeManager::apply_theme(QApplication& app, AppTheme theme) {
     app.setPalette(make_darkmatter_palette());
   }
 
-  app.setStyleSheet(QString::fromUtf8(kThemeQss) + extra_qss_for_theme(theme));
+  const PakFu::Ui::DesignTokens tokens = PakFu::Ui::make_design_tokens(app.palette());
+  app.setStyleSheet(PakFu::Ui::apply_design_tokens(QString::fromUtf8(kThemeQss), tokens) + extra_qss_for_theme(theme));
 }
 
 void ThemeManager::apply_saved_theme(QApplication& app) {

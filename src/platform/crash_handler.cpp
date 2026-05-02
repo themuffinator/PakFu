@@ -457,8 +457,7 @@ void install_crash_reporting() {
 	install_windows_exception_capture();
 #endif
 
-	qInfo().noquote() << QString("Crash reporting enabled: %1")
-	                     .arg(QDir::toNativeSeparators(g_crash_dir));
+	qInfo().noquote() << "Crash reporting enabled.";
 }
 
 QString crash_report_directory() {

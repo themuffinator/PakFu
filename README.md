@@ -85,6 +85,7 @@ aligned without carrying build instructions or repository maintenance notes.
 - Archive and folder support in both GUI and CLI.
 - Dedicated standalone viewer windows for image, video, audio, and model files.
 - Persistent Workspace tab for installations, open archives, recent files, global search, changed assets, dependency hints, validation, and runtime capability status.
+- Sidebar-driven Workspace lenses and a top-level Quick Open/Search box (`Ctrl+K`) for faster archive, file, and workspace lookup.
 - Nested container mounting (open archives inside archives).
 - One-click `Extract Selected` and `Extract All` workflows for the active archive tab.
 - Batch conversion tool for selected assets with category tabs (images, video, archives, models, sound, maps, text, other).
@@ -289,16 +290,17 @@ Examples:
   - Model Viewer
 - Opening behavior:
   - Opening a supported media/model file can launch its dedicated viewer window.
-  - Opening an archive prompts: open directly, install a copy then open, or move to installation then open.
-  - Preferences can keep that archive-open prompt enabled or choose a default open/copy/move action.
+  - Opening an archive defaults to Quick Inspect in place. Preferences can re-enable the archive-open prompt or choose install-copy/move behavior.
 - Navigation:
   - In standalone viewers, mouse wheel and arrow keys cycle sibling files in the same folder.
   - Fullscreen toggles with `F11`, middle mouse, or platform fullscreen shortcut.
 - Preferences:
-  - The tabbed Preferences page groups appearance, workspace/archive behavior, 3D preview defaults, image/text preview defaults, and update checks.
+  - The Preferences page shows everyday appearance, workspace/archive, and update settings first, with an Advanced toggle for preview/rendering controls.
   - Preview preferences include renderer, FOV, grid/background, wireframe/textured defaults, BSP lightmaps, model smoothing, animation playback, image transparency/background, image layout, and text wrapping.
   - Preview changes apply to open archive tabs and standalone viewer windows without restarting PakFu.
 - Archive operations:
+  - Non-blocking archive-operation hints and successful extract/convert completion messages appear in the status bar so browsing context stays intact.
+  - Archive details, list, icon, and gallery views are backed by a shared Qt model/view listing with sorting, selection restore, drag/drop, previews, and async thumbnails.
   - Drag-and-drop import/export across directories and tabs, plus file/folder drops from external applications.
   - Drag modifier keys: hold `Shift` to request move; hold `Ctrl/Cmd` (or `Option` on macOS) to force copy. Cross-application drops are copy.
   - Move semantics work across open tabs via drag or cut/paste when the source tab is editable; otherwise operations safely fall back to copy.
@@ -375,6 +377,9 @@ For full policy details, see `docs/RELEASES.md`.
 - [Extensions](docs/EXTENSIONS.md): manifest schema, JSON payload contract, and CLI/GUI extension workflow.
 - [Extension examples](examples/extensions/): source-first extension examples for local development and plugin-report smoke checks.
 - [Archive file operations QA](docs/QA_ARCHIVE_FILE_OPS.md): practical QA checklist for selection, drag/drop, cut/copy/paste, and modifiers.
+- [UX validation](docs/UX_VALIDATION.md): keyboard, pointer, contrast, layout, i18n, telemetry, and A/B acceptance artifacts for the UX roadmap.
+- [UX performance baseline](docs/UX_PERFORMANCE_BASELINE.md): generated-corpus timing evidence for the UX roadmap performance gate.
+- [Roadmap completion](docs/ROADMAP_COMPLETION.md): release-hardening checklist and evidence ledger for roadmap claims.
 - [Release policy](docs/RELEASES.md): versioning, release rules, and asset contract.
 - [UI button icons](docs/UI_BUTTON_ICONS.md): UI action icon inventory.
 - [File association icons](docs/FILE_ASSOCIATION_ICONS.md): file association icon mapping and implementation notes.

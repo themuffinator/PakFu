@@ -50,6 +50,7 @@ constexpr char kBspLightmappingKey[] = "preview/bsp/lightmapping";
 constexpr char kPurePakProtectorKey[] = "archive/purePakProtector";
 constexpr char kUpdatesAutoCheckKey[] = "updates/autoCheck";
 constexpr char kUpdatesSkipVersionKey[] = "updates/skipVersion";
+constexpr char kPreferencesAdvancedKey[] = "ui/preferences/showAdvanced";
 
 AppTheme theme_for_index(int idx) {
 	switch (idx) {
@@ -193,24 +194,53 @@ void PreferencesTab::build_ui() {
 	layout->setContentsMargins(28, 22, 28, 22);
 	layout->setSpacing(14);
 
-	auto* title = new QLabel("Preferences", this);
+	auto* title = new QLabel(tr("Preferences"), this);
 	QFont title_font = title->font();
 	title_font.setPointSize(title_font.pointSize() + 6);
 	title_font.setWeight(QFont::DemiBold);
 	title->setFont(title_font);
 	layout->addWidget(title);
 
-	auto* intro = new QLabel("Tune PakFu's workspace, archive safety, preview rendering, media display, text inspection, and update behavior.", this);
+	auto* intro = new QLabel(
+		tr("Tune PakFu's workspace, archive safety, preview rendering, media display, text inspection, and update behavior."),
+		this);
 	intro->setWordWrap(true);
 	layout->addWidget(intro);
 
+	advanced_preferences_ = new QCheckBox(tr("Show advanced preview and rendering controls"), this);
+	advanced_preferences_->setToolTip(tr("Show expert controls for 3D, image, text, and media preview defaults."));
+	layout->addWidget(advanced_preferences_);
+
 	tabs_ = new QTabWidget(this);
-	tabs_->addTab(build_appearance_tab(), "Appearance");
-	tabs_->addTab(build_archives_tab(), "Workspace & Archives");
-	tabs_->addTab(build_previews_tab(), "3D Preview");
-	tabs_->addTab(build_images_text_tab(), "Images & Text");
-	tabs_->addTab(build_updates_tab(), "Updates");
+	tabs_->addTab(build_appearance_tab(), tr("Appearance"));
+	tabs_->addTab(build_archives_tab(), tr("Workspace & Archives"));
+	tabs_->addTab(build_previews_tab(), tr("3D Preview"));
+	tabs_->addTab(build_images_text_tab(), tr("Images & Text"));
+	tabs_->addTab(build_updates_tab(), tr("Updates"));
 	layout->addWidget(tabs_, 1);
+
+	connect(advanced_preferences_, &QCheckBox::toggled, this, [this](bool checked) {
+		if (!loading_) {
+			QSettings s;
+			s.setValue(kPreferencesAdvancedKey, checked);
+		}
+		update_advanced_preference_visibility();
+	});
+	update_advanced_preference_visibility();
+}
+
+void PreferencesTab::update_advanced_preference_visibility() {
+	if (!tabs_ || !advanced_preferences_) {
+		return;
+	}
+	const bool show_advanced = advanced_preferences_->isChecked();
+	if (tabs_->count() > 3) {
+		tabs_->setTabVisible(2, show_advanced);
+		tabs_->setTabVisible(3, show_advanced);
+	}
+	if (!show_advanced && tabs_->currentIndex() >= 2 && tabs_->currentIndex() <= 3) {
+		tabs_->setCurrentIndex(0);
+	}
 }
 
 QWidget* PreferencesTab::build_appearance_tab() {
@@ -218,25 +248,28 @@ QWidget* PreferencesTab::build_appearance_tab() {
 	QWidget* scroll = make_scroll_page(this, &layout);
 
 	QVBoxLayout* group_layout = nullptr;
-	layout->addWidget(make_group(scroll, "Theme", "Choose the application palette used by the main window, archive tabs, viewers, and dialogs.", &group_layout));
+	layout->addWidget(make_group(scroll,
+	                             tr("Theme"),
+	                             tr("Choose the application palette used by the main window, archive tabs, viewers, and dialogs."),
+	                             &group_layout));
 
 	auto* form = new QFormLayout();
 	form->setLabelAlignment(Qt::AlignLeft);
 	form->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
 	theme_combo_ = new QComboBox(scroll);
-	theme_combo_->addItem("System default");
-	theme_combo_->addItem("Light");
-	theme_combo_->addItem("Dark");
-	theme_combo_->addItem("Midnight");
-	theme_combo_->addItem("Spring Time");
-	theme_combo_->addItem("Creamy Goodness");
-	theme_combo_->addItem("Vibe-o-Rama");
-	theme_combo_->addItem("DarkMatter");
+	theme_combo_->addItem(tr("System default"));
+	theme_combo_->addItem(tr("Light"));
+	theme_combo_->addItem(tr("Dark"));
+	theme_combo_->addItem(tr("Midnight"));
+	theme_combo_->addItem(tr("Spring Time"));
+	theme_combo_->addItem(tr("Creamy Goodness"));
+	theme_combo_->addItem(tr("Vibe-o-Rama"));
+	theme_combo_->addItem(tr("DarkMatter"));
 	theme_combo_->setMinimumWidth(240);
-	form->addRow("Color theme", theme_combo_);
+	form->addRow(tr("Color theme"), theme_combo_);
 	group_layout->addLayout(form);
 
-	auto* reset = new QPushButton("Restore Appearance Defaults", scroll);
+	auto* reset = new QPushButton(tr("Restore Appearance Defaults"), scroll);
 	group_layout->addWidget(reset, 0, Qt::AlignLeft);
 	layout->addStretch();
 
@@ -257,42 +290,42 @@ QWidget* PreferencesTab::build_archives_tab() {
 
 	QVBoxLayout* open_layout = nullptr;
 	layout->addWidget(make_group(scroll,
-	                            "Opening Archives",
-	                            "Control how PakFu handles archives opened from the shell, drag-and-drop, recent files, or the File menu.",
+	                            tr("Opening Archives"),
+	                            tr("Control how PakFu handles archives opened from the shell, drag-and-drop, recent files, or the File menu."),
 	                            &open_layout));
-	archive_open_always_ask_ = new QCheckBox("Ask how supported archives should be opened", scroll);
+	archive_open_always_ask_ = new QCheckBox(tr("Ask before choosing install or copy actions"), scroll);
 	open_layout->addWidget(archive_open_always_ask_);
 
 	archive_open_action_combo_ = new QComboBox(scroll);
-	archive_open_action_combo_->addItem("Open in place", "open_direct");
-	archive_open_action_combo_->addItem("Install a copy into the selected game profile", "install_copy");
-	archive_open_action_combo_->addItem("Move into the selected game profile", "move_to_install");
+	archive_open_action_combo_->addItem(tr("Quick Inspect in place"), "open_direct");
+	archive_open_action_combo_->addItem(tr("Install a copy into the selected game profile"), "install_copy");
+	archive_open_action_combo_->addItem(tr("Move into the selected game profile"), "move_to_install");
 	auto* action_form = new QFormLayout();
-	action_form->addRow("Default action when not asking", archive_open_action_combo_);
+	action_form->addRow(tr("Default action when not asking"), archive_open_action_combo_);
 	open_layout->addLayout(action_form);
 
 	QVBoxLayout* history_layout = nullptr;
 	layout->addWidget(make_group(scroll,
-	                            "History",
-	                            "Recent files are stored per installation profile so active projects stay separate.",
+	                            tr("History"),
+	                            tr("Recent files are stored per installation profile so active projects stay separate."),
 	                            &history_layout));
 	recent_file_limit_spin_ = new QSpinBox(scroll);
 	recent_file_limit_spin_->setRange(1, 50);
-	recent_file_limit_spin_->setSuffix(" files");
+	recent_file_limit_spin_->setSuffix(tr(" files"));
 	recent_file_limit_spin_->setMinimumWidth(140);
 	auto* recent_form = new QFormLayout();
-	recent_form->addRow("Recent files to keep", recent_file_limit_spin_);
+	recent_form->addRow(tr("Recent files to keep"), recent_file_limit_spin_);
 	history_layout->addLayout(recent_form);
 
 	QVBoxLayout* safety_layout = nullptr;
 	layout->addWidget(make_group(scroll,
-	                            "Protection",
-	                            "Keep known stock game archives read-only unless you deliberately disable the guardrail.",
+	                            tr("Protection"),
+	                            tr("Keep known stock game archives read-only unless you deliberately disable the guardrail."),
 	                            &safety_layout));
-	pure_pak_protector_ = new QCheckBox("Pure PAK protector for official archives", scroll);
+	pure_pak_protector_ = new QCheckBox(tr("Pure PAK protector for official archives"), scroll);
 	safety_layout->addWidget(pure_pak_protector_);
 
-	auto* reset = new QPushButton("Restore Workspace & Archive Defaults", scroll);
+	auto* reset = new QPushButton(tr("Restore Workspace & Archive Defaults"), scroll);
 	safety_layout->addWidget(reset, 0, Qt::AlignLeft);
 	layout->addStretch();
 
@@ -338,20 +371,20 @@ QWidget* PreferencesTab::build_previews_tab() {
 
 	QVBoxLayout* renderer_layout = nullptr;
 	layout->addWidget(make_group(scroll,
-	                            "Renderer",
-	                            "Choose the backend and camera defaults used by BSP, map, and model previews.",
+	                            tr("Renderer"),
+	                            tr("Choose the backend and camera defaults used by BSP, map, and model previews."),
 	                            &renderer_layout));
 	renderer_combo_ = new QComboBox(scroll);
-	renderer_combo_->addItem("Vulkan", preview_renderer_to_string(PreviewRenderer::Vulkan));
-	renderer_combo_->addItem("OpenGL", preview_renderer_to_string(PreviewRenderer::OpenGL));
+	renderer_combo_->addItem(tr("Vulkan"), preview_renderer_to_string(PreviewRenderer::Vulkan));
+	renderer_combo_->addItem(tr("OpenGL"), preview_renderer_to_string(PreviewRenderer::OpenGL));
 	renderer_combo_->setMinimumWidth(220);
 	auto* renderer_form = new QFormLayout();
-	renderer_form->addRow("3D renderer", renderer_combo_);
+	renderer_form->addRow(tr("3D renderer"), renderer_combo_);
 	renderer_layout->addLayout(renderer_form);
 
 	renderer_status_ = make_hint(is_vulkan_renderer_available()
-	                               ? "Vulkan is available in this build. OpenGL remains available as a compatibility fallback."
-	                               : "Vulkan is not available in this build. OpenGL will be used even if Vulkan is requested.",
+	                               ? tr("Vulkan is available in this build. OpenGL remains available as a compatibility fallback.")
+	                               : tr("Vulkan is not available in this build. OpenGL will be used even if Vulkan is requested."),
 	                             scroll);
 	renderer_layout->addWidget(renderer_status_);
 
@@ -366,50 +399,50 @@ QWidget* PreferencesTab::build_previews_tab() {
 	preview_fov_slider_->setTickInterval(10);
 	preview_fov_slider_->setTickPosition(QSlider::TicksBelow);
 	fov_layout->addWidget(preview_fov_slider_, 1);
-	preview_fov_value_label_ = new QLabel("100 deg", fov_row);
+	preview_fov_value_label_ = new QLabel(tr("100 deg"), fov_row);
 	preview_fov_value_label_->setMinimumWidth(62);
 	preview_fov_value_label_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 	fov_layout->addWidget(preview_fov_value_label_);
-	renderer_form->addRow("Field of view", fov_row);
+	renderer_form->addRow(tr("Field of view"), fov_row);
 
 	QVBoxLayout* scene_layout = nullptr;
 	layout->addWidget(make_group(scroll,
-	                            "Scene Defaults",
-	                            "Set the default staging for inspecting maps and models. These defaults also update open preview panes.",
+	                            tr("Scene Defaults"),
+	                            tr("Set the default staging for inspecting maps and models. These defaults also update open preview panes."),
 	                            &scene_layout));
 	three_d_grid_combo_ = new QComboBox(scroll);
-	three_d_grid_combo_->addItem("Floor grid", "floor");
-	three_d_grid_combo_->addItem("Full grid", "grid");
-	three_d_grid_combo_->addItem("No grid", "none");
+	three_d_grid_combo_->addItem(tr("Floor grid"), "floor");
+	three_d_grid_combo_->addItem(tr("Full grid"), "grid");
+	three_d_grid_combo_->addItem(tr("No grid"), "none");
 	three_d_background_combo_ = new QComboBox(scroll);
-	three_d_background_combo_->addItem("Follow theme", "themed");
-	three_d_background_combo_->addItem("Neutral grey", "grey");
-	three_d_background_combo_->addItem("Custom color", "custom");
+	three_d_background_combo_->addItem(tr("Follow theme"), "themed");
+	three_d_background_combo_->addItem(tr("Neutral grey"), "grey");
+	three_d_background_combo_->addItem(tr("Custom color"), "custom");
 	three_d_background_color_button_ = new QPushButton(scroll);
 	three_d_background_color_button_->setMinimumWidth(130);
 
 	auto* scene_form = new QFormLayout();
-	scene_form->addRow("Grid", three_d_grid_combo_);
-	scene_form->addRow("Background", three_d_background_combo_);
-	scene_form->addRow("Custom color", three_d_background_color_button_);
+	scene_form->addRow(tr("Grid"), three_d_grid_combo_);
+	scene_form->addRow(tr("Background"), three_d_background_combo_);
+	scene_form->addRow(tr("Custom color"), three_d_background_color_button_);
 	scene_layout->addLayout(scene_form);
 
-	three_d_textured_ = new QCheckBox("Textured rendering by default", scroll);
-	three_d_wireframe_ = new QCheckBox("Wireframe overlay by default", scroll);
-	bsp_lightmapping_ = new QCheckBox("Use BSP lightmaps when available", scroll);
+	three_d_textured_ = new QCheckBox(tr("Textured rendering by default"), scroll);
+	three_d_wireframe_ = new QCheckBox(tr("Wireframe overlay by default"), scroll);
+	bsp_lightmapping_ = new QCheckBox(tr("Use BSP lightmaps when available"), scroll);
 	scene_layout->addWidget(three_d_textured_);
 	scene_layout->addWidget(three_d_wireframe_);
 	scene_layout->addWidget(bsp_lightmapping_);
 
 	QVBoxLayout* model_layout = nullptr;
 	layout->addWidget(make_group(scroll,
-	                            "Model Playback",
-	                            "Choose how animated models behave when first previewed.",
+	                            tr("Model Playback"),
+	                            tr("Choose how animated models behave when first previewed."),
 	                            &model_layout));
-	model_texture_smoothing_ = new QCheckBox("Smooth model textures", scroll);
-	model_animation_playing_ = new QCheckBox("Start model animations playing", scroll);
-	model_animation_loop_ = new QCheckBox("Loop model animations", scroll);
-	model_skeleton_overlay_ = new QCheckBox("Show skeleton overlay", scroll);
+	model_texture_smoothing_ = new QCheckBox(tr("Smooth model textures"), scroll);
+	model_animation_playing_ = new QCheckBox(tr("Start model animations playing"), scroll);
+	model_animation_loop_ = new QCheckBox(tr("Loop model animations"), scroll);
+	model_skeleton_overlay_ = new QCheckBox(tr("Show skeleton overlay"), scroll);
 	model_animation_speed_combo_ = new QComboBox(scroll);
 	model_animation_speed_combo_->addItem("0.25x", 0.25);
 	model_animation_speed_combo_->addItem("0.5x", 0.5);
@@ -423,10 +456,10 @@ QWidget* PreferencesTab::build_previews_tab() {
 	model_layout->addWidget(model_animation_loop_);
 	model_layout->addWidget(model_skeleton_overlay_);
 	auto* model_form = new QFormLayout();
-	model_form->addRow("Animation speed", model_animation_speed_combo_);
+	model_form->addRow(tr("Animation speed"), model_animation_speed_combo_);
 	model_layout->addLayout(model_form);
 
-	auto* reset = new QPushButton("Restore 3D Preview Defaults", scroll);
+	auto* reset = new QPushButton(tr("Restore 3D Preview Defaults"), scroll);
 	model_layout->addWidget(reset, 0, Qt::AlignLeft);
 	layout->addStretch();
 
@@ -442,7 +475,7 @@ QWidget* PreferencesTab::build_previews_tab() {
 	connect(preview_fov_slider_, &QSlider::valueChanged, this, [this](int value) {
 		const int clamped = qBound(40, value, 120);
 		if (preview_fov_value_label_) {
-			preview_fov_value_label_->setText(QString("%1 deg").arg(clamped));
+			preview_fov_value_label_->setText(tr("%1 deg").arg(clamped));
 		}
 		if (loading_) {
 			return;
@@ -545,39 +578,39 @@ QWidget* PreferencesTab::build_images_text_tab() {
 
 	QVBoxLayout* image_layout = nullptr;
 	layout->addWidget(make_group(scroll,
-	                            "Image and Video Preview",
-	                            "Control image scaling, transparency visualization, and media texture filtering.",
+	                            tr("Image and Video Preview"),
+	                            tr("Control image scaling, transparency visualization, and media texture filtering."),
 	                            &image_layout));
-	image_texture_smoothing_ = new QCheckBox("Smooth image, cinematic, and video textures", scroll);
+	image_texture_smoothing_ = new QCheckBox(tr("Smooth image, cinematic, and video textures"), scroll);
 	image_layout->addWidget(image_texture_smoothing_);
 
 	image_background_combo_ = new QComboBox(scroll);
-	image_background_combo_->addItem("Checkerboard", "checkerboard");
-	image_background_combo_->addItem("Solid color", "solid");
-	image_background_combo_->addItem("Transparent", "transparent");
+	image_background_combo_->addItem(tr("Checkerboard"), "checkerboard");
+	image_background_combo_->addItem(tr("Solid color"), "solid");
+	image_background_combo_->addItem(tr("Transparent"), "transparent");
 	image_background_color_button_ = new QPushButton(scroll);
 	image_background_color_button_->setMinimumWidth(130);
 	image_layout_combo_ = new QComboBox(scroll);
-	image_layout_combo_->addItem("Fit to viewport", "fit");
-	image_layout_combo_->addItem("Tile at original size", "tile");
-	image_reveal_transparency_ = new QCheckBox("Reveal fully transparent pixels", scroll);
+	image_layout_combo_->addItem(tr("Fit to viewport"), "fit");
+	image_layout_combo_->addItem(tr("Tile at original size"), "tile");
+	image_reveal_transparency_ = new QCheckBox(tr("Reveal fully transparent pixels"), scroll);
 
 	auto* image_form = new QFormLayout();
-	image_form->addRow("Background", image_background_combo_);
-	image_form->addRow("Background color", image_background_color_button_);
-	image_form->addRow("Layout", image_layout_combo_);
+	image_form->addRow(tr("Background"), image_background_combo_);
+	image_form->addRow(tr("Background color"), image_background_color_button_);
+	image_form->addRow(tr("Layout"), image_layout_combo_);
 	image_layout->addLayout(image_form);
 	image_layout->addWidget(image_reveal_transparency_);
 
 	QVBoxLayout* text_layout = nullptr;
 	layout->addWidget(make_group(scroll,
-	                            "Text Inspection",
-	                            "Set defaults for CFG, shader, menu, JSON, script, and binary-adjacent text previews.",
+	                            tr("Text Inspection"),
+	                            tr("Set defaults for CFG, shader, menu, JSON, script, and binary-adjacent text previews."),
 	                            &text_layout));
-	text_word_wrap_ = new QCheckBox("Wrap long lines in text previews", scroll);
+	text_word_wrap_ = new QCheckBox(tr("Wrap long lines in text previews"), scroll);
 	text_layout->addWidget(text_word_wrap_);
 
-	auto* reset = new QPushButton("Restore Images & Text Defaults", scroll);
+	auto* reset = new QPushButton(tr("Restore Images & Text Defaults"), scroll);
 	text_layout->addWidget(reset, 0, Qt::AlignLeft);
 	layout->addStretch();
 
@@ -634,13 +667,13 @@ QWidget* PreferencesTab::build_updates_tab() {
 
 	QVBoxLayout* updates_layout = nullptr;
 	layout->addWidget(make_group(scroll,
-	                            "Release Checks",
-	                            "PakFu can check GitHub Releases after the main window opens. Manual checks remain available from the Help menu.",
+	                            tr("Release Checks"),
+	                            tr("PakFu can check GitHub Releases after the main window opens. Manual checks remain available from the Help menu."),
 	                            &updates_layout));
-	updates_auto_check_ = new QCheckBox("Check for updates automatically", scroll);
+	updates_auto_check_ = new QCheckBox(tr("Check for updates automatically"), scroll);
 	updates_layout->addWidget(updates_auto_check_);
 
-	auto* reset = new QPushButton("Restore Update Defaults", scroll);
+	auto* reset = new QPushButton(tr("Restore Update Defaults"), scroll);
 	updates_layout->addWidget(reset, 0, Qt::AlignLeft);
 	layout->addStretch();
 
@@ -664,7 +697,7 @@ void PreferencesTab::load_settings() {
 		theme_combo_->setCurrentIndex(index_for_theme(ThemeManager::load_theme()));
 	}
 	if (archive_open_always_ask_) {
-		archive_open_always_ask_->setChecked(s.value(kArchiveOpenAlwaysAskKey, true).toBool());
+		archive_open_always_ask_->setChecked(s.value(kArchiveOpenAlwaysAskKey, false).toBool());
 	}
 	if (archive_open_action_combo_) {
 		set_combo_data(archive_open_action_combo_, s.value(kArchiveOpenDefaultActionKey, "open_direct").toString());
@@ -675,6 +708,9 @@ void PreferencesTab::load_settings() {
 	if (pure_pak_protector_) {
 		pure_pak_protector_->setChecked(s.value(kPurePakProtectorKey, true).toBool());
 	}
+	if (advanced_preferences_) {
+		advanced_preferences_->setChecked(s.value(kPreferencesAdvancedKey, false).toBool());
+	}
 	if (renderer_combo_) {
 		set_combo_data(renderer_combo_, preview_renderer_to_string(load_preview_renderer()));
 	}
@@ -682,7 +718,7 @@ void PreferencesTab::load_settings() {
 		const int fov = qBound(40, s.value(kPreviewFovKey, 100).toInt(), 120);
 		preview_fov_slider_->setValue(fov);
 		if (preview_fov_value_label_) {
-			preview_fov_value_label_->setText(QString("%1 deg").arg(fov));
+			preview_fov_value_label_->setText(tr("%1 deg").arg(fov));
 		}
 	}
 	if (three_d_grid_combo_) {
@@ -736,6 +772,7 @@ void PreferencesTab::load_settings() {
 	}
 
 	update_color_buttons();
+	update_advanced_preference_visibility();
 	loading_ = false;
 }
 
@@ -754,7 +791,7 @@ void PreferencesTab::apply_theme_from_combo() {
 void PreferencesTab::choose_image_background_color() {
 	QSettings s;
 	const QColor initial = setting_color(s, kImageBackgroundColorKey, palette().color(QPalette::Window));
-	const QColor chosen = QColorDialog::getColor(initial, this, "Choose Image Background Color");
+	const QColor chosen = QColorDialog::getColor(initial, this, tr("Choose Image Background Color"));
 	if (!chosen.isValid()) {
 		return;
 	}
@@ -766,7 +803,7 @@ void PreferencesTab::choose_image_background_color() {
 void PreferencesTab::choose_3d_background_color() {
 	QSettings s;
 	const QColor initial = setting_color(s, kPreviewBackgroundColorKey, palette().color(QPalette::Window));
-	const QColor chosen = QColorDialog::getColor(initial, this, "Choose 3D Background Color");
+	const QColor chosen = QColorDialog::getColor(initial, this, tr("Choose 3D Background Color"));
 	if (!chosen.isValid()) {
 		return;
 	}
@@ -794,7 +831,7 @@ void PreferencesTab::reset_appearance_settings() {
 
 void PreferencesTab::reset_archive_settings() {
 	QSettings s;
-	s.setValue(kArchiveOpenAlwaysAskKey, true);
+	s.setValue(kArchiveOpenAlwaysAskKey, false);
 	s.setValue(kArchiveOpenDefaultActionKey, "open_direct");
 	s.remove("archive/openChooserDefaultInstallUid");
 	s.setValue(kRecentFileLimitKey, kDefaultRecentFileLimit);

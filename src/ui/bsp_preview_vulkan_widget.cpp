@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 
+#include <QCoreApplication>
 #include <QDebug>
 #include <QFile>
 #include <QGuiApplication>
@@ -153,13 +154,13 @@ float quantized_grid_step(float target_step) {
 QShader load_shader(const QString& path) {
 	QFile f(path);
 	if (!f.open(QIODevice::ReadOnly)) {
-		qWarning() << "BspPreviewVulkanWidget: unable to open shader" << path;
+		qWarning() << "BspPreviewVulkanWidget: unable to open shader resource";
 		return {};
 	}
 	const QByteArray data = f.readAll();
 	QShader shader = QShader::fromSerialized(data);
 	if (!shader.isValid()) {
-		qWarning() << "BspPreviewVulkanWidget: invalid shader" << path;
+		qWarning() << "BspPreviewVulkanWidget: invalid shader resource";
 	}
 	return shader;
 }
@@ -177,7 +178,7 @@ BspPreviewVulkanWidget::BspPreviewVulkanWidget(QWidget* parent) : QRhiWidget(par
 	fly_timer_.setInterval(16);
 	fly_timer_.setTimerType(Qt::PreciseTimer);
 	connect(&fly_timer_, &QTimer::timeout, this, &BspPreviewVulkanWidget::on_fly_tick);
-	setToolTip(
+	setToolTip(QCoreApplication::translate("BspPreviewVulkanWidget",
 		"3D Controls:\n"
 		"- Orbit: Middle-drag (Alt+Left-drag)\n"
 		"- Pan: Shift+Middle-drag (Alt+Shift+Left-drag)\n"
@@ -186,7 +187,7 @@ BspPreviewVulkanWidget::BspPreviewVulkanWidget(QWidget* parent) : QRhiWidget(par
 		"- Fly: Hold Right Mouse + WASD (Q/E up/down, wheel adjusts speed, Shift faster, Ctrl slower)\n"
 		"- Reference: Player box 32x32x56 (Grid mode)\n"
 		"- Frame: F\n"
-		"- Reset: R / Home");
+		"- Reset: R / Home"));
 }
 
 BspPreviewVulkanWidget::~BspPreviewVulkanWidget() {

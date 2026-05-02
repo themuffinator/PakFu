@@ -22,6 +22,11 @@ bool tracing_enabled() {
 	return enabled;
 }
 
+bool ux_tracing_enabled() {
+	static const bool enabled = env_value_enabled("PAKFU_TRACE_UX") || env_value_enabled("PAKFU_UX_TRACE");
+	return enabled;
+}
+
 QString elapsed_label(qint64 elapsed_ms) {
 	return elapsed_ms <= 0 ? QString("<1 ms") : QString("%1 ms").arg(elapsed_ms);
 }
@@ -46,6 +51,18 @@ void record_timing(const QString& category, const QString& label, qint64 elapsed
 	}
 
 	QString message = QString("PakFu timing: %1.%2 %3").arg(category, label, elapsed_label(elapsed_ms));
+	if (!detail.trimmed().isEmpty()) {
+		message += QString(" - %1").arg(detail.trimmed());
+	}
+	qInfo().noquote() << message;
+}
+
+void record_event(const QString& category, const QString& label, const QString& detail) {
+	if (!ux_tracing_enabled()) {
+		return;
+	}
+
+	QString message = QString("PakFu UX: %1.%2").arg(category, label);
 	if (!detail.trimmed().isEmpty()) {
 		message += QString(" - %1").arg(detail.trimmed());
 	}

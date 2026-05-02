@@ -15,6 +15,15 @@ QString file_ext_lower(const QString& name) {
 bool is_wad_extension(const QString& ext) {
 	return ext == "wad" || ext == "wad2" || ext == "wad3";
 }
+
+QString trace_archive_detail(const QString& path) {
+	const QFileInfo info(path);
+	QString ext = file_ext_lower(path);
+	if (ext.isEmpty()) {
+		ext = "none";
+	}
+	return QString("item=%1;archive_kind=%2").arg(info.isDir() ? "directory" : "file", ext);
+}
 }  // namespace
 
 const QVector<ArchiveEntry>& Archive::entries() const {
@@ -54,7 +63,7 @@ bool Archive::is_doom_wad() const {
 }
 
 bool Archive::load(const QString& path, QString* error) {
-	PakFu::Metrics::ScopedTimer load_timer("archive", "load", QFileInfo(path).fileName());
+	PakFu::Metrics::ScopedTimer load_timer("archive", "load", trace_archive_detail(path));
 	if (error) {
 		error->clear();
 	}

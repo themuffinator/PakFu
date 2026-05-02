@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 
+#include <QCoreApplication>
 #include <QMatrix4x4>
 #include <QGuiApplication>
 #include <QCursor>
@@ -747,7 +748,7 @@ BspPreviewWidget::BspPreviewWidget(QWidget* parent) : QOpenGLWidget(parent) {
   fly_timer_.setInterval(16);
   fly_timer_.setTimerType(Qt::PreciseTimer);
   connect(&fly_timer_, &QTimer::timeout, this, &BspPreviewWidget::on_fly_tick);
-  setToolTip(
+  setToolTip(QCoreApplication::translate("BspPreviewWidget",
     "3D Controls:\n"
     "- Orbit: Middle-drag (Alt+Left-drag)\n"
     "- Pan: Shift+Middle-drag (Alt+Shift+Left-drag)\n"
@@ -756,7 +757,7 @@ BspPreviewWidget::BspPreviewWidget(QWidget* parent) : QOpenGLWidget(parent) {
     "- Fly: Hold Right Mouse + WASD (Q/E up/down, wheel adjusts speed, Shift faster, Ctrl slower)\n"
     "- Reference: Player box 32x32x56 (Grid mode)\n"
     "- Frame: F\n"
-    "- Reset: R / Home");
+    "- Reset: R / Home"));
 }
 
 BspPreviewWidget::~BspPreviewWidget() {

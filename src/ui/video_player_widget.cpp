@@ -89,7 +89,7 @@ bool VideoPlayerWidget::load_file(const QString& file_path, QString* error) {
 
 	if (!player_ || !video_widget_) {
 		if (error) {
-			*error = "Video playback is not available.";
+			*error = tr("Video playback is not available.");
 		}
 		return false;
 	}
@@ -227,25 +227,25 @@ void VideoPlayerWidget::build_ui() {
 	prev_button_->setAutoRaise(true);
 	prev_button_->setCursor(Qt::PointingHandCursor);
 	prev_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaPrevious, style()));
-	prev_button_->setToolTip("Previous video file");
+	prev_button_->setToolTip(tr("Previous video file"));
 
 	play_button_ = new QToolButton(controls_container_);
 	play_button_->setAutoRaise(true);
 	play_button_->setCursor(Qt::PointingHandCursor);
 	play_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaPlay, style()));
-	play_button_->setToolTip("Play/Pause");
+	play_button_->setToolTip(tr("Play/Pause"));
 
 	next_button_ = new QToolButton(controls_container_);
 	next_button_->setAutoRaise(true);
 	next_button_->setCursor(Qt::PointingHandCursor);
 	next_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaNext, style()));
-	next_button_->setToolTip("Next video file");
+	next_button_->setToolTip(tr("Next video file"));
 
 	stop_button_ = new QToolButton(controls_container_);
 	stop_button_->setAutoRaise(true);
 	stop_button_->setCursor(Qt::PointingHandCursor);
 	stop_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaStop, style()));
-	stop_button_->setToolTip("Stop");
+	stop_button_->setToolTip(tr("Stop"));
 
 	const QSize icon_sz(18, 18);
 	prev_button_->setIconSize(icon_sz);
@@ -272,7 +272,7 @@ void VideoPlayerWidget::build_ui() {
 	volume_scroll_->setFixedWidth(14);
 	volume_scroll_->setFixedHeight(56);
 	volume_scroll_->setInvertedAppearance(true);
-	volume_scroll_->setToolTip("Volume");
+	volume_scroll_->setToolTip(tr("Volume"));
 	volume_scroll_->setStyleSheet(
 		"QScrollBar { background: transparent; }"
 		"QScrollBar::add-line, QScrollBar::sub-line { height: 0px; }"
@@ -362,7 +362,7 @@ void VideoPlayerWidget::build_ui() {
 		if (status == QMediaPlayer::InvalidMedia) {
 			stop_prefetch_first_frame();
 			const QString err = player_ ? player_->errorString().trimmed() : QString();
-			set_status_text(err.isEmpty() ? "Unsupported/invalid media." : ("Unsupported/invalid media: " + err));
+			set_status_text(err.isEmpty() ? tr("Unsupported/invalid media.") : tr("Unsupported/invalid media: %1").arg(err));
 		} else if (status == QMediaPlayer::LoadingMedia) {
 			clear_status_override();
 			update_status_auto();
@@ -390,7 +390,7 @@ void VideoPlayerWidget::build_ui() {
 	connect(player_, &QMediaPlayer::errorOccurred, this, [this](QMediaPlayer::Error, const QString& errorString) {
 		stop_prefetch_first_frame();
 		const QString msg = errorString.trimmed();
-		set_status_text(msg.isEmpty() ? "Video error." : ("Video error: " + msg));
+		set_status_text(msg.isEmpty() ? tr("Video error.") : tr("Video error: %1").arg(msg));
 		update_ui_state();
 	});
 }
@@ -472,7 +472,7 @@ void VideoPlayerWidget::update_status_auto() {
 		}
 
 		if (player_->hasAudio()) {
-			parts << "Audio";
+			parts << tr("Audio");
 		}
 	}
 

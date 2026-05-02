@@ -7,6 +7,7 @@
 namespace PakFu::Metrics {
 
 [[nodiscard]] bool tracing_enabled();
+[[nodiscard]] bool ux_tracing_enabled();
 [[nodiscard]] QString elapsed_label(qint64 elapsed_ms);
 
 void add_profile_step(QStringList* steps, const QString& label, qint64 elapsed_ms, bool cache_hit = false);
@@ -16,6 +17,10 @@ void record_timing(const QString& category,
                    const QString& label,
                    qint64 elapsed_ms,
                    const QString& detail = {});
+
+void record_event(const QString& category,
+                  const QString& label,
+                  const QString& detail = {});
 
 class ScopedTimer {
 public:

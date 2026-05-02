@@ -7,7 +7,8 @@ This table maps the current button/action controls to their visual representatio
 | `Tab Close` | Archive tabs | Red tile with white close `X` | `assets/icons/ui/tab-close.svg` |
 | `Create PAK` / `New PAK` | Workspace, File menu | Package box with plus | `assets/icons/ui/new-pak.svg` |
 | `Open File...` | Workspace, File menu | Archive box with download arrow | `assets/icons/ui/open-archive.svg` |
-| `Open Archive...` | Workspace, File menu, updater release-page open | Archive box with download arrow | `assets/icons/ui/open-archive.svg` |
+| `Quick Inspect Archive` / `Open Archive...` | Workspace, File menu, updater release-page open | Archive box with download arrow | `assets/icons/ui/open-archive.svg` |
+| `Quick Open/Search` | Workspace menu, main window search box | List/detail glyph | `assets/icons/ui/view-details.svg` |
 | `Open Folder...` | Workspace, File menu | Folder with down arrow | `assets/icons/ui/open-folder.svg` |
 | `Save` | File menu, unsaved prompt | Floppy disk | `assets/icons/ui/save.svg` |
 | `Save As...` | File menu | Floppy disk with pen mark | `assets/icons/ui/save-as.svg` |

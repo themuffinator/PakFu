@@ -31,6 +31,7 @@ signals:
 
 private:
 	void build_ui();
+	void update_advanced_preference_visibility();
 	QWidget* build_appearance_tab();
 	QWidget* build_archives_tab();
 	QWidget* build_previews_tab();
@@ -50,6 +51,7 @@ private:
 
 	bool loading_ = false;
 	QTabWidget* tabs_ = nullptr;
+	QCheckBox* advanced_preferences_ = nullptr;
 	QComboBox* theme_combo_ = nullptr;
 	QComboBox* renderer_combo_ = nullptr;
 	QLabel* renderer_status_ = nullptr;

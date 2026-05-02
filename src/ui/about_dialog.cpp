@@ -100,7 +100,7 @@ QPixmap AboutDialog::load_logo_pixmap() const {
 
 void AboutDialog::build_ui() {
 	setModal(true);
-	setWindowTitle("About PakFu");
+	setWindowTitle(tr("About PakFu"));
 	setFixedSize(460, 700);
 
 	QString repo = QString::fromUtf8(PAKFU_GITHUB_REPO).trimmed();
@@ -131,10 +131,10 @@ void AboutDialog::build_ui() {
 	actions_layout->setColumnStretch(0, 1);
 	actions_layout->setColumnStretch(1, 1);
 
-	auto* source_button = new QPushButton("Open Source", actions);
-	auto* credits_button = new QPushButton("View Credits", actions);
-	auto* sponsor_button = new QPushButton("Sponsor on GitHub", actions);
-	auto* close_button = new QPushButton("Close", actions);
+	auto* source_button = new QPushButton(tr("Open Source"), actions);
+	auto* credits_button = new QPushButton(tr("View Credits"), actions);
+	auto* sponsor_button = new QPushButton(tr("Sponsor on GitHub"), actions);
+	auto* close_button = new QPushButton(tr("Close"), actions);
 
 	source_button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 	credits_button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -149,13 +149,13 @@ void AboutDialog::build_ui() {
 	actions_layout->addWidget(close_button, 1, 1);
 	root->addWidget(actions);
 
-	auto* legal_group = new QGroupBox("Legal Disclaimer", this);
+	auto* legal_group = new QGroupBox(tr("Legal Disclaimer"), this);
 	auto* legal_layout = new QVBoxLayout(legal_group);
 	legal_layout->setContentsMargins(12, 10, 12, 12);
 	legal_layout->setSpacing(8);
-	auto* disclaimer_text = make_body_label("Use of this software is at your own risk. No warranty is provided.",
+	auto* disclaimer_text = make_body_label(tr("Use of this software is at your own risk. No warranty is provided."),
 	                                        legal_group);
-	auto* license_text = make_body_label("GNU General Public License v3 (GPLv3). See the LICENSE file.", legal_group);
+	auto* license_text = make_body_label(tr("GNU General Public License v3 (GPLv3). See the LICENSE file."), legal_group);
 	legal_layout->addWidget(disclaimer_text);
 	legal_layout->addWidget(license_text);
 	root->addWidget(legal_group, 0);

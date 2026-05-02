@@ -6,7 +6,9 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QClipboard>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QCheckBox>
 #include <QCloseEvent>
@@ -24,6 +26,7 @@
 #include <QHash>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLineEdit>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -38,6 +41,8 @@
 #include <QResizeEvent>
 #include <QSet>
 #include <QSettings>
+#include <QSizePolicy>
+#include <QStatusBar>
 #include <QTabWidget>
 #include <QTabBar>
 #include <QTimer>
@@ -50,6 +55,7 @@
 
 #include "game/game_auto_detect.h"
 #include "game/game_set.h"
+#include "foundation/performance_metrics.h"
 #include "pakfu_config.h"
 #include "ui/preview_renderer.h"
 #include "ui/about_dialog.h"
@@ -88,11 +94,15 @@ protected:
     font.setPointSize(24);
     font.setBold(true);
     painter.setFont(font);
-    painter.drawText(rect(), Qt::AlignCenter, message_.isEmpty() ? "Drop to open" : message_);
+    painter.drawText(rect(),
+                     Qt::AlignCenter,
+                     message_.isEmpty()
+                       ? QCoreApplication::translate("DropOverlay", "Drop to open")
+                       : message_);
   }
 
 private:
-  QString message_ = "Drop to open files and archives";
+  QString message_ = QCoreApplication::translate("DropOverlay", "Drop to open files and archives");
 };
 
 namespace {
@@ -107,6 +117,10 @@ constexpr char kArchiveOpenAlwaysAskKey[] = "archive/openChooserAlwaysAsk";
 constexpr char kArchiveOpenDefaultActionKey[] = "archive/openChooserDefaultAction";
 constexpr char kArchiveOpenDefaultInstallUidKey[] = "archive/openChooserDefaultInstallUid";
 constexpr char kRecentFilesLimitKey[] = "ui/recentFilesLimit";
+
+QString mw_tr(const char* text) {
+  return QCoreApplication::translate("MainWindow", text);
+}
 
 int max_recent_files_from_settings() {
   QSettings settings;
@@ -126,6 +140,67 @@ bool is_supported_archive_extension(const QString& path) {
          lower.endsWith(".zip") || lower.endsWith(".resources") || lower.endsWith(".sin") ||
          lower.endsWith(".wad") ||
          lower.endsWith(".wad2") || lower.endsWith(".wad3");
+}
+
+QString trace_length_bucket(const QString& value) {
+  const int length = value.trimmed().size();
+  if (length == 0) {
+    return "empty";
+  }
+  if (length <= 2) {
+    return "1-2";
+  }
+  if (length <= 7) {
+    return "3-7";
+  }
+  if (length <= 15) {
+    return "8-15";
+  }
+  if (length <= 31) {
+    return "16-31";
+  }
+  return "32+";
+}
+
+QString trace_query_detail(const QString& query) {
+  return QString("query_length=%1").arg(trace_length_bucket(query));
+}
+
+QString trace_path_detail(const QString& path) {
+  if (path.trimmed().isEmpty()) {
+    return "item=empty;ext=none;archive_kind=none";
+  }
+
+  const QFileInfo info(QDir::fromNativeSeparators(path));
+  QString item_kind = "missing";
+  if (info.exists()) {
+    if (info.isDir()) {
+      item_kind = "directory";
+    } else if (info.isFile()) {
+      item_kind = "file";
+    } else {
+      item_kind = "other";
+    }
+  }
+
+  QString suffix = info.suffix().trimmed().toLower();
+  if (suffix.isEmpty()) {
+    suffix = "none";
+  } else if (suffix.size() > 16) {
+    suffix = "long";
+  }
+
+  const QString archive_kind = is_supported_archive_extension(path) ? suffix : "other";
+  return QString("item=%1;ext=%2;archive_kind=%3").arg(item_kind, suffix, archive_kind);
+}
+
+QString trace_error_detail(const QString& error) {
+  return QString("error=%1;length=%2")
+    .arg(error.trimmed().isEmpty() ? "empty" : "present", trace_length_bucket(error));
+}
+
+QString trace_status_detail(const QString& message) {
+  return QString("message_length=%1").arg(trace_length_bucket(message));
 }
 
 QString archive_open_intent_key(ArchiveOpenIntent intent) {
@@ -351,27 +426,27 @@ QString drop_overlay_message(const OpenableDropPaths& drop) {
   const bool has_folders = drop.folder_count > 0;
   const bool has_files = drop.file_count > 0;
   if (has_archives && has_folders && has_files) {
-    return "Drop to open files, archives, and folders";
+    return mw_tr("Drop to open files, archives, and folders");
   }
   if (has_archives && has_folders) {
-    return "Drop to open archives and folders";
+    return mw_tr("Drop to open archives and folders");
   }
   if (has_archives && has_files) {
-    return "Drop to open files and archives";
+    return mw_tr("Drop to open files and archives");
   }
   if (has_folders && has_files) {
-    return "Drop to open files and folders";
+    return mw_tr("Drop to open files and folders");
   }
   if (has_archives) {
-    return (drop.archive_count > 1) ? "Drop to open archives" : "Drop to open archive";
+    return (drop.archive_count > 1) ? mw_tr("Drop to open archives") : mw_tr("Drop to open archive");
   }
   if (has_files) {
-    return (drop.file_count > 1) ? "Drop to open files" : "Drop to open file";
+    return (drop.file_count > 1) ? mw_tr("Drop to open files") : mw_tr("Drop to open file");
   }
   if (has_folders) {
-    return (drop.folder_count > 1) ? "Drop to open folders" : "Drop to open folder";
+    return (drop.folder_count > 1) ? mw_tr("Drop to open folders") : mw_tr("Drop to open folder");
   }
-  return "Drop to open";
+  return mw_tr("Drop to open");
 }
 
 QString normalize_recent_path(const QString& path) {
@@ -716,18 +791,18 @@ QString workspace_key_for_install_uid(const QString& uid) {
 QString archive_format_display_name(Archive::Format format) {
   switch (format) {
     case Archive::Format::Directory:
-      return "Folder";
+      return mw_tr("Folder");
     case Archive::Format::Pak:
       return "PAK/SIN";
     case Archive::Format::Wad:
       return "WAD";
     case Archive::Format::Resources:
-      return "Resources";
+      return mw_tr("Resources");
     case Archive::Format::Zip:
       return "ZIP";
     case Archive::Format::Unknown:
     default:
-      return "Unknown";
+      return mw_tr("Unknown");
   }
 }
 
@@ -744,39 +819,39 @@ QVector<WorkspaceTab::Capability> build_workspace_capabilities(int extension_cou
                                                                const QStringList& extension_warnings) {
   QVector<WorkspaceTab::Capability> out;
   out.push_back(workspace_capability(
-    "Archive backends",
-    "Ready",
-    "Folders, PAK/SIN, ZIP/PK3/PK4/PKZ, WAD2/WAD3/Doom WAD, Doom 3 BFG resources"));
+    mw_tr("Archive backends"),
+    mw_tr("Ready"),
+    mw_tr("Folders, PAK/SIN, ZIP/PK3/PK4/PKZ, WAD2/WAD3/Doom WAD, Doom 3 BFG resources")));
   out.push_back(workspace_capability(
-    "Images",
-    "Ready",
-    "PCX, WAL, SWL, M8, M32, MIP, LMP, DDS, FTX, PNG, BMP, GIF, TGA, JPEG, TIFF"));
+    mw_tr("Images"),
+    mw_tr("Ready"),
+    mw_tr("PCX, WAL, SWL, M8, M32, MIP, LMP, DDS, FTX, PNG, BMP, GIF, TGA, JPEG, TIFF")));
   out.push_back(workspace_capability(
-    "Audio",
-    "Ready",
-    "WAV, OGG, MP3, idWAV through native and Qt multimedia preview paths"));
+    mw_tr("Audio"),
+    mw_tr("Ready"),
+    mw_tr("WAV, OGG, MP3, idWAV through native and Qt multimedia preview paths")));
   out.push_back(workspace_capability(
-    "Video",
-    "Ready",
-    "CIN, ROQ, BIK, OGV, MP4, MKV, AVI, WebM where Qt multimedia codecs are available"));
+    mw_tr("Video"),
+    mw_tr("Ready"),
+    mw_tr("CIN, ROQ, BIK, OGV, MP4, MKV, AVI, WebM where Qt multimedia codecs are available")));
   out.push_back(workspace_capability(
-    "3D previews",
-    "Ready",
-    QString("BSP and model inspection. Preferred renderer: %1. Vulkan backend: %2.")
+    mw_tr("3D previews"),
+    mw_tr("Ready"),
+    mw_tr("BSP and model inspection. Preferred renderer: %1. Vulkan backend: %2.")
       .arg(preview_renderer_display_name(resolve_preview_renderer(load_preview_renderer())),
-           is_vulkan_renderer_available() ? QStringLiteral("available") : QStringLiteral("not available"))));
+           is_vulkan_renderer_available() ? mw_tr("available") : mw_tr("not available"))));
   out.push_back(workspace_capability(
-    "Extension commands",
-    extension_count > 0 ? "Ready" : "Idle",
+    mw_tr("Extension commands"),
+    extension_count > 0 ? mw_tr("Ready") : mw_tr("Idle"),
     extension_count > 0
-      ? QString("%1 command(s) loaded%2")
+      ? mw_tr("%1 command(s) loaded%2")
           .arg(extension_count)
           .arg(extension_warnings.isEmpty()
                  ? QString()
-                 : QString("; %1 manifest warning(s)").arg(extension_warnings.size()))
+                 : mw_tr("; %1 manifest warning(s)").arg(extension_warnings.size()))
       : (extension_warnings.isEmpty()
-           ? QStringLiteral("No commands discovered in configured extension folders")
-           : QString("%1 manifest warning(s)").arg(extension_warnings.size())),
+           ? mw_tr("No commands discovered in configured extension folders")
+           : mw_tr("%1 manifest warning(s)").arg(extension_warnings.size())),
     extension_warnings.isEmpty()));
   return out;
 }
@@ -785,17 +860,17 @@ QStringList extension_capability_notes(const ExtensionCommand& command) {
   QStringList notes;
   for (const QString& cap : command.capabilities) {
     if (cap == "archive.read") {
-      notes.push_back("archive.read: receives archive metadata and filesystem paths.");
+      notes.push_back(mw_tr("archive.read: receives archive metadata and filesystem paths."));
     } else if (cap == "entries.read") {
-      notes.push_back("entries.read: receives selected entries as temporary local files.");
+      notes.push_back(mw_tr("entries.read: receives selected entries as temporary local files."));
     } else if (cap == "entries.import") {
-      notes.push_back("entries.import: may ask PakFu to import generated files after host validation.");
+      notes.push_back(mw_tr("entries.import: may ask PakFu to import generated files after host validation."));
     } else {
-      notes.push_back(cap + ": extension-declared capability.");
+      notes.push_back(mw_tr("%1: extension-declared capability.").arg(cap));
     }
   }
   if (notes.isEmpty()) {
-    notes.push_back("No explicit capabilities requested.");
+    notes.push_back(mw_tr("No explicit capabilities requested."));
   }
   return notes;
 }
@@ -803,31 +878,32 @@ QStringList extension_capability_notes(const ExtensionCommand& command) {
 bool confirm_extension_run(QWidget* parent, const ExtensionCommand& command) {
   QMessageBox box(parent);
   box.setIcon(QMessageBox::Question);
-  box.setWindowTitle("Run Extension");
-  box.setText(QString("Run %1?").arg(extension_command_display_name(command)));
-  box.setInformativeText("PakFu will launch the extension as an external process with the capabilities shown below.");
+  box.setWindowTitle(mw_tr("Run Extension"));
+  box.setText(mw_tr("Run %1?").arg(extension_command_display_name(command)));
+  box.setInformativeText(
+    mw_tr("PakFu will launch the extension as an external process with the capabilities shown below."));
 
   QStringList details;
-  details.push_back(QString("Ref: %1").arg(extension_command_ref(command)));
-  details.push_back(QString("Manifest: %1").arg(command.manifest_path));
-  details.push_back(QString("Working directory: %1").arg(command.working_directory));
+  details.push_back(mw_tr("Ref: %1").arg(extension_command_ref(command)));
+  details.push_back(mw_tr("Manifest: %1").arg(command.manifest_path));
+  details.push_back(mw_tr("Working directory: %1").arg(command.working_directory));
   if (!command.argv.isEmpty()) {
-    details.push_back(QString("Command: %1").arg(command.argv.join(' ')));
+    details.push_back(mw_tr("Command: %1").arg(command.argv.join(' ')));
   }
-  details.push_back(QString("Entries: %1, multiple: %2")
-                      .arg(command.requires_entries ? "required" : "optional",
-                           command.allow_multiple ? "yes" : "no"));
+  details.push_back(mw_tr("Entries: %1, multiple: %2")
+                      .arg(command.requires_entries ? mw_tr("required") : mw_tr("optional"),
+                           command.allow_multiple ? mw_tr("yes") : mw_tr("no")));
   if (!command.allowed_extensions.isEmpty()) {
-    details.push_back(QString("Allowed extensions: %1").arg(command.allowed_extensions.join(", ")));
+    details.push_back(mw_tr("Allowed extensions: %1").arg(command.allowed_extensions.join(", ")));
   }
-  details.push_back("Capabilities:");
+  details.push_back(mw_tr("Capabilities:"));
   for (const QString& note : extension_capability_notes(command)) {
     details.push_back("  " + note);
   }
   box.setDetailedText(details.join("\n"));
 
-  QPushButton* run_button = box.addButton("Run", QMessageBox::AcceptRole);
-  box.addButton("Cancel", QMessageBox::RejectRole);
+  QPushButton* run_button = box.addButton(mw_tr("Run"), QMessageBox::AcceptRole);
+  box.addButton(mw_tr("Cancel"), QMessageBox::RejectRole);
   box.setDefaultButton(run_button);
   box.exec();
   return box.clickedButton() == run_button;
@@ -840,8 +916,9 @@ QToolButton* make_tab_close_button(QWidget* parent, const std::function<void()>&
   btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
   btn->setAutoRaise(true);
   btn->setCursor(Qt::PointingHandCursor);
-  btn->setToolTip("Close");
-  btn->setFixedSize(18, 18);
+  btn->setToolTip(mw_tr("Close"));
+  btn->setAccessibleName(mw_tr("Close tab"));
+  btn->setFixedSize(28, 28);
   QObject::connect(btn, &QToolButton::clicked, parent, on_clicked);
   return btn;
 }
@@ -879,14 +956,14 @@ ArchiveOpenChoiceResult prompt_archive_open_choice(QWidget* parent,
   }
 
   QDialog dialog(parent);
-  dialog.setWindowTitle("Open Archive");
+  dialog.setWindowTitle(mw_tr("Open Archive"));
   dialog.setMinimumWidth(700);
 
   auto* layout = new QVBoxLayout(&dialog);
   layout->setContentsMargins(18, 16, 18, 16);
   layout->setSpacing(10);
 
-  auto* title = new QLabel("Choose how to open this archive:", &dialog);
+  auto* title = new QLabel(mw_tr("Choose how to open this archive:"), &dialog);
   QFont title_font = title->font();
   title_font.setBold(true);
   title->setFont(title_font);
@@ -897,9 +974,9 @@ ArchiveOpenChoiceResult prompt_archive_open_choice(QWidget* parent,
   path_label->setWordWrap(true);
   layout->addWidget(path_label);
 
-  auto* direct_radio = new QRadioButton("Open directly (read from current location)", &dialog);
-  auto* copy_radio = new QRadioButton("Install a copy to an installation, then open", &dialog);
-  auto* move_radio = new QRadioButton("Move to an installation, then open", &dialog);
+  auto* direct_radio = new QRadioButton(mw_tr("Quick Inspect in place (read from current location)"), &dialog);
+  auto* copy_radio = new QRadioButton(mw_tr("Install a copy to an installation, then open"), &dialog);
+  auto* move_radio = new QRadioButton(mw_tr("Move to an installation, then open"), &dialog);
   layout->addWidget(direct_radio);
   layout->addWidget(copy_radio);
   layout->addWidget(move_radio);
@@ -908,7 +985,7 @@ ArchiveOpenChoiceResult prompt_archive_open_choice(QWidget* parent,
   auto* install_layout = new QHBoxLayout(install_row);
   install_layout->setContentsMargins(22, 0, 0, 0);
   install_layout->setSpacing(8);
-  auto* install_label = new QLabel("Target installation", install_row);
+  auto* install_label = new QLabel(mw_tr("Target installation"), install_row);
   auto* install_combo = new QComboBox(install_row);
   install_combo->setMinimumWidth(420);
   install_layout->addWidget(install_label);
@@ -950,13 +1027,13 @@ ArchiveOpenChoiceResult prompt_archive_open_choice(QWidget* parent,
       break;
   }
 
-  auto* ask_checkbox = new QCheckBox("Always ask before opening archives", &dialog);
+  auto* ask_checkbox = new QCheckBox(mw_tr("Always ask before choosing install or copy actions"), &dialog);
   ask_checkbox->setChecked(always_ask_default);
   layout->addWidget(ask_checkbox);
 
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
   if (QPushButton* ok_button = buttons->button(QDialogButtonBox::Ok)) {
-    ok_button->setText("Continue");
+    ok_button->setText(mw_tr("Continue"));
     ok_button->setIcon(UiIcons::icon(UiIcons::Id::OpenArchive, ok_button->style()));
   }
   if (QPushButton* cancel_button = buttons->button(QDialogButtonBox::Cancel)) {
@@ -969,9 +1046,10 @@ ArchiveOpenChoiceResult prompt_archive_open_choice(QWidget* parent,
     copy_radio->setEnabled(false);
     move_radio->setEnabled(false);
     direct_radio->setChecked(true);
-    auto* note = new QLabel("No installation targets are configured. Open directly is currently the only option.", &dialog);
+    auto* note =
+      new QLabel(mw_tr("No installation targets are configured. Open directly is currently the only option."), &dialog);
     note->setWordWrap(true);
-    note->setStyleSheet("color: rgba(200, 200, 200, 220);");
+    note->setStyleSheet(QStringLiteral("color: palette(mid);"));
     layout->insertWidget(layout->count() - 2, note);
   }
 
@@ -987,7 +1065,9 @@ ArchiveOpenChoiceResult prompt_archive_open_choice(QWidget* parent,
 
   QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&]() {
     if ((copy_radio->isChecked() || move_radio->isChecked()) && install_combo->currentIndex() < 0) {
-      QMessageBox::warning(&dialog, "Open Archive", "Choose a target installation or select Open directly.");
+      QMessageBox::warning(&dialog,
+                            mw_tr("Open Archive"),
+                            mw_tr("Choose a target installation or select Open directly."));
       return;
     }
     dialog.accept();
@@ -1023,6 +1103,7 @@ MainWindow::MainWindow(const GameSet& game_set, const QString& initial_pak_path,
   load_game_sets();
   rebuild_game_combo();
   setup_menus();
+  statusBar()->setAccessibleName(tr("PakFu status messages"));
 
   drop_overlay_ = new DropOverlay(this);
 
@@ -1222,13 +1303,23 @@ void MainWindow::setup_central() {
   game_layout->setContentsMargins(12, 8, 12, 8);
   game_layout->setSpacing(10);
 
-  auto* game_label = new QLabel("Installation", game_row);
+  auto* game_label = new QLabel(tr("Installation"), game_row);
   game_combo_ = new QComboBox(game_row);
   game_combo_->setMinimumWidth(280);
-  game_combo_->setToolTip("Select the active installation");
+  game_combo_->setToolTip(tr("Select the active installation"));
+  game_label->setBuddy(game_combo_);
+
+  quick_search_edit_ = new QLineEdit(game_row);
+  quick_search_edit_->setAccessibleName(tr("Quick open or workspace search"));
+  quick_search_edit_->setPlaceholderText(tr("Quick open or search (Ctrl+K)"));
+  quick_search_edit_->setClearButtonEnabled(true);
+  quick_search_edit_->setMinimumWidth(240);
+  quick_search_edit_->setMaximumWidth(460);
+  quick_search_edit_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
   game_layout->addWidget(game_label, 0);
   game_layout->addWidget(game_combo_, 0);
+  game_layout->addWidget(quick_search_edit_, 1);
   game_layout->addStretch(1);
 
   layout->addWidget(game_row, 0);
@@ -1258,7 +1349,7 @@ void MainWindow::setup_central() {
   };
   workspace_callbacks.search = [this](const QString& query) { run_workspace_search(query); };
   workspace_tab_ = new WorkspaceTab(std::move(workspace_callbacks), tabs_);
-  tabs_->addTab(workspace_tab_, "Workspace");
+  tabs_->addTab(workspace_tab_, tr("Workspace"));
   if (auto* bar = tabs_->tabBar()) {
     bar->setAcceptDrops(true);
     bar->installEventFilter(this);
@@ -1287,75 +1378,78 @@ void MainWindow::setup_central() {
       apply_game_set(uid, true);
     });
   }
+  if (quick_search_edit_) {
+    connect(quick_search_edit_, &QLineEdit::returnPressed, this, &MainWindow::run_quick_search);
+  }
 }
 
 void MainWindow::setup_menus() {
-  auto* file_menu = menuBar()->addMenu("File");
+  auto* file_menu = menuBar()->addMenu(tr("File"));
 
-  new_action_ = file_menu->addAction("New PAK");
+  new_action_ = file_menu->addAction(tr("New PAK"));
   new_action_->setIcon(UiIcons::icon(UiIcons::Id::NewPak, style()));
   new_action_->setShortcut(QKeySequence::New);
   connect(new_action_, &QAction::triggered, this, &MainWindow::create_new_pak);
 
-  open_file_action_ = file_menu->addAction("Open File...");
+  open_file_action_ = file_menu->addAction(tr("Open File..."));
   open_file_action_->setIcon(UiIcons::icon(UiIcons::Id::OpenArchive, style()));
   open_file_action_->setShortcut(QKeySequence::Open);
   connect(open_file_action_, &QAction::triggered, this, &MainWindow::open_file_dialog);
 
-  open_archive_action_ = file_menu->addAction("Open Archive...");
+  open_archive_action_ = file_menu->addAction(tr("Open Archive..."));
   open_archive_action_->setIcon(UiIcons::icon(UiIcons::Id::OpenArchive, style()));
   open_archive_action_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
   connect(open_archive_action_, &QAction::triggered, this, &MainWindow::open_pak_dialog);
 
-  open_folder_action_ = file_menu->addAction("Open Folder...");
+  open_folder_action_ = file_menu->addAction(tr("Open Folder..."));
   open_folder_action_->setIcon(UiIcons::icon(UiIcons::Id::OpenFolder, style()));
   open_folder_action_->setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_O));
   connect(open_folder_action_, &QAction::triggered, this, &MainWindow::open_folder_dialog);
 
-  file_associations_action_ = file_menu->addAction("File Associations...");
+  file_associations_action_ = file_menu->addAction(tr("File Associations..."));
   file_associations_action_->setIcon(UiIcons::icon(UiIcons::Id::Associate, style()));
   connect(file_associations_action_, &QAction::triggered, this, &MainWindow::open_file_associations_dialog);
 
   file_menu->addSeparator();
 
-  recent_files_menu_ = file_menu->addMenu("Recent Files");
+  recent_files_menu_ = file_menu->addMenu(tr("Recent Files"));
   connect(recent_files_menu_, &QMenu::aboutToShow, this, &MainWindow::rebuild_recent_files_menu);
   rebuild_recent_files_menu();
 
-  save_action_ = file_menu->addAction("Save Archive");
+  save_action_ = file_menu->addAction(tr("Save Archive"));
   save_action_->setIcon(UiIcons::icon(UiIcons::Id::Save, style()));
   save_action_->setShortcut(QKeySequence::Save);
   connect(save_action_, &QAction::triggered, this, &MainWindow::save_current);
 
-  save_as_action_ = file_menu->addAction("Save Archive As...");
+  save_as_action_ = file_menu->addAction(tr("Save Archive As..."));
   save_as_action_->setIcon(UiIcons::icon(UiIcons::Id::SaveAs, style()));
   save_as_action_->setShortcut(QKeySequence::SaveAs);
   connect(save_as_action_, &QAction::triggered, this, &MainWindow::save_current_as);
 
   file_menu->addSeparator();
 
-  extract_selected_action_ = file_menu->addAction("Extract Selected...");
+  extract_selected_action_ = file_menu->addAction(tr("Extract Selected..."));
   extract_selected_action_->setIcon(UiIcons::icon(UiIcons::Id::OpenFolder, style()));
   connect(extract_selected_action_, &QAction::triggered, this, &MainWindow::extract_current_selection);
 
-  extract_all_action_ = file_menu->addAction("Extract All...");
+  extract_all_action_ = file_menu->addAction(tr("Extract All..."));
   extract_all_action_->setIcon(UiIcons::icon(UiIcons::Id::OpenFolder, style()));
   connect(extract_all_action_, &QAction::triggered, this, &MainWindow::extract_current_archive);
 
-  convert_selected_action_ = file_menu->addAction("Convert Selected Assets...");
+  convert_selected_action_ = file_menu->addAction(tr("Convert Selected Assets..."));
   convert_selected_action_->setIcon(UiIcons::icon(UiIcons::Id::Configure, style()));
   connect(convert_selected_action_, &QAction::triggered, this, &MainWindow::convert_current_selection);
 
   file_menu->addSeparator();
 
-  exit_action_ = file_menu->addAction("Exit");
+  exit_action_ = file_menu->addAction(tr("Exit"));
   exit_action_->setIcon(UiIcons::icon(UiIcons::Id::ExitApp, style()));
   exit_action_->setShortcut(QKeySequence::Quit);
   connect(exit_action_, &QAction::triggered, this, &MainWindow::close);
 
-  auto* edit_menu = menuBar()->addMenu("Edit");
+  auto* edit_menu = menuBar()->addMenu(tr("Edit"));
 
-  undo_action_ = edit_menu->addAction("Undo");
+  undo_action_ = edit_menu->addAction(tr("Undo"));
   undo_action_->setIcon(UiIcons::icon(UiIcons::Id::Undo, style()));
   undo_action_->setShortcut(QKeySequence::Undo);
   connect(undo_action_, &QAction::triggered, this, [this]() {
@@ -1364,7 +1458,7 @@ void MainWindow::setup_menus() {
     }
   });
 
-  redo_action_ = edit_menu->addAction("Redo");
+  redo_action_ = edit_menu->addAction(tr("Redo"));
   redo_action_->setIcon(UiIcons::icon(UiIcons::Id::Redo, style()));
   redo_action_->setShortcut(QKeySequence::Redo);
   connect(redo_action_, &QAction::triggered, this, [this]() {
@@ -1375,7 +1469,7 @@ void MainWindow::setup_menus() {
 
   edit_menu->addSeparator();
 
-  cut_action_ = edit_menu->addAction("Cut");
+  cut_action_ = edit_menu->addAction(tr("Cut"));
   cut_action_->setIcon(UiIcons::icon(UiIcons::Id::Cut, style()));
   cut_action_->setShortcut(QKeySequence::Cut);
   connect(cut_action_, &QAction::triggered, this, [this]() {
@@ -1384,7 +1478,7 @@ void MainWindow::setup_menus() {
     }
   });
 
-  copy_action_ = edit_menu->addAction("Copy");
+  copy_action_ = edit_menu->addAction(tr("Copy"));
   copy_action_->setIcon(UiIcons::icon(UiIcons::Id::Copy, style()));
   copy_action_->setShortcut(QKeySequence::Copy);
   connect(copy_action_, &QAction::triggered, this, [this]() {
@@ -1393,7 +1487,7 @@ void MainWindow::setup_menus() {
     }
   });
 
-  paste_action_ = edit_menu->addAction("Paste");
+  paste_action_ = edit_menu->addAction(tr("Paste"));
   paste_action_->setIcon(UiIcons::icon(UiIcons::Id::Paste, style()));
   paste_action_->setShortcut(QKeySequence::Paste);
   connect(paste_action_, &QAction::triggered, this, [this]() {
@@ -1402,7 +1496,7 @@ void MainWindow::setup_menus() {
     }
   });
 
-  rename_action_ = edit_menu->addAction("Rename");
+  rename_action_ = edit_menu->addAction(tr("Rename"));
   rename_action_->setIcon(UiIcons::icon(UiIcons::Id::Rename, style()));
   rename_action_->setShortcut(QKeySequence(Qt::Key_F2));
   connect(rename_action_, &QAction::triggered, this, [this]() {
@@ -1412,36 +1506,49 @@ void MainWindow::setup_menus() {
   });
 
   edit_menu->addSeparator();
-  preferences_action_ = edit_menu->addAction("Preferences...");
+  preferences_action_ = edit_menu->addAction(tr("Preferences..."));
   preferences_action_->setIcon(UiIcons::icon(UiIcons::Id::Preferences, style()));
   preferences_action_->setShortcut(QKeySequence::Preferences);
   connect(preferences_action_, &QAction::triggered, this, &MainWindow::open_preferences);
 
-  auto* workspace_menu = menuBar()->addMenu("Workspace");
-  workspace_action_ = workspace_menu->addAction("Workspace Overview");
+  auto* workspace_menu = menuBar()->addMenu(tr("Workspace"));
+  quick_search_action_ = workspace_menu->addAction(tr("Quick Open/Search"));
+  quick_search_action_->setIcon(UiIcons::icon(UiIcons::Id::Details, style()));
+  quick_search_action_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_K));
+  connect(quick_search_action_, &QAction::triggered, this, [this]() {
+    if (!quick_search_edit_) {
+      return;
+    }
+    quick_search_edit_->setFocus(Qt::ShortcutFocusReason);
+    quick_search_edit_->selectAll();
+  });
+
+  workspace_menu->addSeparator();
+
+  workspace_action_ = workspace_menu->addAction(tr("Workspace Overview"));
   workspace_action_->setIcon(UiIcons::icon(UiIcons::Id::Details, style()));
   workspace_action_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_1));
   connect(workspace_action_, &QAction::triggered, this, &MainWindow::focus_workspace_tab);
 
-  auto* refresh_workspace = workspace_menu->addAction("Refresh Workspace");
+  auto* refresh_workspace = workspace_menu->addAction(tr("Refresh Workspace"));
   refresh_workspace->setIcon(UiIcons::icon(UiIcons::Id::AutoDetect, style()));
   refresh_workspace->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
   connect(refresh_workspace, &QAction::triggered, this, &MainWindow::update_workspace_tab);
 
-  auto* manage_installations = workspace_menu->addAction("Manage Installations...");
+  auto* manage_installations = workspace_menu->addAction(tr("Manage Installations..."));
   manage_installations->setIcon(UiIcons::icon(UiIcons::Id::Configure, style()));
   connect(manage_installations, &QAction::triggered, this, &MainWindow::open_game_set_manager);
 
-  extensions_menu_ = menuBar()->addMenu("Extensions");
+  extensions_menu_ = menuBar()->addMenu(tr("Extensions"));
   connect(extensions_menu_, &QMenu::aboutToShow, this, &MainWindow::rebuild_extensions_menu);
   rebuild_extensions_menu();
 
-  auto* help_menu = menuBar()->addMenu("Help");
-  auto* check_updates = help_menu->addAction("Check for Updates...");
+  auto* help_menu = menuBar()->addMenu(tr("Help"));
+  auto* check_updates = help_menu->addAction(tr("Check for Updates..."));
   check_updates->setIcon(UiIcons::icon(UiIcons::Id::CheckUpdates, style()));
   connect(check_updates, &QAction::triggered, this, &MainWindow::check_for_updates);
 
-  auto* about = help_menu->addAction("About");
+  auto* about = help_menu->addAction(tr("About"));
   about->setIcon(UiIcons::icon(UiIcons::Id::About, style()));
   connect(about, &QAction::triggered, this, [this]() {
     AboutDialog dialog(this);
@@ -1478,7 +1585,7 @@ void MainWindow::check_for_updates() {
 }
 
 void MainWindow::create_new_pak() {
-  const QString title = QString("Untitled %1").arg(untitled_counter_++);
+  const QString title = tr("Untitled %1").arg(untitled_counter_++);
   auto* tab = new PakTab(PakTab::Mode::NewPak, QString(), this);
   tab->set_default_directory(default_directory_for_dialogs());
   tab->set_game_id(game_set_.game);
@@ -1490,12 +1597,12 @@ void MainWindow::create_new_pak() {
 
 void MainWindow::open_file_dialog() {
   QFileDialog dialog(this);
-  dialog.setWindowTitle("Open File");
+  dialog.setWindowTitle(tr("Open File"));
   dialog.setFileMode(QFileDialog::ExistingFile);
   dialog.setNameFilters({
-    "Supported files (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3 *.pcx *.wal *.swl *.m8 *.m32 *.mip *.lmp *.dds *.ftx *.png *.bmp *.gif *.tga *.jpg *.jpeg *.tif *.tiff *.wav *.ogg *.mp3 *.idwav *.bik *.cin *.roq *.ogv *.mp4 *.mkv *.avi *.webm *.bsp *.map *.proc *.mdl *.md2 *.fm *.md3 *.mdc *.md4 *.mdr *.skb *.skd *.mdm *.glm *.iqm *.md5mesh *.tan *.lwo *.obj *.spr *.sp2 *.spr2 *.bk *.os *.cfg *.txt *.json *.shader *.ttf *.otf)",
-    "Archives (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3)",
-    "All files (*.*)",
+    tr("Supported files (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3 *.pcx *.wal *.swl *.m8 *.m32 *.mip *.lmp *.dds *.ftx *.png *.bmp *.gif *.tga *.jpg *.jpeg *.tif *.tiff *.wav *.ogg *.mp3 *.idwav *.bik *.cin *.roq *.ogv *.mp4 *.mkv *.avi *.webm *.bsp *.map *.proc *.mdl *.md2 *.fm *.md3 *.mdc *.md4 *.mdr *.skb *.skd *.mdm *.glm *.iqm *.md5mesh *.tan *.lwo *.obj *.spr *.sp2 *.spr2 *.bk *.os *.cfg *.txt *.json *.shader *.ttf *.otf)"),
+    tr("Archives (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3)"),
+    tr("All files (*.*)"),
   });
   FileDialogUtils::Options options;
   options.settings_key = "main/open_file";
@@ -1510,16 +1617,16 @@ void MainWindow::open_file_dialog() {
 
 void MainWindow::open_pak_dialog() {
   QFileDialog dialog(this);
-  dialog.setWindowTitle("Open Archive");
+  dialog.setWindowTitle(tr("Open Archive"));
   dialog.setFileMode(QFileDialog::ExistingFile);
   dialog.setNameFilters({
-    "Archives (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3)",
-    "Quake PAK (*.pak)",
-    "SiN Archive (*.sin)",
-    "WAD (Quake WAD2/WAD3 + classic Doom IWAD/PWAD) (*.wad *.wad2 *.wad3)",
-    "Doom 3 BFG Resources (*.resources)",
-    "ZIP-based (PK3/PK4/PKZ/ZIP) (*.pk3 *.pk4 *.pkz *.zip)",
-    "All files (*.*)",
+    tr("Archives (*.pak *.sin *.pk3 *.pk4 *.pkz *.zip *.resources *.wad *.wad2 *.wad3)"),
+    tr("Quake PAK (*.pak)"),
+    tr("SiN Archive (*.sin)"),
+    tr("WAD (Quake WAD2/WAD3 + classic Doom IWAD/PWAD) (*.wad *.wad2 *.wad3)"),
+    tr("Doom 3 BFG Resources (*.resources)"),
+    tr("ZIP-based (PK3/PK4/PKZ/ZIP) (*.pk3 *.pk4 *.pkz *.zip)"),
+    tr("All files (*.*)"),
   });
   FileDialogUtils::Options options;
   options.settings_key = "main/open_archive";
@@ -1534,7 +1641,7 @@ void MainWindow::open_pak_dialog() {
 
 void MainWindow::open_folder_dialog() {
   QFileDialog dialog(this);
-  dialog.setWindowTitle("Open Folder");
+  dialog.setWindowTitle(tr("Open Folder"));
   dialog.setFileMode(QFileDialog::Directory);
   dialog.setOption(QFileDialog::ShowDirsOnly, true);
   FileDialogUtils::Options options;
@@ -1546,6 +1653,32 @@ void MainWindow::open_folder_dialog() {
     return;
   }
   open_pak(selected.first());
+}
+
+void MainWindow::run_quick_search() {
+  if (!quick_search_edit_) {
+    return;
+  }
+  const QString query = quick_search_edit_->text().trimmed();
+  if (query.isEmpty()) {
+    PakFu::Metrics::record_event("quick_open", "empty_query");
+    focus_workspace_search(QString());
+    return;
+  }
+
+  const QFileInfo candidate(QDir::fromNativeSeparators(query));
+  if (candidate.exists() && (candidate.isFile() || candidate.isDir())) {
+    PakFu::Metrics::record_event("quick_open",
+                                 candidate.isDir() ? "open_folder" : "open_file",
+                                 trace_path_detail(candidate.absoluteFilePath()));
+    quick_search_edit_->clear();
+    open_pak(candidate.absoluteFilePath());
+    return;
+  }
+
+  PakFu::Metrics::record_event("quick_open", "workspace_search", trace_query_detail(query));
+  focus_workspace_search(query);
+  show_status_message(tr("Searching open archives for \"%1\".").arg(query), 3000);
 }
 
 void MainWindow::open_file_associations_dialog() {
@@ -1570,13 +1703,14 @@ QString MainWindow::resolve_archive_open_path(const QString& path, bool* cancell
   }
 
   QSettings settings;
-  const bool always_ask_setting = settings.value(kArchiveOpenAlwaysAskKey, true).toBool();
+  const bool always_ask_setting = settings.value(kArchiveOpenAlwaysAskKey, false).toBool();
   const ArchiveOpenIntent default_intent = archive_open_intent_from_key(
     settings.value(kArchiveOpenDefaultActionKey, archive_open_intent_key(ArchiveOpenIntent::OpenDirect)).toString());
   const QString default_install_uid = settings.value(kArchiveOpenDefaultInstallUidKey, game_set_.uid).toString();
 
   if (!always_ask_setting) {
     if (default_intent == ArchiveOpenIntent::OpenDirect) {
+      PakFu::Metrics::record_event("archive_open", "quick_inspect_default", trace_path_detail(abs));
       return abs;
     }
 
@@ -1587,16 +1721,20 @@ QString MainWindow::resolve_archive_open_path(const QString& path, bool* cancell
                                 default_intent == ArchiveOpenIntent::MoveToInstall,
                                 &resolved_path,
                                 &err)) {
+      PakFu::Metrics::record_event("archive_open",
+                                   default_intent == ArchiveOpenIntent::MoveToInstall ? "move_default" : "copy_default",
+                                   trace_path_detail(resolved_path));
       return resolved_path;
     }
     if (!err.isEmpty()) {
-      QMessageBox::warning(this, "Open Archive", err);
+      QMessageBox::warning(this, tr("Open Archive"), err);
     }
   }
 
   const ArchiveOpenChoiceResult choice = prompt_archive_open_choice(
     this, abs, game_sets_.sets, game_set_.uid, default_intent, default_install_uid, always_ask_setting);
   if (!choice.accepted) {
+    PakFu::Metrics::record_event("archive_open", "prompt_cancelled", trace_path_detail(abs));
     if (cancelled) {
       *cancelled = true;
     }
@@ -1608,6 +1746,7 @@ QString MainWindow::resolve_archive_open_path(const QString& path, bool* cancell
   settings.setValue(kArchiveOpenDefaultInstallUidKey, choice.install_uid);
 
   if (choice.intent == ArchiveOpenIntent::OpenDirect) {
+    PakFu::Metrics::record_event("archive_open", "prompt_quick_inspect", trace_path_detail(abs));
     return abs;
   }
 
@@ -1617,15 +1756,18 @@ QString MainWindow::resolve_archive_open_path(const QString& path, bool* cancell
                                choice.install_uid,
                                choice.intent == ArchiveOpenIntent::MoveToInstall,
                                &resolved_path,
-                               &err)) {
+    &err)) {
     if (!err.isEmpty()) {
-      QMessageBox::warning(this, "Open Archive", err);
+      QMessageBox::warning(this, tr("Open Archive"), err);
     }
     if (cancelled) {
       *cancelled = true;
     }
     return {};
   }
+  PakFu::Metrics::record_event("archive_open",
+                               choice.intent == ArchiveOpenIntent::MoveToInstall ? "prompt_move" : "prompt_copy",
+                               trace_path_detail(resolved_path));
   return resolved_path;
 }
 
@@ -1645,7 +1787,7 @@ bool MainWindow::run_archive_open_action(const QString& source_path,
   QFileInfo src_info(src_abs);
   if (!src_info.exists() || !src_info.isFile()) {
     if (error) {
-      *error = QString("Archive not found:\n%1").arg(QDir::toNativeSeparators(src_abs));
+      *error = tr("Archive not found:\n%1").arg(QDir::toNativeSeparators(src_abs));
     }
     return false;
   }
@@ -1661,7 +1803,7 @@ bool MainWindow::run_archive_open_action(const QString& source_path,
   const QString target_dir_raw = install_target_dir_for_game_set(*target_set);
   if (target_dir_raw.isEmpty()) {
     if (error) {
-      *error = "The selected installation does not have a valid target directory.";
+      *error = tr("The selected installation does not have a valid target directory.");
     }
     return false;
   }
@@ -1669,7 +1811,7 @@ bool MainWindow::run_archive_open_action(const QString& source_path,
   const QString target_dir = QDir(target_dir_raw).absolutePath();
   if (!QDir().mkpath(target_dir)) {
     if (error) {
-      *error = QString("Unable to create destination directory:\n%1").arg(QDir::toNativeSeparators(target_dir));
+      *error = tr("Unable to create destination directory:\n%1").arg(QDir::toNativeSeparators(target_dir));
     }
     return false;
   }
@@ -1690,13 +1832,13 @@ bool MainWindow::run_archive_open_action(const QString& source_path,
   if (QFileInfo::exists(dest_abs)) {
     QMessageBox box(this);
     box.setIcon(QMessageBox::Question);
-    box.setWindowTitle(move_file ? "Move Archive" : "Install Archive Copy");
-    box.setText(QString("A file named \"%1\" already exists in the destination.").arg(QFileInfo(dest_abs).fileName()));
-    box.setInformativeText("Choose overwrite, keep both, or cancel.");
+    box.setWindowTitle(move_file ? tr("Move Archive") : tr("Install Archive Copy"));
+    box.setText(tr("A file named \"%1\" already exists in the destination.").arg(QFileInfo(dest_abs).fileName()));
+    box.setInformativeText(tr("Choose overwrite, keep both, or cancel."));
 
-    QPushButton* overwrite_button = box.addButton("Overwrite", QMessageBox::AcceptRole);
-    QPushButton* keep_both_button = box.addButton("Keep Both", QMessageBox::ActionRole);
-    QPushButton* cancel_button = box.addButton("Cancel", QMessageBox::RejectRole);
+    QPushButton* overwrite_button = box.addButton(tr("Overwrite"), QMessageBox::AcceptRole);
+    QPushButton* keep_both_button = box.addButton(tr("Keep Both"), QMessageBox::ActionRole);
+    QPushButton* cancel_button = box.addButton(tr("Cancel"), QMessageBox::RejectRole);
     overwrite_button->setIcon(UiIcons::icon(UiIcons::Id::SaveAs, overwrite_button->style()));
     keep_both_button->setIcon(UiIcons::icon(UiIcons::Id::Copy, keep_both_button->style()));
     cancel_button->setIcon(UiIcons::icon(UiIcons::Id::ExitApp, cancel_button->style()));
@@ -1704,7 +1846,7 @@ bool MainWindow::run_archive_open_action(const QString& source_path,
 
     if (box.clickedButton() == cancel_button) {
       if (error) {
-        *error = "Open action cancelled.";
+        *error = tr("Open action cancelled.");
       }
       return false;
     }
@@ -1713,7 +1855,7 @@ bool MainWindow::run_archive_open_action(const QString& source_path,
     } else {
       if (!QFile::remove(dest_abs)) {
         if (error) {
-          *error = QString("Unable to overwrite destination file:\n%1").arg(QDir::toNativeSeparators(dest_abs));
+          *error = tr("Unable to overwrite destination file:\n%1").arg(QDir::toNativeSeparators(dest_abs));
         }
         return false;
       }
@@ -1724,14 +1866,14 @@ bool MainWindow::run_archive_open_action(const QString& source_path,
     if (!QFile::rename(src_abs, dest_abs)) {
       if (!QFile::copy(src_abs, dest_abs)) {
         if (error) {
-          *error = QString("Unable to move archive to destination:\n%1").arg(QDir::toNativeSeparators(dest_abs));
+          *error = tr("Unable to move archive to destination:\n%1").arg(QDir::toNativeSeparators(dest_abs));
         }
         return false;
       }
       if (!QFile::remove(src_abs)) {
         (void)QFile::remove(dest_abs);
         if (error) {
-          *error = QString("Archive copy succeeded but source removal failed:\n%1").arg(QDir::toNativeSeparators(src_abs));
+          *error = tr("Archive copy succeeded but source removal failed:\n%1").arg(QDir::toNativeSeparators(src_abs));
         }
         return false;
       }
@@ -1739,7 +1881,7 @@ bool MainWindow::run_archive_open_action(const QString& source_path,
   } else {
     if (!QFile::copy(src_abs, dest_abs)) {
       if (error) {
-        *error = QString("Unable to copy archive to destination:\n%1").arg(QDir::toNativeSeparators(dest_abs));
+        *error = tr("Unable to copy archive to destination:\n%1").arg(QDir::toNativeSeparators(dest_abs));
       }
       return false;
     }
@@ -1755,13 +1897,14 @@ bool MainWindow::open_image_viewer(const QString& file_path, bool add_recent) {
   const QString abs_file = QFileInfo(file_path).absoluteFilePath();
   ImageViewerWindow* viewer = ImageViewerWindow::show_for_image(abs_file, true);
   if (!viewer) {
-    QMessageBox::warning(this, "Open Image", QString("Unable to open image viewer for:\n%1").arg(file_path));
+    QMessageBox::warning(this, tr("Open Image"), tr("Unable to open image viewer for:\n%1").arg(file_path));
     return false;
   }
   image_viewer_window_ = viewer;
   if (add_recent) {
     add_recent_file(abs_file);
   }
+  show_status_message(tr("Opened image %1.").arg(QFileInfo(abs_file).fileName()));
   return true;
 }
 
@@ -1769,13 +1912,14 @@ bool MainWindow::open_video_viewer(const QString& file_path, bool add_recent) {
   const QString abs_file = QFileInfo(file_path).absoluteFilePath();
   VideoViewerWindow* viewer = VideoViewerWindow::show_for_video(abs_file, true);
   if (!viewer) {
-    QMessageBox::warning(this, "Open Video", QString("Unable to open video viewer for:\n%1").arg(file_path));
+    QMessageBox::warning(this, tr("Open Video"), tr("Unable to open video viewer for:\n%1").arg(file_path));
     return false;
   }
   video_viewer_window_ = viewer;
   if (add_recent) {
     add_recent_file(abs_file);
   }
+  show_status_message(tr("Opened video %1.").arg(QFileInfo(abs_file).fileName()));
   return true;
 }
 
@@ -1783,13 +1927,14 @@ bool MainWindow::open_audio_viewer(const QString& file_path, bool add_recent) {
   const QString abs_file = QFileInfo(file_path).absoluteFilePath();
   AudioViewerWindow* viewer = AudioViewerWindow::show_for_audio(abs_file, true);
   if (!viewer) {
-    QMessageBox::warning(this, "Open Audio", QString("Unable to open audio viewer for:\n%1").arg(file_path));
+    QMessageBox::warning(this, tr("Open Audio"), tr("Unable to open audio viewer for:\n%1").arg(file_path));
     return false;
   }
   audio_viewer_window_ = viewer;
   if (add_recent) {
     add_recent_file(abs_file);
   }
+  show_status_message(tr("Opened audio %1.").arg(QFileInfo(abs_file).fileName()));
   return true;
 }
 
@@ -1797,13 +1942,14 @@ bool MainWindow::open_model_viewer(const QString& file_path, bool add_recent) {
   const QString abs_file = QFileInfo(file_path).absoluteFilePath();
   ModelViewerWindow* viewer = ModelViewerWindow::show_for_model(abs_file, true);
   if (!viewer) {
-    QMessageBox::warning(this, "Open Model", QString("Unable to open model viewer for:\n%1").arg(file_path));
+    QMessageBox::warning(this, tr("Open Model"), tr("Unable to open model viewer for:\n%1").arg(file_path));
     return false;
   }
   model_viewer_window_ = viewer;
   if (add_recent) {
     add_recent_file(abs_file);
   }
+  show_status_message(tr("Opened model %1.").arg(QFileInfo(abs_file).fileName()));
   return true;
 }
 
@@ -1814,7 +1960,7 @@ bool MainWindow::open_file_in_viewer(const QString& file_path, bool allow_auto_s
     if (add_recent) {
       remove_recent_file(normalized.isEmpty() ? file_path : normalized);
     }
-    QMessageBox::warning(this, "Open File", QString("File not found:\n%1").arg(file_path));
+    QMessageBox::warning(this, tr("Open File"), tr("File not found:\n%1").arg(file_path));
     return false;
   }
 
@@ -1834,7 +1980,7 @@ bool MainWindow::open_file_in_viewer(const QString& file_path, bool allow_auto_s
 
   const QString parent_dir = info.absolutePath();
   if (parent_dir.isEmpty()) {
-    QMessageBox::warning(this, "Open File", "Unable to determine the parent directory for this file.");
+    QMessageBox::warning(this, tr("Open File"), tr("Unable to determine the parent directory for this file."));
     return false;
   }
 
@@ -1870,7 +2016,8 @@ PakTab* MainWindow::open_pak_internal(const QString& path, bool allow_auto_selec
     if (add_recent) {
       remove_recent_file(normalized.isEmpty() ? path : normalized);
     }
-    QMessageBox::warning(this, "Open Archive", QString("Archive not found:\n%1").arg(path));
+    PakFu::Metrics::record_event("archive_open", "not_found", trace_path_detail(path));
+    QMessageBox::warning(this, tr("Open Archive"), tr("Archive not found:\n%1").arg(path));
     return nullptr;
   }
 
@@ -1882,6 +2029,7 @@ PakTab* MainWindow::open_pak_internal(const QString& path, bool allow_auto_selec
     if (add_recent) {
       add_recent_file(info.absoluteFilePath());
     }
+    PakFu::Metrics::record_event("archive_open", "focused_existing", trace_path_detail(info.absoluteFilePath()));
     update_workspace_tab();
     return current_pak_tab();
   }
@@ -1893,7 +2041,10 @@ PakTab* MainWindow::open_pak_internal(const QString& path, bool allow_auto_selec
   if (!tab->is_loaded()) {
     error = tab->load_error();
     tab->deleteLater();
-    QMessageBox::warning(this, "Open Archive", error.isEmpty() ? "Failed to load archive." : error);
+    PakFu::Metrics::record_event("archive_open",
+                                 "load_failed",
+                                 error.isEmpty() ? trace_path_detail(info.absoluteFilePath()) : trace_error_detail(error));
+    QMessageBox::warning(this, tr("Open Archive"), error.isEmpty() ? tr("Failed to load archive.") : error);
     return nullptr;
   }
   tab->set_pure_pak_protector(pure_pak_protector_enabled(), is_official_archive_for_current_install(info.absoluteFilePath()));
@@ -1906,6 +2057,8 @@ PakTab* MainWindow::open_pak_internal(const QString& path, bool allow_auto_selec
   const int index = add_tab(title, tab);
   tabs_->setTabToolTip(index, info.absoluteFilePath());
   tabs_->setCurrentIndex(index);
+  PakFu::Metrics::record_event("archive_open", "opened", trace_path_detail(info.absoluteFilePath()));
+  show_status_message(tr("Opened %1.").arg(title));
   update_workspace_tab();
   return tab;
 }
@@ -1958,6 +2111,7 @@ int MainWindow::add_tab(const QString& title, QWidget* tab) {
       update_window_title();
       update_workspace_tab();
     });
+    connect(pak_tab, &PakTab::status_message, this, &MainWindow::show_status_message);
     if (QUndoStack* stack = pak_tab->undo_stack()) {
       connect(stack, &QUndoStack::canUndoChanged, this, [this](bool) { update_action_states(); });
       connect(stack, &QUndoStack::canRedoChanged, this, [this](bool) { update_action_states(); });
@@ -2025,7 +2179,23 @@ void MainWindow::run_workspace_search(const QString& query) {
   if (!workspace_tab_) {
     return;
   }
+  PakFu::Metrics::record_event("workspace", "search", trace_query_detail(query));
   workspace_tab_->set_search_results(search_workspace_tabs(query));
+}
+
+void MainWindow::focus_workspace_search(const QString& query) {
+  focus_workspace_tab();
+  if (workspace_tab_) {
+    workspace_tab_->focus_search(query);
+  }
+}
+
+void MainWindow::show_status_message(const QString& message, int timeout_ms) {
+  if (message.isEmpty() || !statusBar()) {
+    return;
+  }
+  PakFu::Metrics::record_event("status", "message", trace_status_detail(message));
+  statusBar()->showMessage(message, timeout_ms);
 }
 
 void MainWindow::update_workspace_tab() {
@@ -2040,16 +2210,18 @@ void MainWindow::update_workspace_tab() {
   state.capabilities = build_workspace_capabilities(extension_commands_.size(), extension_warnings_);
 
   if (game_sets_.sets.isEmpty()) {
-    state.validation_issues.push_back("No installations are configured.");
+    state.validation_issues.push_back(tr("No installations are configured."));
   }
   if (!game_set_.root_dir.isEmpty() && !QFileInfo::exists(game_set_.root_dir)) {
-    state.validation_issues.push_back(QString("Active installation root is missing: %1").arg(QDir::toNativeSeparators(game_set_.root_dir)));
+    state.validation_issues.push_back(
+      tr("Active installation root is missing: %1").arg(QDir::toNativeSeparators(game_set_.root_dir)));
   }
   if (!game_set_.default_dir.isEmpty() && !QFileInfo::exists(game_set_.default_dir)) {
-    state.validation_issues.push_back(QString("Active installation default folder is missing: %1").arg(QDir::toNativeSeparators(game_set_.default_dir)));
+    state.validation_issues.push_back(
+      tr("Active installation default folder is missing: %1").arg(QDir::toNativeSeparators(game_set_.default_dir)));
   }
   for (const QString& warning : extension_warnings_) {
-    state.validation_issues.push_back(QString("Extension manifest: %1").arg(warning));
+    state.validation_issues.push_back(tr("Extension manifest: %1").arg(warning));
   }
 
   if (tabs_) {
@@ -2062,7 +2234,7 @@ void MainWindow::update_workspace_tab() {
       WorkspaceTab::ArchiveSummary summary;
       summary.title = tab_base_title(pak_tab);
       if (summary.title.isEmpty()) {
-        summary.title = pak_tab->pak_path().isEmpty() ? QStringLiteral("Untitled") : QFileInfo(pak_tab->pak_path()).fileName();
+        summary.title = pak_tab->pak_path().isEmpty() ? tr("Untitled") : QFileInfo(pak_tab->pak_path()).fileName();
       }
       summary.archive_path = pak_tab->pak_path();
       summary.format = archive_format_display_name(pak_tab->archive_format());
@@ -2206,9 +2378,13 @@ void MainWindow::rebuild_game_combo() {
 
   if (game_combo_->count() > 0) {
     game_combo_->insertSeparator(game_combo_->count());
-    game_combo_->addItem(UiIcons::icon(UiIcons::Id::Configure, style()), "Configure Installations…", kConfigureGameSetsUid);
+    game_combo_->addItem(UiIcons::icon(UiIcons::Id::Configure, style()),
+                         tr("Configure Installations..."),
+                         kConfigureGameSetsUid);
   } else {
-    game_combo_->addItem(UiIcons::icon(UiIcons::Id::Configure, style()), "Configure Installations…", kConfigureGameSetsUid);
+    game_combo_->addItem(UiIcons::icon(UiIcons::Id::Configure, style()),
+                         tr("Configure Installations..."),
+                         kConfigureGameSetsUid);
   }
 
   int idx = game_combo_->findData(game_set_.uid);
@@ -2368,6 +2544,7 @@ void MainWindow::extract_current_selection() {
   if (!tab || !tab->is_loaded()) {
     return;
   }
+  PakFu::Metrics::record_event("archive", "extract_selected_invoked", trace_path_detail(tab->pak_path()));
   tab->extract_selected();
 }
 
@@ -2376,6 +2553,7 @@ void MainWindow::extract_current_archive() {
   if (!tab || !tab->is_loaded() || !tab->can_extract_all()) {
     return;
   }
+  PakFu::Metrics::record_event("archive", "extract_all_invoked", trace_path_detail(tab->pak_path()));
   tab->extract_all();
 }
 
@@ -2384,6 +2562,7 @@ void MainWindow::convert_current_selection() {
   if (!tab || !tab->is_loaded()) {
     return;
   }
+  PakFu::Metrics::record_event("archive", "convert_selected_invoked", trace_path_detail(tab->pak_path()));
   tab->convert_selected_assets();
 }
 
@@ -2401,14 +2580,14 @@ void MainWindow::rebuild_extensions_menu() {
     if (!load_err.isEmpty()) {
       extension_warnings_.push_back(load_err);
     }
-    QAction* action = extensions_menu_->addAction(load_err.isEmpty() ? "Unable to load extensions" : load_err);
+    QAction* action = extensions_menu_->addAction(load_err.isEmpty() ? tr("Unable to load extensions") : load_err);
     action->setEnabled(false);
     update_workspace_tab();
     return;
   }
 
   if (extension_commands_.isEmpty()) {
-    QAction* action = extensions_menu_->addAction("(No extensions found)");
+    QAction* action = extensions_menu_->addAction(tr("(No extensions found)"));
     action->setEnabled(false);
   } else {
     PakTab* tab = current_pak_tab();
@@ -2418,13 +2597,13 @@ void MainWindow::rebuild_extensions_menu() {
       if (!command.command_description.isEmpty()) {
         tooltip_lines.push_back(command.command_description);
       }
-      tooltip_lines.push_back(QString("Ref: %1").arg(extension_command_ref(command)));
-      tooltip_lines.push_back(QString("Manifest: %1").arg(command.manifest_path));
+      tooltip_lines.push_back(tr("Ref: %1").arg(extension_command_ref(command)));
+      tooltip_lines.push_back(tr("Manifest: %1").arg(command.manifest_path));
       if (!command.argv.isEmpty()) {
-        tooltip_lines.push_back(QString("Command: %1").arg(command.argv.join(' ')));
+        tooltip_lines.push_back(tr("Command: %1").arg(command.argv.join(' ')));
       }
       if (!command.capabilities.isEmpty()) {
-        tooltip_lines.push_back(QString("Capabilities: %1").arg(command.capabilities.join(", ")));
+        tooltip_lines.push_back(tr("Capabilities: %1").arg(command.capabilities.join(", ")));
       }
 
       QString availability_error;
@@ -2432,7 +2611,7 @@ void MainWindow::rebuild_extensions_menu() {
       if (tab && tab->is_loaded()) {
         enabled = tab->can_execute_extension_command(command, &availability_error);
       } else {
-        availability_error = "Open an archive tab to run extensions.";
+        availability_error = tr("Open an archive tab to run extensions.");
       }
 
       action->setEnabled(enabled);
@@ -2448,10 +2627,22 @@ void MainWindow::rebuild_extensions_menu() {
   if (!extension_warnings_.isEmpty()) {
     extensions_menu_->addSeparator();
     QAction* warning_action =
-      extensions_menu_->addAction(QString("Manifest warnings (%1)").arg(extension_warnings_.size()));
+      extensions_menu_->addAction(tr("Manifest warnings (%1)").arg(extension_warnings_.size()));
     warning_action->setEnabled(false);
     warning_action->setToolTip(extension_warnings_.join("\n"));
     warning_action->setStatusTip(extension_warnings_.join(" | "));
+  }
+  if (!last_extension_run_details_.isEmpty()) {
+    extensions_menu_->addSeparator();
+    QAction* details_action = extensions_menu_->addAction(tr("Last Run Details"));
+    details_action->setToolTip(last_extension_run_details_);
+    details_action->setStatusTip(last_extension_run_summary_);
+    connect(details_action, &QAction::triggered, this, [this]() {
+      if (auto* clipboard = QApplication::clipboard()) {
+        clipboard->setText(last_extension_run_details_);
+        show_status_message(tr("Extension run details copied to clipboard."), 4000);
+      }
+    });
   }
   update_workspace_tab();
 }
@@ -2459,16 +2650,15 @@ void MainWindow::rebuild_extensions_menu() {
 void MainWindow::run_extension_command_action(const ExtensionCommand& command) {
   PakTab* tab = current_pak_tab();
   if (!tab || !tab->is_loaded()) {
-    QMessageBox::information(this, "Run Extension", "Open an archive tab before running an extension.");
+    show_status_message(tr("Open an archive tab before running an extension."), 5000);
     return;
   }
 
   QString availability_error;
   if (!tab->can_execute_extension_command(command, &availability_error)) {
-    QMessageBox::information(
-      this,
-      "Run Extension",
-      availability_error.isEmpty() ? "The current selection is not valid for this extension." : availability_error);
+    show_status_message(
+      availability_error.isEmpty() ? tr("The current selection is not valid for this extension.") : availability_error,
+      6000);
     return;
   }
   if (!confirm_extension_run(this, command)) {
@@ -2483,10 +2673,10 @@ void MainWindow::run_extension_command_action(const ExtensionCommand& command) {
 
   QStringList details;
   if (!result.std_out.trimmed().isEmpty()) {
-    details.push_back(QString("stdout:\n%1").arg(result.std_out.trimmed()));
+    details.push_back(tr("stdout:\n%1").arg(result.std_out.trimmed()));
   }
   if (!result.std_err.trimmed().isEmpty()) {
-    details.push_back(QString("stderr:\n%1").arg(result.std_err.trimmed()));
+    details.push_back(tr("stderr:\n%1").arg(result.std_err.trimmed()));
   }
   if (!result.imports.isEmpty()) {
     QStringList import_lines;
@@ -2494,14 +2684,14 @@ void MainWindow::run_extension_command_action(const ExtensionCommand& command) {
     for (const ExtensionImportEntry& import : result.imports) {
       import_lines.push_back(QString("  %1 <- %2").arg(import.archive_name, import.local_path));
     }
-    details.push_back(QString("imports:\n%1").arg(import_lines.join("\n")));
+    details.push_back(tr("imports:\n%1").arg(import_lines.join("\n")));
   }
 
   if (!ok) {
     QMessageBox box(this);
     box.setIcon(QMessageBox::Warning);
-    box.setWindowTitle("Run Extension");
-    box.setText(error.isEmpty() ? "The extension command failed." : error);
+    box.setWindowTitle(tr("Run Extension"));
+    box.setText(error.isEmpty() ? tr("The extension command failed.") : error);
     if (!details.isEmpty()) {
       box.setDetailedText(details.join("\n\n"));
     }
@@ -2509,20 +2699,23 @@ void MainWindow::run_extension_command_action(const ExtensionCommand& command) {
     return;
   }
 
-  QMessageBox box(this);
-  box.setIcon(QMessageBox::Information);
-  box.setWindowTitle("Run Extension");
-  if (result.imports.isEmpty()) {
-    box.setText(QString("%1 completed.").arg(extension_command_display_name(command)));
-  } else {
-    box.setText(QString("%1 completed and imported %2 file(s).")
-                  .arg(extension_command_display_name(command))
-                  .arg(result.imports.size()));
+  const QString complete_text = result.imports.isEmpty()
+    ? tr("%1 completed.").arg(extension_command_display_name(command))
+    : tr("%1 completed and imported %2 file(s).")
+        .arg(extension_command_display_name(command))
+        .arg(result.imports.size());
+  if (details.isEmpty()) {
+    last_extension_run_summary_.clear();
+    last_extension_run_details_.clear();
+    rebuild_extensions_menu();
+    show_status_message(complete_text);
+    return;
   }
-  if (!details.isEmpty()) {
-    box.setDetailedText(details.join("\n\n"));
-  }
-  box.exec();
+
+  last_extension_run_summary_ = complete_text;
+  last_extension_run_details_ = details.join("\n\n");
+  rebuild_extensions_menu();
+  show_status_message(tr("%1 Details are available from Extensions > Last Run Details.").arg(complete_text), 8000);
 }
 
 void MainWindow::open_preferences() {
@@ -2569,19 +2762,20 @@ void MainWindow::open_preferences() {
     rebuild_recent_files_menu();
     update_workspace_tab();
   });
-  const int idx = add_tab("Preferences", preferences_tab_);
+  const int idx = add_tab(tr("Preferences"), preferences_tab_);
   tabs_->setCurrentIndex(idx);
 }
 
 void MainWindow::update_window_title() {
+  const QString app_title = tr("PakFu Archive View");
   if (!tabs_) {
-    setWindowTitle(game_set_.name.isEmpty() ? "PakFu Archive View" : QString("PakFu Archive View (%1)").arg(game_set_.name));
+    setWindowTitle(game_set_.name.isEmpty() ? app_title : tr("%1 (%2)").arg(app_title, game_set_.name));
     return;
   }
   const int idx = tabs_->currentIndex();
   const QString tab_title = idx >= 0 ? tabs_->tabText(idx) : QString();
-  const QString base = game_set_.name.isEmpty() ? "PakFu Archive View" : QString("PakFu Archive View (%1)").arg(game_set_.name);
-  setWindowTitle(tab_title.isEmpty() ? base : QString("%1 - %2").arg(base, tab_title));
+  const QString base = game_set_.name.isEmpty() ? app_title : tr("%1 (%2)").arg(app_title, game_set_.name);
+  setWindowTitle(tab_title.isEmpty() ? base : tr("%1 - %2").arg(base, tab_title));
 }
 
 void MainWindow::close_tab(int index) {
@@ -2779,17 +2973,17 @@ bool MainWindow::maybe_save_tab(PakTab* tab) {
     return true;
   }
 
-  const QString title = tab_base_title(tab).isEmpty() ? "Untitled" : tab_base_title(tab);
+  const QString title = tab_base_title(tab).isEmpty() ? tr("Untitled") : tab_base_title(tab);
 
   QMessageBox box(this);
   box.setIcon(QMessageBox::Warning);
-  box.setWindowTitle("Unsaved Changes");
-  box.setText(QString("Save changes to \"%1\"?").arg(title));
-  box.setInformativeText("If you don't save, your changes will be lost.");
+  box.setWindowTitle(tr("Unsaved Changes"));
+  box.setText(tr("Save changes to \"%1\"?").arg(title));
+  box.setInformativeText(tr("If you don't save, your changes will be lost."));
 
-  QPushButton* save = box.addButton("Save", QMessageBox::AcceptRole);
-  QPushButton* discard = box.addButton("Discard", QMessageBox::DestructiveRole);
-  QPushButton* cancel = box.addButton("Cancel", QMessageBox::RejectRole);
+  QPushButton* save = box.addButton(tr("Save"), QMessageBox::AcceptRole);
+  QPushButton* discard = box.addButton(tr("Discard"), QMessageBox::DestructiveRole);
+  QPushButton* cancel = box.addButton(tr("Cancel"), QMessageBox::RejectRole);
   save->setIcon(UiIcons::icon(UiIcons::Id::Save, save->style()));
   discard->setIcon(UiIcons::icon(UiIcons::Id::DeleteItem, discard->style()));
   cancel->setIcon(UiIcons::icon(UiIcons::Id::ExitApp, cancel->style()));
@@ -2817,13 +3011,16 @@ bool MainWindow::save_tab(PakTab* tab) {
 
   QString err;
   if (!tab->save(&err)) {
-    QMessageBox::warning(this, "Save Archive", err.isEmpty() ? "Unable to save archive." : err);
+    PakFu::Metrics::record_event("archive", "save_failed", trace_error_detail(err));
+    QMessageBox::warning(this, tr("Save Archive"), err.isEmpty() ? tr("Unable to save archive.") : err);
     return false;
   }
 
   update_tab_label(tab);
   update_action_states();
   update_workspace_tab();
+  PakFu::Metrics::record_event("archive", "save_succeeded", trace_path_detail(tab->pak_path()));
+  show_status_message(tr("Saved %1.").arg(tab_base_title(tab).isEmpty() ? tr("archive") : tab_base_title(tab)));
   return true;
 }
 
@@ -2839,7 +3036,7 @@ bool MainWindow::save_tab_as(PakTab* tab) {
       base = QFileInfo(tab->pak_path()).fileName();
     }
     if (base.isEmpty()) {
-      base = "folder";
+      base = tr("folder");
     }
     if (!base.endsWith(".pak", Qt::CaseInsensitive)) {
       base += ".pak";
@@ -2848,7 +3045,7 @@ bool MainWindow::save_tab_as(PakTab* tab) {
   } else if (suggested.isEmpty()) {
     QString base = tab_base_title(tab);
     if (base.isEmpty()) {
-      base = "untitled";
+      base = tr("untitled");
     }
     if (!base.endsWith(".pak", Qt::CaseInsensitive)) {
       base += ".pak";
@@ -2857,44 +3054,53 @@ bool MainWindow::save_tab_as(PakTab* tab) {
   }
 
   QFileDialog dialog(this);
-  dialog.setWindowTitle("Save Archive As");
+  dialog.setWindowTitle(tr("Save Archive As"));
   dialog.setAcceptMode(QFileDialog::AcceptSave);
   dialog.setFileMode(QFileDialog::AnyFile);
+  const QString filter_quake_pak = tr("Quake PAK (*.pak)");
+  const QString filter_sin = tr("SiN Archive (*.sin)");
+  const QString filter_wad = tr("Quake WAD2 (*.wad *.wad2)");
+  const QString filter_pk3 = tr("PK3 (ZIP) (*.pk3)");
+  const QString filter_pk3_quakelive = tr("PK3 (Quake Live encrypted) (*.pk3)");
+  const QString filter_pk4 = tr("PK4 (ZIP) (*.pk4)");
+  const QString filter_pkz = tr("PKZ (ZIP) (*.pkz)");
+  const QString filter_zip = tr("ZIP (*.zip)");
+  const QString filter_all = tr("All files (*.*)");
   {
     QStringList filters;
     const Archive::Format fmt = tab->archive_format();
     const bool is_new = tab->pak_path().isEmpty();
     if (is_new || fmt == Archive::Format::Unknown || fmt == Archive::Format::Directory) {
       filters = {
-        "Quake PAK (*.pak)",
-        "SiN Archive (*.sin)",
-        "Quake WAD2 (*.wad *.wad2)",
-        "PK3 (ZIP) (*.pk3)",
-        "PK3 (Quake Live encrypted) (*.pk3)",
-        "PK4 (ZIP) (*.pk4)",
-        "PKZ (ZIP) (*.pkz)",
-        "ZIP (*.zip)",
-        "All files (*.*)",
+        filter_quake_pak,
+        filter_sin,
+        filter_wad,
+        filter_pk3,
+        filter_pk3_quakelive,
+        filter_pk4,
+        filter_pkz,
+        filter_zip,
+        filter_all,
       };
     } else if (fmt == Archive::Format::Wad) {
       filters = {
-        "Quake WAD2 (*.wad *.wad2)",
-        "All files (*.*)",
+        filter_wad,
+        filter_all,
       };
     } else if (fmt == Archive::Format::Pak) {
       filters = {
-        "Quake PAK (*.pak)",
-        "SiN Archive (*.sin)",
-        "All files (*.*)",
+        filter_quake_pak,
+        filter_sin,
+        filter_all,
       };
     } else {
       filters = {
-        "PK3 (ZIP) (*.pk3)",
-        "PK3 (Quake Live encrypted) (*.pk3)",
-        "PK4 (ZIP) (*.pk4)",
-        "PKZ (ZIP) (*.pkz)",
-        "ZIP (*.zip)",
-        "All files (*.*)",
+        filter_pk3,
+        filter_pk3_quakelive,
+        filter_pk4,
+        filter_pkz,
+        filter_zip,
+        filter_all,
       };
     }
     dialog.setNameFilters(filters);
@@ -2914,7 +3120,7 @@ bool MainWindow::save_tab_as(PakTab* tab) {
 
   PakTab::SaveOptions options;
   QString want_ext;
-  if (filter.contains("Quake Live encrypted", Qt::CaseInsensitive)) {
+  if (filter == filter_pk3_quakelive) {
     options.format = Archive::Format::Zip;
     options.quakelive_encrypt_pk3 = true;
     want_ext = ".pk3";
@@ -2956,7 +3162,8 @@ bool MainWindow::save_tab_as(PakTab* tab) {
 
   QString err;
   if (!tab->save_as(dest, options, &err)) {
-    QMessageBox::warning(this, "Save Archive As", err.isEmpty() ? "Unable to save archive." : err);
+    PakFu::Metrics::record_event("archive", "save_as_failed", trace_error_detail(err));
+    QMessageBox::warning(this, tr("Save Archive As"), err.isEmpty() ? tr("Unable to save archive.") : err);
     return false;
   }
 
@@ -2974,6 +3181,8 @@ bool MainWindow::save_tab_as(PakTab* tab) {
   update_window_title();
   update_action_states();
   update_workspace_tab();
+  PakFu::Metrics::record_event("archive", "save_as_succeeded", trace_path_detail(dest));
+  show_status_message(tr("Saved %1.").arg(info.fileName().isEmpty() ? tr("archive") : info.fileName()));
   return true;
 }
 
@@ -3121,7 +3330,7 @@ void MainWindow::rebuild_recent_files_menu() {
   recent_files_menu_->setToolTipsVisible(true);
 
   if (normalized.isEmpty()) {
-    QAction* none = recent_files_menu_->addAction("(No recent files)");
+    QAction* none = recent_files_menu_->addAction(tr("(No recent files)"));
     none->setEnabled(false);
   } else {
     for (int i = 0; i < normalized.size(); ++i) {
@@ -3141,7 +3350,7 @@ void MainWindow::rebuild_recent_files_menu() {
       act->setToolTip(path);
       act->setStatusTip(path);
       if (!info.exists()) {
-        act->setText(text + " (missing)");
+        act->setText(text + tr(" (missing)"));
         act->setEnabled(false);
         continue;
       }
@@ -3150,7 +3359,7 @@ void MainWindow::rebuild_recent_files_menu() {
   }
 
   recent_files_menu_->addSeparator();
-  QAction* clear = recent_files_menu_->addAction("Clear Recent Files");
+  QAction* clear = recent_files_menu_->addAction(tr("Clear Recent Files"));
   clear->setEnabled(!normalized.isEmpty());
   connect(clear, &QAction::triggered, this, &MainWindow::clear_recent_files);
 }

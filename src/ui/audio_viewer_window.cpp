@@ -23,7 +23,7 @@
 #include <QWheelEvent>
 
 #include "ui/preview_pane.h"
-#include "ui/ui_icons.h"
+#include "ui/viewer_chrome.h"
 
 namespace {
 bool paths_equal(const QString& a, const QString& b) {
@@ -38,17 +38,6 @@ QString normalize_for_compare(const QString& path) {
 	return QFileInfo(path).absoluteFilePath();
 }
 
-bool should_ignore_navigation_event_target(QObject* watched) {
-	if (!watched) {
-		return false;
-	}
-	return qobject_cast<QComboBox*>(watched) != nullptr ||
-	       qobject_cast<QAbstractSpinBox*>(watched) != nullptr ||
-	       qobject_cast<QAbstractSlider*>(watched) != nullptr ||
-	       qobject_cast<QLineEdit*>(watched) != nullptr ||
-	       qobject_cast<QTextEdit*>(watched) != nullptr ||
-	       qobject_cast<QPlainTextEdit*>(watched) != nullptr;
-}
 }  // namespace
 
 AudioViewerWindow::AudioViewerWindow(QWidget* parent) : QMainWindow(parent) {
@@ -104,43 +93,31 @@ void AudioViewerWindow::build_ui() {
 	connect(preview_, &PreviewPane::request_previous_audio, this, &AudioViewerWindow::show_previous_audio);
 	connect(preview_, &PreviewPane::request_next_audio, this, &AudioViewerWindow::show_next_audio);
 
-	auto* toolbar = addToolBar("Audio Viewer");
-	toolbar->setMovable(false);
-	toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-
-	prev_action_ = toolbar->addAction(UiIcons::icon(UiIcons::Id::MediaPrevious, style()), "Previous");
-	next_action_ = toolbar->addAction(UiIcons::icon(UiIcons::Id::MediaNext, style()), "Next");
-	toolbar->addSeparator();
-	fullscreen_action_ = toolbar->addAction(UiIcons::icon(UiIcons::Id::FullscreenEnter, style()), "Fullscreen");
-
-	connect(prev_action_, &QAction::triggered, this, &AudioViewerWindow::show_previous_audio);
-	connect(next_action_, &QAction::triggered, this, &AudioViewerWindow::show_next_audio);
-	connect(fullscreen_action_, &QAction::triggered, this, &AudioViewerWindow::toggle_fullscreen);
-
-	auto* left_shortcut = new QShortcut(QKeySequence(Qt::Key_Left), this);
-	connect(left_shortcut, &QShortcut::activated, this, &AudioViewerWindow::show_previous_audio);
-	auto* right_shortcut = new QShortcut(QKeySequence(Qt::Key_Right), this);
-	connect(right_shortcut, &QShortcut::activated, this, &AudioViewerWindow::show_next_audio);
-	auto* f11_shortcut = new QShortcut(QKeySequence(Qt::Key_F11), this);
-	connect(f11_shortcut, &QShortcut::activated, this, &AudioViewerWindow::toggle_fullscreen);
-	auto* fullscreen_shortcut = new QShortcut(QKeySequence::FullScreen, this);
-	connect(fullscreen_shortcut, &QShortcut::activated, this, &AudioViewerWindow::toggle_fullscreen);
-	auto* esc_shortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
-	connect(esc_shortcut, &QShortcut::activated, this, [this]() {
-		if (isFullScreen()) {
-			showNormal();
-			update_fullscreen_action();
-		}
-	});
-
-	index_label_ = new QLabel(this);
-	path_label_ = new QLabel(this);
-	path_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-
-	if (statusBar()) {
-		statusBar()->addPermanentWidget(index_label_);
-		statusBar()->addWidget(path_label_, 1);
-	}
+	const ViewerChrome::Widgets chrome = ViewerChrome::setup(
+		this,
+		this,
+		ViewerChrome::Spec{tr("Audio Viewer"),
+		                   tr("Audio viewer actions"),
+		                   tr("Show the previous audio file in this folder."),
+		                   tr("Show the next audio file in this folder."),
+		                   tr("Toggle fullscreen audio preview."),
+		                   tr("Audio position"),
+		                   tr("Audio path"),
+		                   tr("Audio viewer status")},
+		&AudioViewerWindow::show_previous_audio,
+		&AudioViewerWindow::show_next_audio,
+		&AudioViewerWindow::toggle_fullscreen,
+		[this]() {
+			if (isFullScreen()) {
+				showNormal();
+				update_fullscreen_action();
+			}
+		});
+	prev_action_ = chrome.previous_action;
+	next_action_ = chrome.next_action;
+	fullscreen_action_ = chrome.fullscreen_action;
+	index_label_ = chrome.index_label;
+	path_label_ = chrome.path_label;
 }
 
 void AudioViewerWindow::install_event_filters() {
@@ -227,7 +204,7 @@ void AudioViewerWindow::show_current_audio() {
 
 	const QString audio_path = current_audio_path();
 	if (audio_path.isEmpty()) {
-		preview_->show_message("Audio Viewer", "No supported audio files found in this folder.");
+		preview_->show_message(tr("Audio Viewer"), tr("No supported audio files found in this folder."));
 		update_status();
 		update_window_title();
 		return;
@@ -235,7 +212,7 @@ void AudioViewerWindow::show_current_audio() {
 
 	const QFileInfo info(audio_path);
 	if (!info.exists() || !info.isFile()) {
-		preview_->show_message("Audio Viewer", "Audio file not found.");
+		preview_->show_message(tr("Audio Viewer"), tr("Audio file not found."));
 		update_status();
 		update_window_title();
 		return;
@@ -295,46 +272,22 @@ void AudioViewerWindow::toggle_fullscreen() {
 }
 
 void AudioViewerWindow::update_fullscreen_action() {
-	if (!fullscreen_action_) {
-		return;
-	}
-	const bool full = isFullScreen();
-	fullscreen_action_->setText(full ? "Exit Fullscreen" : "Fullscreen");
-	fullscreen_action_->setIcon(
-		UiIcons::icon(full ? UiIcons::Id::FullscreenExit : UiIcons::Id::FullscreenEnter, style()));
+	ViewerChrome::update_fullscreen_action(fullscreen_action_, this);
 }
 
 void AudioViewerWindow::update_status() {
-	if (index_label_) {
-		if (audio_paths_.isEmpty() || current_index_ < 0) {
-			index_label_->setText("Audio 0/0");
-		} else {
-			index_label_->setText(QString("Audio %1/%2").arg(current_index_ + 1).arg(audio_paths_.size()));
-		}
-	}
-	if (path_label_) {
-		const QString path = current_audio_path();
-		path_label_->setText(path.isEmpty() ? QString() : QDir::toNativeSeparators(path));
-		path_label_->setToolTip(path.isEmpty() ? QString() : QDir::toNativeSeparators(path));
-	}
-
-	const bool can_cycle = audio_paths_.size() > 1;
-	if (prev_action_) {
-		prev_action_->setEnabled(can_cycle);
-	}
-	if (next_action_) {
-		next_action_->setEnabled(can_cycle);
-	}
+	ViewerChrome::update_status(
+		index_label_, path_label_, prev_action_, next_action_, tr("Audio"), audio_paths_, current_index_, current_audio_path());
 }
 
 void AudioViewerWindow::update_window_title() {
 	const QString path = current_audio_path();
 	if (path.isEmpty()) {
-		setWindowTitle("PakFu Audio Viewer");
+		setWindowTitle(tr("PakFu Audio Viewer"));
 		return;
 	}
 	const QFileInfo info(path);
-	setWindowTitle(QString("PakFu Audio Viewer - %1").arg(info.fileName()));
+	setWindowTitle(tr("PakFu Audio Viewer - %1").arg(info.fileName()));
 }
 
 bool AudioViewerWindow::eventFilter(QObject* watched, QEvent* event) {
@@ -353,7 +306,7 @@ bool AudioViewerWindow::eventFilter(QObject* watched, QEvent* event) {
 		}
 	}
 
-	if (should_ignore_navigation_event_target(watched)) {
+	if (ViewerChrome::should_ignore_navigation_event_target(watched)) {
 		return QMainWindow::eventFilter(watched, event);
 	}
 

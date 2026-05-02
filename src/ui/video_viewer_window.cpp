@@ -24,7 +24,7 @@
 #include <QWheelEvent>
 
 #include "ui/preview_pane.h"
-#include "ui/ui_icons.h"
+#include "ui/viewer_chrome.h"
 
 namespace {
 bool paths_equal(const QString& a, const QString& b) {
@@ -37,18 +37,6 @@ bool paths_equal(const QString& a, const QString& b) {
 
 QString normalize_for_compare(const QString& path) {
 	return QFileInfo(path).absoluteFilePath();
-}
-
-bool should_ignore_navigation_event_target(QObject* watched) {
-	if (!watched) {
-		return false;
-	}
-	return qobject_cast<QComboBox*>(watched) != nullptr ||
-	       qobject_cast<QAbstractSpinBox*>(watched) != nullptr ||
-	       qobject_cast<QAbstractSlider*>(watched) != nullptr ||
-	       qobject_cast<QLineEdit*>(watched) != nullptr ||
-	       qobject_cast<QTextEdit*>(watched) != nullptr ||
-	       qobject_cast<QPlainTextEdit*>(watched) != nullptr;
 }
 
 bool auto_play_on_open_enabled() {
@@ -115,43 +103,31 @@ void VideoViewerWindow::build_ui() {
 	connect(preview_, &PreviewPane::request_previous_video, this, &VideoViewerWindow::show_previous_video);
 	connect(preview_, &PreviewPane::request_next_video, this, &VideoViewerWindow::show_next_video);
 
-	auto* toolbar = addToolBar("Video Viewer");
-	toolbar->setMovable(false);
-	toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-
-	prev_action_ = toolbar->addAction(UiIcons::icon(UiIcons::Id::MediaPrevious, style()), "Previous");
-	next_action_ = toolbar->addAction(UiIcons::icon(UiIcons::Id::MediaNext, style()), "Next");
-	toolbar->addSeparator();
-	fullscreen_action_ = toolbar->addAction(UiIcons::icon(UiIcons::Id::FullscreenEnter, style()), "Fullscreen");
-
-	connect(prev_action_, &QAction::triggered, this, &VideoViewerWindow::show_previous_video);
-	connect(next_action_, &QAction::triggered, this, &VideoViewerWindow::show_next_video);
-	connect(fullscreen_action_, &QAction::triggered, this, &VideoViewerWindow::toggle_fullscreen);
-
-	auto* left_shortcut = new QShortcut(QKeySequence(Qt::Key_Left), this);
-	connect(left_shortcut, &QShortcut::activated, this, &VideoViewerWindow::show_previous_video);
-	auto* right_shortcut = new QShortcut(QKeySequence(Qt::Key_Right), this);
-	connect(right_shortcut, &QShortcut::activated, this, &VideoViewerWindow::show_next_video);
-	auto* f11_shortcut = new QShortcut(QKeySequence(Qt::Key_F11), this);
-	connect(f11_shortcut, &QShortcut::activated, this, &VideoViewerWindow::toggle_fullscreen);
-	auto* fullscreen_shortcut = new QShortcut(QKeySequence::FullScreen, this);
-	connect(fullscreen_shortcut, &QShortcut::activated, this, &VideoViewerWindow::toggle_fullscreen);
-	auto* esc_shortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
-	connect(esc_shortcut, &QShortcut::activated, this, [this]() {
-		if (isFullScreen()) {
-			showNormal();
-			update_fullscreen_action();
-		}
-	});
-
-	index_label_ = new QLabel(this);
-	path_label_ = new QLabel(this);
-	path_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-
-	if (statusBar()) {
-		statusBar()->addPermanentWidget(index_label_);
-		statusBar()->addWidget(path_label_, 1);
-	}
+	const ViewerChrome::Widgets chrome = ViewerChrome::setup(
+		this,
+		this,
+		ViewerChrome::Spec{tr("Video Viewer"),
+		                   tr("Video viewer actions"),
+		                   tr("Show the previous video in this folder."),
+		                   tr("Show the next video in this folder."),
+		                   tr("Toggle fullscreen video viewing."),
+		                   tr("Video position"),
+		                   tr("Video path"),
+		                   tr("Video viewer status")},
+		&VideoViewerWindow::show_previous_video,
+		&VideoViewerWindow::show_next_video,
+		&VideoViewerWindow::toggle_fullscreen,
+		[this]() {
+			if (isFullScreen()) {
+				showNormal();
+				update_fullscreen_action();
+			}
+		});
+	prev_action_ = chrome.previous_action;
+	next_action_ = chrome.next_action;
+	fullscreen_action_ = chrome.fullscreen_action;
+	index_label_ = chrome.index_label;
+	path_label_ = chrome.path_label;
 }
 
 void VideoViewerWindow::install_event_filters() {
@@ -238,7 +214,7 @@ void VideoViewerWindow::show_current_video() {
 
 	const QString video_path = current_video_path();
 	if (video_path.isEmpty()) {
-		preview_->show_message("Video Viewer", "No supported videos found in this folder.");
+		preview_->show_message(tr("Video Viewer"), tr("No supported videos found in this folder."));
 		update_status();
 		update_window_title();
 		return;
@@ -246,7 +222,7 @@ void VideoViewerWindow::show_current_video() {
 
 	const QFileInfo info(video_path);
 	if (!info.exists() || !info.isFile()) {
-		preview_->show_message("Video Viewer", "Video file not found.");
+		preview_->show_message(tr("Video Viewer"), tr("Video file not found."));
 		update_status();
 		update_window_title();
 		return;
@@ -262,8 +238,7 @@ void VideoViewerWindow::show_current_video() {
 	                         .arg(video_paths_.size());
 	const QString ext = file_ext_lower(info.fileName());
 	if (debug_media_enabled()) {
-		qInfo().noquote() << QString("VideoViewerWindow: show_current_video ext=%1 path=%2")
-		                     .arg(ext, info.absoluteFilePath());
+		qInfo().noquote() << QString("VideoViewerWindow: show_current_video ext=%1 item=file").arg(ext);
 	}
 	if (ext == "cin" || ext == "roq") {
 		preview_->show_cinematic_from_file(info.fileName(), subtitle, info.absoluteFilePath());
@@ -326,46 +301,22 @@ void VideoViewerWindow::toggle_fullscreen() {
 }
 
 void VideoViewerWindow::update_fullscreen_action() {
-	if (!fullscreen_action_) {
-		return;
-	}
-	const bool full = isFullScreen();
-	fullscreen_action_->setText(full ? "Exit Fullscreen" : "Fullscreen");
-	fullscreen_action_->setIcon(
-		UiIcons::icon(full ? UiIcons::Id::FullscreenExit : UiIcons::Id::FullscreenEnter, style()));
+	ViewerChrome::update_fullscreen_action(fullscreen_action_, this);
 }
 
 void VideoViewerWindow::update_status() {
-	if (index_label_) {
-		if (video_paths_.isEmpty() || current_index_ < 0) {
-			index_label_->setText("Video 0/0");
-		} else {
-			index_label_->setText(QString("Video %1/%2").arg(current_index_ + 1).arg(video_paths_.size()));
-		}
-	}
-	if (path_label_) {
-		const QString path = current_video_path();
-		path_label_->setText(path.isEmpty() ? QString() : QDir::toNativeSeparators(path));
-		path_label_->setToolTip(path.isEmpty() ? QString() : QDir::toNativeSeparators(path));
-	}
-
-	const bool can_cycle = video_paths_.size() > 1;
-	if (prev_action_) {
-		prev_action_->setEnabled(can_cycle);
-	}
-	if (next_action_) {
-		next_action_->setEnabled(can_cycle);
-	}
+	ViewerChrome::update_status(
+		index_label_, path_label_, prev_action_, next_action_, tr("Video"), video_paths_, current_index_, current_video_path());
 }
 
 void VideoViewerWindow::update_window_title() {
 	const QString path = current_video_path();
 	if (path.isEmpty()) {
-		setWindowTitle("PakFu Video Viewer");
+		setWindowTitle(tr("PakFu Video Viewer"));
 		return;
 	}
 	const QFileInfo info(path);
-	setWindowTitle(QString("PakFu Video Viewer - %1").arg(info.fileName()));
+	setWindowTitle(tr("PakFu Video Viewer - %1").arg(info.fileName()));
 }
 
 bool VideoViewerWindow::eventFilter(QObject* watched, QEvent* event) {
@@ -384,7 +335,7 @@ bool VideoViewerWindow::eventFilter(QObject* watched, QEvent* event) {
 		}
 	}
 
-	if (should_ignore_navigation_event_target(watched)) {
+	if (ViewerChrome::should_ignore_navigation_event_target(watched)) {
 		return QMainWindow::eventFilter(watched, event);
 	}
 

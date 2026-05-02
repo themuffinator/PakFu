@@ -10,6 +10,7 @@
 
 class QAction;
 class QComboBox;
+class QLineEdit;
 class QMenu;
 class QTabWidget;
 class QWidget;
@@ -61,6 +62,7 @@ private:
   void open_file_dialog();
   void open_pak_dialog();
   void open_folder_dialog();
+  void run_quick_search();
   void open_file_associations_dialog();
   void open_pak(const QString& path);
   bool open_image_viewer(const QString& file_path, bool add_recent);
@@ -93,6 +95,8 @@ private:
   void update_workspace_tab();
   QVector<WorkspaceTab::SearchResult> search_workspace_tabs(const QString& query) const;
   void run_workspace_search(const QString& query);
+  void focus_workspace_search(const QString& query);
+  void show_status_message(const QString& message, int timeout_ms = 5000);
   void update_action_states();
   bool maybe_save_tab(PakTab* tab);
   bool save_tab(PakTab* tab);
@@ -116,6 +120,7 @@ private:
   GameSetState game_sets_;
   GameSet game_set_;
   QComboBox* game_combo_ = nullptr;
+  QLineEdit* quick_search_edit_ = nullptr;
   bool updating_game_combo_ = false;
   UpdateService* updater_ = nullptr;
   QTabWidget* tabs_ = nullptr;
@@ -139,6 +144,7 @@ private:
   QAction* paste_action_ = nullptr;
   QAction* rename_action_ = nullptr;
   QAction* preferences_action_ = nullptr;
+  QAction* quick_search_action_ = nullptr;
   QAction* exit_action_ = nullptr;
   QMenu* recent_files_menu_ = nullptr;
   QMenu* extensions_menu_ = nullptr;
@@ -152,4 +158,6 @@ private:
   QPointer<ModelViewerWindow> model_viewer_window_;
   QVector<ExtensionCommand> extension_commands_;
   QStringList extension_warnings_;
+  QString last_extension_run_summary_;
+  QString last_extension_run_details_;
 };

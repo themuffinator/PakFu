@@ -28,17 +28,17 @@
 class BreadcrumbBar;
 class QAction;
 class QActionGroup;
-class QListWidget;
-class QListWidgetItem;
+class QListView;
 class QLineEdit;
 class PreviewPane;
 enum class PreviewRenderer;
+class QAbstractTableModel;
+class QSortFilterProxyModel;
 class QStackedWidget;
 class QSplitter;
 class QToolBar;
 class QToolButton;
-class QTreeWidget;
-class QTreeWidgetItem;
+class QTreeView;
 class QUndoStack;
 class QMimeData;
 class QProgressDialog;
@@ -142,6 +142,7 @@ public:
 
 signals:
   void dirty_changed(bool dirty);
+  void status_message(const QString& message, int timeout_ms);
 
 protected:
   void dragEnterEvent(QDragEnterEvent* event) override;
@@ -302,17 +303,17 @@ private:
 
   QSplitter* splitter_ = nullptr;
   QStackedWidget* view_stack_ = nullptr;
-  QTreeWidget* details_view_ = nullptr;
-  QListWidget* icon_view_ = nullptr;
+  QAbstractTableModel* listing_model_ = nullptr;
+  QSortFilterProxyModel* details_proxy_ = nullptr;
+  QSortFilterProxyModel* icon_proxy_ = nullptr;
+  QTreeView* details_view_ = nullptr;
+  QListView* icon_view_ = nullptr;
   PreviewPane* preview_ = nullptr;
   QWidget* preview_placeholder_ = nullptr;
   QPointer<QWidget> detached_preview_window_;
   QAction* detach_preview_action_ = nullptr;
-  QHash<QString, QListWidgetItem*> icon_items_by_path_;
-  QHash<QString, QTreeWidgetItem*> detail_items_by_path_;
   struct SpriteIconAnimation {
     QVector<QIcon> icon_frames;
-    QVector<QIcon> detail_frames;
     QVector<int> frame_durations_ms;
     int frame_index = 0;
     int elapsed_ms = 0;

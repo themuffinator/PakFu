@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <limits>
 
+#include <QCoreApplication>
 #include <QMatrix4x4>
 #include <QGuiApplication>
 #include <QCursor>
@@ -802,7 +803,7 @@ ModelViewerWidget::ModelViewerWidget(QWidget* parent) : QOpenGLWidget(parent) {
   animation_timer_.setInterval(16);
   animation_timer_.setTimerType(Qt::PreciseTimer);
   connect(&animation_timer_, &QTimer::timeout, this, &ModelViewerWidget::on_animation_tick);
-  setToolTip(
+  setToolTip(QCoreApplication::translate("ModelViewerWidget",
     "3D Controls:\n"
     "- Orbit: Middle-drag (Alt+Left-drag)\n"
     "- Pan: Shift+Middle-drag (Alt+Shift+Left-drag)\n"
@@ -810,7 +811,7 @@ ModelViewerWidget::ModelViewerWidget(QWidget* parent) : QOpenGLWidget(parent) {
     "- Zoom: Mouse wheel\n"
     "- Fly: Hold Right Mouse + WASD (Q/E up/down, wheel adjusts speed, Shift faster, Ctrl slower)\n"
     "- Frame: F\n"
-    "- Reset: R / Home");
+    "- Reset: R / Home"));
 
   QSettings settings;
   texture_smoothing_ = settings.value("preview/model/textureSmoothing", false).toBool();

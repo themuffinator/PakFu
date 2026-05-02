@@ -147,7 +147,7 @@ QString normalize_lookup_name(QString name) {
 }  // namespace
 
 bool PakArchive::load(const QString& path, QString* error) {
-  PakFu::Metrics::ScopedTimer load_timer("archive", "pak_load", QFileInfo(path).fileName());
+  PakFu::Metrics::ScopedTimer load_timer("archive", "pak_load", "archive_kind=pak");
   loaded_ = false;
   sin_archive_ = false;
   dir_entry_size_ = kQuakePakDirEntrySize;

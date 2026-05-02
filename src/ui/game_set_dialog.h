@@ -7,8 +7,9 @@
 #include "game/game_set.h"
 
 class QLabel;
-class QListWidget;
+class QListView;
 class QPushButton;
+class QStandardItemModel;
 
 class GameSetDialog : public QDialog {
 public:
@@ -32,7 +33,8 @@ private:
 
   GameSetState state_;
 
-  QListWidget* list_ = nullptr;
+  QListView* list_ = nullptr;
+  QStandardItemModel* list_model_ = nullptr;
   QLabel* hint_label_ = nullptr;
   QPushButton* add_button_ = nullptr;
   QPushButton* configure_button_ = nullptr;
@@ -40,4 +42,3 @@ private:
   QPushButton* auto_detect_button_ = nullptr;
   QPushButton* open_button_ = nullptr;
 };
-

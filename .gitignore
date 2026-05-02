@@ -61,3 +61,4 @@ _log_*
 _linuxdeploy_*
 _wsl_linuxpkg.log
 aqtinstall.log
+/.omx

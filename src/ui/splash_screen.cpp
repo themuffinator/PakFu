@@ -68,14 +68,14 @@ SplashScreen::SplashScreen(const QPixmap& logo, QWidget* parent)
   spinner_ = new SpinnerWidget(info_box_);
   box_layout->addWidget(spinner_, 0, Qt::AlignVCenter);
 
-  status_label_ = new QLabel("Starting...", info_box_);
+  status_label_ = new QLabel(tr("Starting..."), info_box_);
   status_label_->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
   status_label_->setStyleSheet("color: rgba(255, 255, 255, 230); font-size: 13px;");
   status_label_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
   status_label_->setWordWrap(false);
   box_layout->addWidget(status_label_, 1);
 
-  version_label_ = new QLabel("v0.0.0", info_box_);
+  version_label_ = new QLabel(QString(), info_box_);
   version_label_->setAlignment(Qt::AlignVCenter | Qt::AlignRight);
   version_label_->setStyleSheet("color: rgba(220, 220, 220, 200); font-size: 12px;");
   box_layout->addWidget(version_label_, 0, Qt::AlignVCenter);

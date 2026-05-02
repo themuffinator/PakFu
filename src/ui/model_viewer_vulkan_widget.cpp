@@ -6,6 +6,7 @@
 #include <cstring>
 #include <limits>
 
+#include <QCoreApplication>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
@@ -162,13 +163,13 @@ float quantized_grid_step(float target_step) {
 QShader load_shader(const QString& path) {
 	QFile f(path);
 	if (!f.open(QIODevice::ReadOnly)) {
-		qWarning() << "ModelViewerVulkanWidget: unable to open shader" << path;
+		qWarning() << "ModelViewerVulkanWidget: unable to open shader resource";
 		return {};
 	}
 	const QByteArray data = f.readAll();
 	QShader shader = QShader::fromSerialized(data);
 	if (!shader.isValid()) {
-		qWarning() << "ModelViewerVulkanWidget: invalid shader" << path;
+		qWarning() << "ModelViewerVulkanWidget: invalid shader resource";
 	}
 	return shader;
 }
@@ -200,7 +201,7 @@ ModelViewerVulkanWidget::ModelViewerVulkanWidget(QWidget* parent) : QRhiWidget(p
 	animation_timer_.setInterval(16);
 	animation_timer_.setTimerType(Qt::PreciseTimer);
 	connect(&animation_timer_, &QTimer::timeout, this, &ModelViewerVulkanWidget::on_animation_tick);
-	setToolTip(
+	setToolTip(QCoreApplication::translate("ModelViewerVulkanWidget",
 		"3D Controls:\n"
 		"- Orbit: Middle-drag (Alt+Left-drag)\n"
 		"- Pan: Shift+Middle-drag (Alt+Shift+Left-drag)\n"
@@ -208,7 +209,7 @@ ModelViewerVulkanWidget::ModelViewerVulkanWidget(QWidget* parent) : QRhiWidget(p
 		"- Zoom: Mouse wheel\n"
 		"- Fly: Hold Right Mouse + WASD (Q/E up/down, wheel adjusts speed, Shift faster, Ctrl slower)\n"
 		"- Frame: F\n"
-		"- Reset: R / Home");
+		"- Reset: R / Home"));
 
 	QSettings settings;
 	texture_smoothing_ = settings.value("preview/model/textureSmoothing", false).toBool();

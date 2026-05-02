@@ -2,6 +2,7 @@
 
 #include <QAction>
 #include <QAbstractItemView>
+#include <QAbstractItemModel>
 #include <QApplication>
 #include <QClipboard>
 #include <QCoreApplication>
@@ -9,18 +10,20 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QItemSelectionModel>
 #include <QKeyEvent>
 #include <QListView>
-#include <QListWidget>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPoint>
+#include <QRect>
 #include <QSaveFile>
+#include <QSet>
 #include <QStackedWidget>
 #include <QString>
 #include <QTemporaryDir>
 #include <QTextStream>
-#include <QTreeWidget>
+#include <QTreeView>
 #include <QUrl>
 #include <QVector>
 #include <QWidget>
@@ -156,97 +159,86 @@ Qt::KeyboardModifiers toggle_selection_modifier() {
 #endif
 }
 
-int selectable_detail_rows(QTreeWidget* details) {
-  if (!details) {
+QModelIndex view_row_index(QAbstractItemView* view, int row) {
+  if (!view || !view->model()) {
+    return {};
+  }
+  return view->model()->index(row, 0, view->rootIndex());
+}
+
+int selectable_rows(QAbstractItemView* view) {
+  if (!view || !view->model()) {
     return 0;
   }
   int count = 0;
-  for (int i = 0; i < details->topLevelItemCount(); ++i) {
-    QTreeWidgetItem* item = details->topLevelItem(i);
-    if (item && (item->flags() & Qt::ItemIsSelectable)) {
+  const int rows = view->model()->rowCount(view->rootIndex());
+  for (int row = 0; row < rows; ++row) {
+    const QModelIndex index = view_row_index(view, row);
+    if (index.isValid() && (view->model()->flags(index) & Qt::ItemIsSelectable)) {
       ++count;
     }
   }
   return count;
 }
 
-int selectable_icon_items(QListWidget* icons) {
-  if (!icons) {
+int selected_row_count(QAbstractItemView* view) {
+  if (!view || !view->selectionModel()) {
     return 0;
   }
-  int count = 0;
-  for (int i = 0; i < icons->count(); ++i) {
-    QListWidgetItem* item = icons->item(i);
-    if (item && (item->flags() & Qt::ItemIsSelectable)) {
-      ++count;
+  QSet<int> rows;
+  const QModelIndexList selected = view->selectionModel()->selectedIndexes();
+  for (const QModelIndex& index : selected) {
+    if (index.isValid()) {
+      rows.insert(index.row());
     }
   }
-  return count;
+  return rows.size();
 }
 
-bool click_detail_row(QTreeWidget* details, int row, Qt::KeyboardModifiers modifiers, QString* error) {
-  if (!details) {
+bool click_view_row(QAbstractItemView* view, int row, Qt::KeyboardModifiers modifiers, QString* error) {
+  if (!view) {
     if (error) {
-      *error = "Details view not found.";
+      *error = "View not found.";
     }
     return false;
   }
-  QTreeWidgetItem* item = details->topLevelItem(row);
-  if (!item) {
+  const QModelIndex index = view_row_index(view, row);
+  if (!index.isValid()) {
     if (error) {
-      *error = QString("Details row %1 not found.").arg(row);
+      *error = QString("Row %1 not found.").arg(row);
     }
     return false;
   }
 
-  details->scrollToItem(item);
+  view->scrollTo(index);
   pump_events();
-  const QRect rect = details->visualItemRect(item);
+  const QRect rect = view->visualRect(index);
   if (!rect.isValid()) {
     if (error) {
-      *error = QString("Details row %1 has invalid visual rect.").arg(row);
+      *error = QString("Row %1 has invalid visual rect.").arg(row);
     }
     return false;
   }
 
-  QWidget* vp = details->viewport();
+  QWidget* vp = view->viewport();
   const int x = std::clamp(rect.left() + 12, 2, qMax(2, vp->width() - 3));
   const int y = std::clamp(rect.center().y(), 2, qMax(2, vp->height() - 3));
   send_left_click(vp, QPoint(x, y), modifiers);
   return true;
 }
 
-QPoint find_empty_point_in_tree(QTreeWidget* details) {
-  if (!details || !details->viewport()) {
+QPoint find_empty_point(QAbstractItemView* view) {
+  if (!view || !view->viewport()) {
     return {};
   }
-  QWidget* vp = details->viewport();
+  QWidget* vp = view->viewport();
   const int w = vp->width();
   const int h = vp->height();
   const int xs[] = {6, qMax(6, w / 2), qMax(6, w - 6)};
   for (int y = h - 2; y >= 2; y -= 6) {
     for (int x : xs) {
       const QPoint p(std::clamp(x, 2, qMax(2, w - 2)), y);
-      if (!details->itemAt(p)) {
-        return p;
-      }
-    }
-  }
-  return {};
-}
-
-QPoint find_empty_point_in_icons(QListWidget* icons) {
-  if (!icons || !icons->viewport()) {
-    return {};
-  }
-  QWidget* vp = icons->viewport();
-  const int w = vp->width();
-  const int h = vp->height();
-  const int xs[] = {6, qMax(6, w / 2), qMax(6, w - 6)};
-  for (int y = h - 2; y >= 2; y -= 6) {
-    for (int x : xs) {
-      const QPoint p(std::clamp(x, 2, qMax(2, w - 2)), y);
-      if (!icons->itemAt(p)) {
+      if (!view->indexAt(p).isValid()) {
         return p;
       }
     }
@@ -306,9 +298,9 @@ int run_practical_archive_ops_qa() {
   tab.activateWindow();
   pump_events(6);
 
-  auto* details = tab.findChild<QTreeWidget*>();
-  auto* icons = tab.findChild<QListWidget*>();
-  auto* stack = tab.findChild<QStackedWidget*>();
+  auto* details = tab.findChild<QTreeView*>(QStringLiteral("pakfuArchiveDetailsView"));
+  auto* icons = tab.findChild<QListView*>(QStringLiteral("pakfuArchiveIconView"));
+  auto* stack = tab.findChild<QStackedWidget*>(QStringLiteral("pakfuArchiveViewStack"));
 
   add_check(&checks,
             "View widgets discovered",
@@ -330,7 +322,7 @@ int run_practical_archive_ops_qa() {
   details->setFocus();
   pump_events(4);
 
-  const int detail_rows = selectable_detail_rows(details);
+  const int detail_rows = selectable_rows(details);
   add_check(&checks,
             "Details view has selectable rows",
             detail_rows >= 3,
@@ -339,17 +331,17 @@ int run_practical_archive_ops_qa() {
   if (detail_rows >= 3) {
     QString click_error;
     details->clearSelection();
-    QTreeWidgetItem* anchor = details->topLevelItem(0);
-    bool details_click_ok = (anchor != nullptr);
-    if (anchor) {
-      details->setCurrentItem(anchor);
-      anchor->setSelected(true);
+    const QModelIndex anchor = view_row_index(details, 0);
+    bool details_click_ok = (anchor.isValid() && details->selectionModel());
+    if (details_click_ok) {
+      details->setCurrentIndex(anchor);
+      details->selectionModel()->select(anchor, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
       pump_events();
       details->setFocus();
       send_key_combo(details, Qt::Key_Down, Qt::ShiftModifier);
       send_key_combo(details, Qt::Key_Down, Qt::ShiftModifier);
     }
-    const int after_shift = details->selectedItems().size();
+    const int after_shift = selected_row_count(details);
     add_check(&checks,
               "Shift range selection in details",
               details_click_ok && after_shift == 3,
@@ -358,15 +350,15 @@ int run_practical_archive_ops_qa() {
 
     click_error.clear();
     const Qt::KeyboardModifiers toggle_mod = toggle_selection_modifier();
-    const bool toggle_ok = click_detail_row(details, 1, toggle_mod, &click_error);
-    const int after_toggle = details->selectedItems().size();
+    const bool toggle_ok = click_view_row(details, 1, toggle_mod, &click_error);
+    const int after_toggle = selected_row_count(details);
     add_check(&checks,
               "Toggle selection in details",
               toggle_ok && after_toggle == 2,
               toggle_ok ? QString("selected=%1 expected=2").arg(after_toggle) : click_error);
 
     send_key_combo(&tab, Qt::Key_A, toggle_selection_modifier());
-    const int after_select_all = details->selectedItems().size();
+    const int after_select_all = selected_row_count(details);
     add_check(&checks,
               "Select-all shortcut in details",
               after_select_all == detail_rows,
@@ -374,16 +366,17 @@ int run_practical_archive_ops_qa() {
 
     details->clearSelection();
     pump_events();
-    QPoint drag_start = find_empty_point_in_tree(details);
+    QPoint drag_start = find_empty_point(details);
     if (drag_start.isNull()) {
       tab.resize(1180, 980);
       pump_events(4);
-      drag_start = find_empty_point_in_tree(details);
+      drag_start = find_empty_point(details);
     }
 
     QPoint drag_end;
-    if (QTreeWidgetItem* target = details->topLevelItem(qMin(2, detail_rows - 1))) {
-      const QRect rect = details->visualItemRect(target);
+    const QModelIndex target = view_row_index(details, qMin(2, detail_rows - 1));
+    if (target.isValid()) {
+      const QRect rect = details->visualRect(target);
       drag_end = QPoint(std::clamp(rect.left() + 16, 2, qMax(2, details->viewport()->width() - 3)),
                         std::clamp(rect.center().y(), 2, qMax(2, details->viewport()->height() - 3)));
     }
@@ -392,7 +385,7 @@ int run_practical_archive_ops_qa() {
     if (marquee_ok) {
       send_left_drag(details->viewport(), drag_start, drag_end, Qt::NoModifier);
     }
-    const int after_marquee = details->selectedItems().size();
+    const int after_marquee = selected_row_count(details);
     add_check(&checks,
               "Marquee selection in details",
               marquee_ok && after_marquee >= 2,
@@ -408,7 +401,7 @@ int run_practical_archive_ops_qa() {
   icons->setFocus();
   pump_events(4);
 
-  const int icon_items = selectable_icon_items(icons);
+  const int icon_items = selectable_rows(icons);
   add_check(&checks,
             "Icon view has selectable items",
             icon_items >= 3,
@@ -416,7 +409,7 @@ int run_practical_archive_ops_qa() {
 
   if (icon_items >= 3) {
     send_key_combo(&tab, Qt::Key_A, toggle_selection_modifier());
-    const int after_select_all = icons->selectedItems().size();
+    const int after_select_all = selected_row_count(icons);
     add_check(&checks,
               "Select-all shortcut in icon view",
               after_select_all == icon_items,
@@ -425,20 +418,19 @@ int run_practical_archive_ops_qa() {
     icons->clearSelection();
     pump_events();
 
-    QPoint drag_start = find_empty_point_in_icons(icons);
+    QPoint drag_start = find_empty_point(icons);
     if (drag_start.isNull()) {
       tab.resize(1180, 980);
       pump_events(4);
-      drag_start = find_empty_point_in_icons(icons);
+      drag_start = find_empty_point(icons);
     }
 
     QRect target_rect;
     for (int i = 0; i < qMin(4, icon_items); ++i) {
-      if (QListWidgetItem* item = icons->item(i)) {
-        const QRect rect = icons->visualItemRect(item);
-        if (rect.isValid()) {
-          target_rect = target_rect.isNull() ? rect : target_rect.united(rect);
-        }
+      const QModelIndex index = view_row_index(icons, i);
+      const QRect rect = index.isValid() ? icons->visualRect(index) : QRect();
+      if (rect.isValid()) {
+        target_rect = target_rect.isNull() ? rect : target_rect.united(rect);
       }
     }
 
@@ -452,7 +444,7 @@ int run_practical_archive_ops_qa() {
     if (marquee_ok) {
       send_left_drag(icons->viewport(), drag_start, drag_end, Qt::NoModifier);
     }
-    const int after_marquee = icons->selectedItems().size();
+    const int after_marquee = selected_row_count(icons);
     add_check(&checks,
               "Marquee selection in icon view",
               marquee_ok && after_marquee >= 2,
@@ -467,9 +459,9 @@ int run_practical_archive_ops_qa() {
   interaction_tab.activateWindow();
   pump_events(4);
 
-  auto* interaction_details = interaction_tab.findChild<QTreeWidget*>();
-  auto* interaction_icons = interaction_tab.findChild<QListWidget*>();
-  auto* interaction_stack = interaction_tab.findChild<QStackedWidget*>();
+  auto* interaction_details = interaction_tab.findChild<QTreeView*>(QStringLiteral("pakfuArchiveDetailsView"));
+  auto* interaction_icons = interaction_tab.findChild<QListView*>(QStringLiteral("pakfuArchiveIconView"));
+  auto* interaction_stack = interaction_tab.findChild<QStackedWidget*>(QStringLiteral("pakfuArchiveViewStack"));
   add_check(&checks,
             "Interaction tab widgets discovered",
             interaction_details && interaction_icons && interaction_stack,
@@ -495,7 +487,7 @@ int run_practical_archive_ops_qa() {
     interaction_tab.paste();
     pump_events(8);
 
-    const int seeded_rows = selectable_detail_rows(interaction_details);
+    const int seeded_rows = selectable_rows(interaction_details);
     add_check(&checks,
               "Editable interaction tab seeded with entries",
               seeded_rows >= 2,
@@ -539,20 +531,20 @@ int run_practical_archive_ops_qa() {
       const bool vp_accepts =
         interaction_icons->viewport() ? interaction_icons->viewport()->acceptDrops() : false;
       const bool drag_mode_ok = interaction_icons->dragDropMode() == QAbstractItemView::DragDrop;
-      const bool actions_ok = interaction_icons->supportedDragActions().testFlag(Qt::CopyAction) &&
-                              interaction_icons->supportedDragActions().testFlag(Qt::MoveAction);
+      const bool default_action_ok = interaction_icons->defaultDropAction() == Qt::CopyAction;
       const bool wrap_ok = interaction_icons->isWrapping() == expected_wrapping;
       add_check(&checks,
                 QString("%1 view drag/drop enabled").arg(action_text),
                 switched && mode_ok && stack_ok && drag_enabled && view_accepts && vp_accepts &&
-                  drag_mode_ok && actions_ok && wrap_ok,
-                QString("switched=%1 mode=%2 stack=%3 drag=%4 accept=%5 viewport=%6 wrap=%7")
+                  drag_mode_ok && default_action_ok && wrap_ok,
+                QString("switched=%1 mode=%2 stack=%3 drag=%4 accept=%5 viewport=%6 defaultAction=%7 wrap=%8")
                   .arg(switched ? "yes" : "no")
                   .arg(static_cast<int>(interaction_icons->viewMode()))
                   .arg(stack_ok ? "icon" : "other")
                   .arg(drag_enabled ? "on" : "off")
                   .arg(view_accepts ? "on" : "off")
                   .arg(vp_accepts ? "on" : "off")
+                  .arg(static_cast<int>(interaction_icons->defaultDropAction()))
                   .arg(interaction_icons->isWrapping() ? "on" : "off"));
     };
 

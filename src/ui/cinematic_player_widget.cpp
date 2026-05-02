@@ -174,7 +174,7 @@ bool CinematicPlayerWidget::load_file(const QString& file_path, QString* error) 
   decoder_ = open_cinematic_file(file_path, &open_err);
   if (!decoder_) {
     if (error) {
-      *error = open_err.isEmpty() ? "Unable to open cinematic." : open_err;
+      *error = open_err.isEmpty() ? tr("Unable to open cinematic.") : open_err;
     }
     unload();
     return false;
@@ -189,7 +189,7 @@ bool CinematicPlayerWidget::load_file(const QString& file_path, QString* error) 
   QString frame_err;
   if (!decoder_->decode_frame(0, &frame, &frame_err) || frame.image.isNull()) {
     if (error) {
-      *error = frame_err.isEmpty() ? "Unable to decode cinematic." : frame_err;
+      *error = frame_err.isEmpty() ? tr("Unable to decode cinematic.") : frame_err;
     }
     unload();
     return false;
@@ -201,13 +201,12 @@ bool CinematicPlayerWidget::load_file(const QString& file_path, QString* error) 
   set_status_text({});
   if (debug_media_enabled()) {
     const CinematicInfo ci = decoder_->info();
-    qInfo().noquote() << QString("CinematicPlayerWidget: load_file ok format=%1 size=%2x%3 fps=%4 frames=%5 path=%6")
+    qInfo().noquote() << QString("CinematicPlayerWidget: load_file ok format=%1 size=%2x%3 fps=%4 frames=%5 item=file")
                          .arg(ci.format)
                          .arg(ci.width)
                          .arg(ci.height)
                          .arg(ci.fps, 0, 'f', 2)
-                         .arg(ci.frame_count)
-                         .arg(file_path);
+                         .arg(ci.frame_count);
   }
 
   if (position_slider_) {
@@ -315,25 +314,25 @@ void CinematicPlayerWidget::build_ui() {
   prev_button_->setAutoRaise(true);
   prev_button_->setCursor(Qt::PointingHandCursor);
   prev_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaPrevious, style()));
-  prev_button_->setToolTip("Previous video file");
+  prev_button_->setToolTip(tr("Previous video file"));
 
   play_button_ = new QToolButton(controls_container_);
   play_button_->setAutoRaise(true);
   play_button_->setCursor(Qt::PointingHandCursor);
   play_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaPlay, style()));
-  play_button_->setToolTip("Play/Pause");
+  play_button_->setToolTip(tr("Play/Pause"));
 
   next_button_ = new QToolButton(controls_container_);
   next_button_->setAutoRaise(true);
   next_button_->setCursor(Qt::PointingHandCursor);
   next_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaNext, style()));
-  next_button_->setToolTip("Next video file");
+  next_button_->setToolTip(tr("Next video file"));
 
   stop_button_ = new QToolButton(controls_container_);
   stop_button_->setAutoRaise(true);
   stop_button_->setCursor(Qt::PointingHandCursor);
   stop_button_->setIcon(UiIcons::icon(UiIcons::Id::MediaStop, style()));
-  stop_button_->setToolTip("Stop");
+  stop_button_->setToolTip(tr("Stop"));
 
   const QSize icon_sz(18, 18);
   prev_button_->setIconSize(icon_sz);
@@ -361,7 +360,7 @@ void CinematicPlayerWidget::build_ui() {
   volume_scroll_->setFixedWidth(14);
   volume_scroll_->setFixedHeight(56);
   volume_scroll_->setInvertedAppearance(true);
-  volume_scroll_->setToolTip("Volume");
+  volume_scroll_->setToolTip(tr("Volume"));
   volume_scroll_->setStyleSheet(
     "QScrollBar { background: transparent; }"
     "QScrollBar::add-line, QScrollBar::sub-line { height: 0px; }"
@@ -438,12 +437,12 @@ void CinematicPlayerWidget::set_status_text(const QString& text) {
     }
     if (ci.frame_count > 0) {
       const double total_s = static_cast<double>(ci.frame_count) / ci.fps;
-      parts << QString("Duration: %1").arg(format_time(total_s));
+      parts << tr("Duration: %1").arg(format_time(total_s));
     }
     if (ci.has_audio) {
       const int bits = audio_convert_u8_to_s16_ ? 16 : (ci.audio_bytes_per_sample * 8);
-      const QString converted = audio_convert_u8_to_s16_ ? " (converted)" : QString();
-      parts << QString("Audio: %1 Hz, %2 ch, %3-bit")
+      const QString converted = audio_convert_u8_to_s16_ ? tr(" (converted)") : QString();
+      parts << tr("Audio: %1 Hz, %2 ch, %3-bit")
                  .arg(ci.audio_sample_rate)
                  .arg(ci.audio_channels)
                  .arg(bits) +
@@ -602,7 +601,7 @@ bool CinematicPlayerWidget::show_frame(int frame_index, bool allow_audio) {
   CinematicFrame frame;
   QString err;
   if (!decoder_->decode_frame(frame_index, &frame, &err) || frame.image.isNull()) {
-    set_status_text(err.isEmpty() ? "Unable to decode cinematic frame." : err);
+    set_status_text(err.isEmpty() ? tr("Unable to decode cinematic frame.") : err);
     return false;
   }
 
@@ -637,7 +636,7 @@ bool CinematicPlayerWidget::show_next_frame(bool allow_audio) {
   CinematicFrame frame;
   QString err;
   if (!decoder_->decode_next(&frame, &err) || frame.image.isNull()) {
-    set_status_text(err.isEmpty() ? "Unable to decode cinematic frame." : err);
+    set_status_text(err.isEmpty() ? tr("Unable to decode cinematic frame.") : err);
     return false;
   }
 
@@ -717,11 +716,11 @@ void CinematicPlayerWidget::start_audio_if_needed() {
     audio_device_->clear();
     enqueue_audio(last_frame_audio_pcm_);
     if (debug_media_enabled()) {
-      qInfo() << "CinematicPlayerWidget: audio_sink start (restart path)";
+      qInfo() << "CinematicPlayerWidget: audio_sink start (restart route)";
     }
     audio_sink_->start(audio_device_);
     if (debug_media_enabled()) {
-      qInfo() << "CinematicPlayerWidget: audio_sink started (restart path) state=" << audio_sink_->state();
+      qInfo() << "CinematicPlayerWidget: audio_sink started (restart route) state=" << audio_sink_->state();
     }
     audio_needs_restart_ = false;
     return;
@@ -739,11 +738,11 @@ void CinematicPlayerWidget::start_audio_if_needed() {
   audio_device_->clear();
   enqueue_audio(last_frame_audio_pcm_);
   if (debug_media_enabled()) {
-    qInfo() << "CinematicPlayerWidget: audio_sink start (fresh path)";
+    qInfo() << "CinematicPlayerWidget: audio_sink start (fresh route)";
   }
   audio_sink_->start(audio_device_);
   if (debug_media_enabled()) {
-    qInfo() << "CinematicPlayerWidget: audio_sink started (fresh path) state=" << audio_sink_->state();
+    qInfo() << "CinematicPlayerWidget: audio_sink started (fresh route) state=" << audio_sink_->state();
   }
 }
 

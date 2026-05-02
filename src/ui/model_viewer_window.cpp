@@ -6,6 +6,7 @@
 #include <QAction>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -28,7 +29,7 @@
 #include "formats/pcx_image.h"
 #include "formats/quake3_skin.h"
 #include "ui/preview_pane.h"
-#include "ui/ui_icons.h"
+#include "ui/viewer_chrome.h"
 
 namespace {
 constexpr qint64 kMaxPaletteBytes = 8LL * 1024 * 1024;
@@ -64,18 +65,6 @@ QVector<QString> parent_directories_for(const QString& file_path) {
 	return out;
 }
 
-bool should_ignore_navigation_event_target(QObject* watched) {
-	if (!watched) {
-		return false;
-	}
-	return qobject_cast<QComboBox*>(watched) != nullptr ||
-	       qobject_cast<QAbstractSpinBox*>(watched) != nullptr ||
-	       qobject_cast<QAbstractSlider*>(watched) != nullptr ||
-	       qobject_cast<QLineEdit*>(watched) != nullptr ||
-	       qobject_cast<QTextEdit*>(watched) != nullptr ||
-	       qobject_cast<QPlainTextEdit*>(watched) != nullptr;
-}
-
 bool try_load_archive_entry(const QString& archive_path,
                             const QString& entry_name,
                             QByteArray* out_bytes,
@@ -92,7 +81,10 @@ bool try_load_archive_entry(const QString& archive_path,
 	QString load_err;
 	if (!archive.load(archive_path, &load_err) || !archive.is_loaded()) {
 		if (attempts) {
-			attempts->push_back(QString("%1: %2").arg(label, load_err.isEmpty() ? "unable to load archive" : load_err));
+			attempts->push_back(QCoreApplication::translate("ModelViewerWindow", "%1: %2")
+			                        .arg(label, load_err.isEmpty()
+			                                        ? QCoreApplication::translate("ModelViewerWindow", "unable to load archive")
+			                                        : load_err));
 		}
 		return false;
 	}
@@ -101,7 +93,10 @@ bool try_load_archive_entry(const QString& archive_path,
 	if (!archive.read_entry_bytes(entry_name, out_bytes, &read_err, kMaxPaletteBytes)) {
 		if (attempts) {
 			attempts->push_back(
-				QString("%1: %2").arg(label, read_err.isEmpty() ? QString("%1 not found").arg(entry_name) : read_err));
+				QCoreApplication::translate("ModelViewerWindow", "%1: %2")
+					.arg(label, read_err.isEmpty()
+					                ? QCoreApplication::translate("ModelViewerWindow", "%1 not found").arg(entry_name)
+					                : read_err));
 		}
 		return false;
 	}
@@ -166,43 +161,31 @@ void ModelViewerWindow::build_ui() {
 	preview_ = new PreviewPane(this);
 	setCentralWidget(preview_);
 
-	auto* toolbar = addToolBar("Model Viewer");
-	toolbar->setMovable(false);
-	toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-
-	prev_action_ = toolbar->addAction(UiIcons::icon(UiIcons::Id::MediaPrevious, style()), "Previous");
-	next_action_ = toolbar->addAction(UiIcons::icon(UiIcons::Id::MediaNext, style()), "Next");
-	toolbar->addSeparator();
-	fullscreen_action_ = toolbar->addAction(UiIcons::icon(UiIcons::Id::FullscreenEnter, style()), "Fullscreen");
-
-	connect(prev_action_, &QAction::triggered, this, &ModelViewerWindow::show_previous_model);
-	connect(next_action_, &QAction::triggered, this, &ModelViewerWindow::show_next_model);
-	connect(fullscreen_action_, &QAction::triggered, this, &ModelViewerWindow::toggle_fullscreen);
-
-	auto* left_shortcut = new QShortcut(QKeySequence(Qt::Key_Left), this);
-	connect(left_shortcut, &QShortcut::activated, this, &ModelViewerWindow::show_previous_model);
-	auto* right_shortcut = new QShortcut(QKeySequence(Qt::Key_Right), this);
-	connect(right_shortcut, &QShortcut::activated, this, &ModelViewerWindow::show_next_model);
-	auto* f11_shortcut = new QShortcut(QKeySequence(Qt::Key_F11), this);
-	connect(f11_shortcut, &QShortcut::activated, this, &ModelViewerWindow::toggle_fullscreen);
-	auto* fullscreen_shortcut = new QShortcut(QKeySequence::FullScreen, this);
-	connect(fullscreen_shortcut, &QShortcut::activated, this, &ModelViewerWindow::toggle_fullscreen);
-	auto* esc_shortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
-	connect(esc_shortcut, &QShortcut::activated, this, [this]() {
-		if (isFullScreen()) {
-			showNormal();
-			update_fullscreen_action();
-		}
-	});
-
-	index_label_ = new QLabel(this);
-	path_label_ = new QLabel(this);
-	path_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-
-	if (statusBar()) {
-		statusBar()->addPermanentWidget(index_label_);
-		statusBar()->addWidget(path_label_, 1);
-	}
+	const ViewerChrome::Widgets chrome = ViewerChrome::setup(
+		this,
+		this,
+		ViewerChrome::Spec{tr("Model Viewer"),
+		                   tr("Model viewer actions"),
+		                   tr("Show the previous model in this folder."),
+		                   tr("Show the next model in this folder."),
+		                   tr("Toggle fullscreen model viewing."),
+		                   tr("Model position"),
+		                   tr("Model path"),
+		                   tr("Model viewer status")},
+		&ModelViewerWindow::show_previous_model,
+		&ModelViewerWindow::show_next_model,
+		&ModelViewerWindow::toggle_fullscreen,
+		[this]() {
+			if (isFullScreen()) {
+				showNormal();
+				update_fullscreen_action();
+			}
+		});
+	prev_action_ = chrome.previous_action;
+	next_action_ = chrome.next_action;
+	fullscreen_action_ = chrome.fullscreen_action;
+	index_label_ = chrome.index_label;
+	path_label_ = chrome.path_label;
 }
 
 void ModelViewerWindow::install_event_filters() {
@@ -291,7 +274,7 @@ void ModelViewerWindow::show_current_model() {
 	const QString model_path = current_model_path();
 	if (model_path.isEmpty()) {
 		preview_->set_current_file_info({}, -1, -1);
-		preview_->show_message("Model Viewer", "No supported models found in this folder.");
+		preview_->show_message(tr("Model Viewer"), tr("No supported models found in this folder."));
 		update_status();
 		update_window_title();
 		return;
@@ -300,7 +283,7 @@ void ModelViewerWindow::show_current_model() {
 	const QFileInfo info(model_path);
 	if (!info.exists() || !info.isFile()) {
 		preview_->set_current_file_info(info.absoluteFilePath(), -1, -1);
-		preview_->show_message("Model Viewer", "Model file not found.");
+		preview_->show_message(tr("Model Viewer"), tr("Model file not found."));
 		update_status();
 		update_window_title();
 		return;
@@ -319,23 +302,23 @@ void ModelViewerWindow::show_current_model() {
 	PreviewAssetContext asset_context;
 	QStringList palette_sources;
 	if (quake1_palette_.size() == 256) {
-		palette_sources.push_back(QString("Quake: %1").arg(
+		palette_sources.push_back(tr("Quake: %1").arg(
 			quake1_palette_source_.isEmpty() ? QString("gfx/palette.lmp") : quake1_palette_source_));
 	}
 	if (quake2_palette_.size() == 256) {
-		palette_sources.push_back(QString("Quake II: %1").arg(
+		palette_sources.push_back(tr("Quake II: %1").arg(
 			quake2_palette_source_.isEmpty() ? QString("pics/colormap.pcx") : quake2_palette_source_));
 	}
 	if (!palette_sources.isEmpty()) {
 		asset_context.palette_provenance = palette_sources.join('\n');
 	} else {
 		asset_context.palette_provenance =
-			"Embedded model textures when available; indexed Quake skins use grayscale fallback without a palette.";
+			tr("Embedded model textures when available; indexed Quake skins use grayscale fallback without a palette.");
 	}
 
 	QStringList companion_notes;
 	if (!skin_path.isEmpty()) {
-		companion_notes.push_back(QString("Skin: %1").arg(QFileInfo(skin_path).fileName()));
+		companion_notes.push_back(tr("Skin: %1").arg(QFileInfo(skin_path).fileName()));
 		if (file_ext_lower(QFileInfo(skin_path).fileName()) == "skin") {
 			Quake3SkinMapping mapping;
 			QString skin_err;
@@ -347,7 +330,7 @@ void ModelViewerWindow::show_current_model() {
 					}
 				}
 				asset_context.shader_dependencies =
-					QString("%1 .skin mappings, %2 shader refs").arg(mapping.surface_to_shader.size()).arg(unique_shaders.size());
+					tr("%1 .skin mappings, %2 shader refs").arg(mapping.surface_to_shader.size()).arg(unique_shaders.size());
 			}
 		}
 	}
@@ -357,7 +340,7 @@ void ModelViewerWindow::show_current_model() {
 		const QStringList candidates = {model_dir.filePath(base + "T.mdl"), model_dir.filePath(base + "t.mdl")};
 		for (const QString& candidate : candidates) {
 			if (QFileInfo::exists(candidate)) {
-				companion_notes.push_back(QString("GoldSrc textures: %1").arg(QFileInfo(candidate).fileName()));
+				companion_notes.push_back(tr("GoldSrc textures: %1").arg(QFileInfo(candidate).fileName()));
 				break;
 			}
 		}
@@ -365,23 +348,23 @@ void ModelViewerWindow::show_current_model() {
 	if (ext == "mdm") {
 		const QString mdx = model_dir.filePath(info.completeBaseName() + ".mdx");
 		if (QFileInfo::exists(mdx)) {
-			companion_notes.push_back(QString("Skeleton: %1").arg(QFileInfo(mdx).fileName()));
+			companion_notes.push_back(tr("Skeleton: %1").arg(QFileInfo(mdx).fileName()));
 		} else {
-			asset_context.preview_fallback = "MDM companion .mdx not found; preview may use guide skeleton data.";
+			asset_context.preview_fallback = tr("MDM companion .mdx not found; preview may use guide skeleton data.");
 		}
 	}
 	if (ext == "glm") {
 		const QString gla = model_dir.filePath(info.completeBaseName() + ".gla");
 		if (QFileInfo::exists(gla)) {
-			companion_notes.push_back(QString("Animation base: %1").arg(QFileInfo(gla).fileName()));
+			companion_notes.push_back(tr("Animation base: %1").arg(QFileInfo(gla).fileName()));
 		}
 	}
 	asset_context.companion_resolution =
-		companion_notes.isEmpty() ? QString("No external companion files resolved.") : companion_notes.join('\n');
+		companion_notes.isEmpty() ? tr("No external companion files resolved.") : companion_notes.join('\n');
 	if (asset_context.shader_dependencies.isEmpty() && (ext == "md3" || ext == "mdc" || ext == "mdr")) {
 		asset_context.shader_dependencies = skin_path.isEmpty()
-		                                      ? QString("No .skin file resolved; using embedded shader names and same-folder lookup.")
-		                                      : QString("Surface textures resolved through skin/model hints and same-folder lookup.");
+		                                      ? tr("No .skin file resolved; using embedded shader names and same-folder lookup.")
+		                                      : tr("Surface textures resolved through skin/model hints and same-folder lookup.");
 	}
 	preview_->set_asset_context(asset_context);
 	const QString subtitle = QString("%1  |  %2/%3")
@@ -534,46 +517,22 @@ void ModelViewerWindow::toggle_fullscreen() {
 }
 
 void ModelViewerWindow::update_fullscreen_action() {
-	if (!fullscreen_action_) {
-		return;
-	}
-	const bool full = isFullScreen();
-	fullscreen_action_->setText(full ? "Exit Fullscreen" : "Fullscreen");
-	fullscreen_action_->setIcon(
-		UiIcons::icon(full ? UiIcons::Id::FullscreenExit : UiIcons::Id::FullscreenEnter, style()));
+	ViewerChrome::update_fullscreen_action(fullscreen_action_, this);
 }
 
 void ModelViewerWindow::update_status() {
-	if (index_label_) {
-		if (model_paths_.isEmpty() || current_index_ < 0) {
-			index_label_->setText("Model 0/0");
-		} else {
-			index_label_->setText(QString("Model %1/%2").arg(current_index_ + 1).arg(model_paths_.size()));
-		}
-	}
-	if (path_label_) {
-		const QString path = current_model_path();
-		path_label_->setText(path.isEmpty() ? QString() : QDir::toNativeSeparators(path));
-		path_label_->setToolTip(path.isEmpty() ? QString() : QDir::toNativeSeparators(path));
-	}
-
-	const bool can_cycle = model_paths_.size() > 1;
-	if (prev_action_) {
-		prev_action_->setEnabled(can_cycle);
-	}
-	if (next_action_) {
-		next_action_->setEnabled(can_cycle);
-	}
+	ViewerChrome::update_status(
+		index_label_, path_label_, prev_action_, next_action_, tr("Model"), model_paths_, current_index_, current_model_path());
 }
 
 void ModelViewerWindow::update_window_title() {
 	const QString path = current_model_path();
 	if (path.isEmpty()) {
-		setWindowTitle("PakFu Model Viewer");
+		setWindowTitle(tr("PakFu Model Viewer"));
 		return;
 	}
 	const QFileInfo info(path);
-	setWindowTitle(QString("PakFu Model Viewer - %1").arg(info.fileName()));
+	setWindowTitle(tr("PakFu Model Viewer - %1").arg(info.fileName()));
 }
 
 bool ModelViewerWindow::eventFilter(QObject* watched, QEvent* event) {
@@ -592,7 +551,7 @@ bool ModelViewerWindow::eventFilter(QObject* watched, QEvent* event) {
 		}
 	}
 
-	if (should_ignore_navigation_event_target(watched)) {
+	if (ViewerChrome::should_ignore_navigation_event_target(watched)) {
 		return QMainWindow::eventFilter(watched, event);
 	}
 
@@ -679,7 +638,7 @@ bool ModelViewerWindow::ensure_quake1_palette(const QString& model_path, QString
 		QVector<QRgb> palette;
 		QString pal_err;
 		if (!extract_lmp_palette_256(lmp_bytes, &palette, &pal_err) || palette.size() != 256) {
-			attempts.push_back(QString("%1: %2").arg(where, pal_err.isEmpty() ? "invalid palette" : pal_err));
+			attempts.push_back(tr("%1: %2").arg(where, pal_err.isEmpty() ? tr("invalid palette") : pal_err));
 			return false;
 		}
 		quake1_palette_ = std::move(palette);
@@ -693,7 +652,7 @@ bool ModelViewerWindow::ensure_quake1_palette(const QString& model_path, QString
 		}
 		QFile file(path);
 		if (!file.open(QIODevice::ReadOnly)) {
-			attempts.push_back(QString("%1: unable to open file").arg(where));
+			attempts.push_back(tr("%1: unable to open file").arg(where));
 			return false;
 		}
 		return try_lmp_bytes(file.read(kMaxPaletteBytes), where);
@@ -721,7 +680,7 @@ bool ModelViewerWindow::ensure_quake1_palette(const QString& model_path, QString
 			}
 		}
 
-		attempts.push_back(QString("%1: no usable palette entries found").arg(where));
+		attempts.push_back(tr("%1: no usable palette entries found").arg(where));
 		return false;
 	};
 
@@ -751,8 +710,8 @@ bool ModelViewerWindow::ensure_quake1_palette(const QString& model_path, QString
 	}
 
 	quake1_palette_error_ = attempts.isEmpty()
-	                        ? "Unable to locate Quake palette (gfx/palette.lmp)."
-	                        : QString("Unable to locate Quake palette (gfx/palette.lmp).\nTried:\n- %1")
+	                        ? tr("Unable to locate Quake palette (gfx/palette.lmp).")
+	                        : tr("Unable to locate Quake palette (gfx/palette.lmp).\nTried:\n- %1")
 	                            .arg(attempts.join("\n- "));
 	if (error) {
 		*error = quake1_palette_error_;
@@ -786,7 +745,7 @@ bool ModelViewerWindow::ensure_quake2_palette(const QString& model_path, QString
 		QVector<QRgb> palette;
 		QString pal_err;
 		if (!extract_pcx_palette_256(pcx_bytes, &palette, &pal_err) || palette.size() != 256) {
-			attempts.push_back(QString("%1: %2").arg(where, pal_err.isEmpty() ? "invalid palette" : pal_err));
+			attempts.push_back(tr("%1: %2").arg(where, pal_err.isEmpty() ? tr("invalid palette") : pal_err));
 			return false;
 		}
 		quake2_palette_ = std::move(palette);
@@ -800,7 +759,7 @@ bool ModelViewerWindow::ensure_quake2_palette(const QString& model_path, QString
 		}
 		QFile file(path);
 		if (!file.open(QIODevice::ReadOnly)) {
-			attempts.push_back(QString("%1: unable to open file").arg(where));
+			attempts.push_back(tr("%1: unable to open file").arg(where));
 			return false;
 		}
 		return try_pcx_bytes(file.read(kMaxPaletteBytes), where);
@@ -841,8 +800,8 @@ bool ModelViewerWindow::ensure_quake2_palette(const QString& model_path, QString
 	}
 
 	quake2_palette_error_ = attempts.isEmpty()
-	                        ? "Unable to locate Quake II palette (pics/colormap.pcx)."
-	                        : QString("Unable to locate Quake II palette (pics/colormap.pcx).\nTried:\n- %1")
+	                        ? tr("Unable to locate Quake II palette (pics/colormap.pcx).")
+	                        : tr("Unable to locate Quake II palette (pics/colormap.pcx).\nTried:\n- %1")
 	                            .arg(attempts.join("\n- "));
 	if (error) {
 		*error = quake2_palette_error_;

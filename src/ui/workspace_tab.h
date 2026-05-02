@@ -11,8 +11,10 @@
 
 class QLabel;
 class QLineEdit;
-class QTableWidget;
-class QTabWidget;
+class QListWidget;
+class QStackedWidget;
+class QStandardItemModel;
+class QTableView;
 
 class WorkspaceTab : public QWidget {
 public:
@@ -71,11 +73,13 @@ public:
   explicit WorkspaceTab(Callbacks callbacks, QWidget* parent = nullptr);
 
   QString search_query() const;
+  void focus_search(const QString& query = QString());
   void set_state(const State& state);
   void set_search_results(const QVector<SearchResult>& results);
 
 private:
   void build_ui();
+  void add_section(const QString& label, QWidget* page);
   void run_search();
   void populate_overview();
   void populate_installations();
@@ -93,14 +97,23 @@ private:
   QLabel* install_detail_label_ = nullptr;
   QLabel* archive_count_label_ = nullptr;
   QLabel* recent_count_label_ = nullptr;
-  QTabWidget* sections_ = nullptr;
-  QTableWidget* archives_table_ = nullptr;
-  QTableWidget* recent_table_ = nullptr;
-  QTableWidget* installations_table_ = nullptr;
+  QListWidget* section_nav_ = nullptr;
+  QStackedWidget* sections_ = nullptr;
+  QTableView* archives_table_ = nullptr;
+  QStandardItemModel* archives_model_ = nullptr;
+  QTableView* recent_table_ = nullptr;
+  QStandardItemModel* recent_model_ = nullptr;
+  QTableView* installations_table_ = nullptr;
+  QStandardItemModel* installations_model_ = nullptr;
   QLineEdit* search_edit_ = nullptr;
-  QTableWidget* search_results_table_ = nullptr;
-  QTableWidget* changes_table_ = nullptr;
-  QTableWidget* dependencies_table_ = nullptr;
-  QTableWidget* validation_table_ = nullptr;
-  QTableWidget* capabilities_table_ = nullptr;
+  QTableView* search_results_table_ = nullptr;
+  QStandardItemModel* search_results_model_ = nullptr;
+  QTableView* changes_table_ = nullptr;
+  QStandardItemModel* changes_model_ = nullptr;
+  QTableView* dependencies_table_ = nullptr;
+  QStandardItemModel* dependencies_model_ = nullptr;
+  QTableView* validation_table_ = nullptr;
+  QStandardItemModel* validation_model_ = nullptr;
+  QTableView* capabilities_table_ = nullptr;
+  QStandardItemModel* capabilities_model_ = nullptr;
 };

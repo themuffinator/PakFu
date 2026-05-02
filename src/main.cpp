@@ -8,8 +8,10 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLibraryInfo>
 #include <QLocalServer>
 #include <QLocalSocket>
+#include <QLocale>
 #include <QMenuBar>
 #include <QObject>
 #include <QPixmap>
@@ -22,6 +24,7 @@
 #include <QThread>
 #include <QTextStream>
 #include <QToolButton>
+#include <QTranslator>
 #include <QUrl>
 #include <QWidget>
 
@@ -64,6 +67,30 @@ void set_app_metadata(QCoreApplication& app) {
   app.setApplicationName("PakFu");
   app.setOrganizationName("PakFu");
   app.setApplicationVersion(PAKFU_VERSION);
+}
+
+void install_translators(QApplication& app) {
+  const QLocale locale;
+
+  auto* qt_translator = new QTranslator(&app);
+  if (qt_translator->load(locale, "qt", "_", QLibraryInfo::path(QLibraryInfo::TranslationsPath))) {
+    app.installTranslator(qt_translator);
+  } else {
+    delete qt_translator;
+  }
+
+  auto* app_translator = new QTranslator(&app);
+  const QStringList roots = {
+    QStringLiteral(":/i18n"),
+    QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("translations")),
+  };
+  for (const QString& root : roots) {
+    if (app_translator->load(locale, QStringLiteral("pakfu"), QStringLiteral("_"), root)) {
+      app.installTranslator(app_translator);
+      return;
+    }
+  }
+  delete app_translator;
 }
 
 bool dir_contains_ffmpeg_media_plugin(const QString& dir_path) {
@@ -339,7 +366,7 @@ SplashScreen* show_splash(QApplication& app) {
   splash->move(screen->availableGeometry().center() - QPoint(scaled.width() / 2, scaled.height() / 2));
   splash->show();
   splash->raise();
-  splash->setStatusText("Starting PakFu...");
+  splash->setStatusText(QCoreApplication::translate("SplashScreen", "Starting PakFu..."));
   splash->setVersionText(QString("v%1").arg(PAKFU_VERSION));
   app.processEvents();
   return splash;
@@ -504,6 +531,7 @@ int main(int argc, char** argv) {
 #endif
     QApplication app(argc, argv);
     set_app_metadata(app);
+    install_translators(app);
     platform::install_crash_reporting();
     prefer_qt_ffmpeg_backend_if_available();
 
@@ -535,6 +563,7 @@ int main(int argc, char** argv) {
     app.setWindowIcon(app_icon);
   }
   set_app_metadata(app);
+  install_translators(app);
   platform::install_crash_reporting();
   prefer_qt_ffmpeg_backend_if_available();
   const QString server_name = single_instance_server_name();
